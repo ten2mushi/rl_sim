@@ -112,7 +112,3 @@ for _ in range(1000):
     actions = env.action_space.sample()
     obs, rewards, dones, truncs, info = env.step(actions)
 ```
-
-## License
-
-MIT
