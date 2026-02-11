@@ -1,0 +1,113 @@
+# Gyroid Orbit Demo Configuration
+#
+# Example TOML config with composable sensor noise pipeline.
+# Usage:
+#   cd rl_engine
+#   PYTHONPATH=.. poetry run python scripts/demo_gyroid_orbit.py \
+#       --resolution 64 --config configs/orbit_demo.toml --add-imu
+
+# ── Environment ──────────────────────────────────────────────────────────────
+[environment]
+num_envs = 1
+drones_per_env = 1
+world_size = [40.0, 40.0, 40.0]
+voxel_size = 0.25
+max_episode_steps = 2000
+
+# ── Physics ──────────────────────────────────────────────────────────────────
+[physics]
+timestep = 0.02
+substeps = 4
+gravity = 9.81
+integrator = "rk4"
+enable_ground_effect = true
+ground_effect_height = 0.5
+ground_effect_strength = 1.5
+
+# ── Drone ────────────────────────────────────────────────────────────────────
+[drone]
+mass = 0.027
+arm_length = 0.046
+
+# ── Sensors with Composable Noise ────────────────────────────────────────────
+
+# IMU sensor: accelerometer (channels 0-2) + gyroscope (channels 3-5)
+[[sensors]]
+type = "imu"
+name = "main_imu"
+sample_rate = 500.0
+
+# Accelerometer noise chain (channels 0-2)
+[[sensors.noise_groups]]
+channels = [0, 3]
+
+[[sensors.noise_groups.stages]]
+type = "constant_bias"
+values = [0.02, -0.01, 0.03]
+
+[[sensors.noise_groups.stages]]
+type = "bias_drift"
+tau = 100.0
+sigma = 0.001
+
+[[sensors.noise_groups.stages]]
+type = "white_gaussian"
+stddev = 0.008
+
+# Gyroscope noise chain (channels 3-5)
+[[sensors.noise_groups]]
+channels = [3, 3]
+
+[[sensors.noise_groups.stages]]
+type = "white_gaussian"
+stddev = 0.0007
+
+# Depth camera with distance-dependent noise
+[[sensors]]
+type = "camera_depth"
+name = "front_depth"
+width = 64
+height = 64
+fov = 1.5708
+far_clip = 30.0
+
+[[sensors.noise_groups]]
+
+[[sensors.noise_groups.stages]]
+type = "distance_dependent"
+coeff = 0.003
+power = 2.0
+
+[[sensors.noise_groups.stages]]
+type = "white_gaussian"
+stddev = 0.005
+
+# RGB camera with light sensor noise
+[[sensors]]
+type = "camera_rgb"
+name = "front_rgb"
+width = 64
+height = 64
+fov = 1.5708
+far_clip = 30.0
+
+[[sensors.noise_groups]]
+
+[[sensors.noise_groups.stages]]
+type = "white_gaussian"
+stddev = 0.015
+
+[[sensors.noise_groups.stages]]
+type = "saturation"
+min_val = 0.0
+max_val = 1.0
+
+# Position oracle (clean, no noise)
+[[sensors]]
+type = "position"
+name = "position"
+
+# Velocity oracle (clean, no noise)
+[[sensors]]
+type = "velocity"
+name = "velocity"

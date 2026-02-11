@@ -1,0 +1,15 @@
+# Configuration for hover stabilization task
+
+[environment]
+num_envs = 1024
+drones_per_env = 1
+max_episode_steps = 500
+world_type = "empty"
+
+[reward]
+task = "hover"
+distance_scale = 5.0
+uprightness_scale = 1.0
+energy_scale = 0.01
+collision_penalty = 50.0
+alive_bonus = 0.1

@@ -1,0 +1,68 @@
+# Build
+build/
+*.o
+*.a
+*.so
+*.dylib
+*.exe
+
+# CMake
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+CTestTestfile.cmake
+compile_commands.json
+install_manifest.txt
+Makefile
+Testing/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+.eggs/
+.pytest_cache/
+
+# Virtual environments
+.venv/
+venv/
+
+# Compiled extensions
+binding.cpython-*.so
+binding.cpython-*.pyd
+
+# IDE / Editor / OS
+.cache/
+.ai/
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# Generated output
+output/
+orbit_output/
+
+# Large mesh files (regenerate with utils/generate_gyroid_cube.py)
+input/from_utils/
+input/environments/*.obj
+input/environments/*.mtl
+!input/environments/[0-9].obj
+!input/environments/[0-9].mtl
+input/environments/island/
+input/environments/mountain/
+
+# Documentation (hosted separately)
+docs/
+documentation/
+
+# Symlinks into venv
+resources
+
+# Poetry lock
+poetry.lock

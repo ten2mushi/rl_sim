@@ -1,0 +1,106 @@
+# Full configuration with all sections specified
+
+[drone]
+name = "generic_quad"
+mass = 0.5
+arm_length = 0.1
+ixx = 1e-4
+iyy = 1e-4
+izz = 2e-4
+collision_radius = 0.12
+k_thrust = 3e-8
+k_torque = 8e-10
+motor_tau = 0.03
+max_rpm = 3000.0
+k_drag = 0.1
+k_drag_angular = 0.01
+max_velocity = 15.0
+max_angular_velocity = 40.0
+max_tilt_angle = 1.0
+color = [0.8, 0.4, 0.1]
+scale = 1.0
+
+[environment]
+num_envs = 2048
+drones_per_env = 8
+world_size = [40.0, 40.0, 20.0]
+world_origin = [0.0, 0.0, 10.0]
+voxel_size = 0.2
+max_bricks = 16384
+spawn_radius = 10.0
+spawn_height_min = 3.0
+spawn_height_max = 15.0
+min_separation = 2.0
+max_episode_steps = 2000
+auto_reset = true
+world_type = "obstacles"
+num_obstacles = 50
+seed = 12345
+
+[physics]
+timestep = 0.01
+substeps = 2
+gravity = 9.81
+integrator = "rk4"
+velocity_clamp = 25.0
+angular_velocity_clamp = 40.0
+normalize_quaternions = true
+enable_ground_effect = true
+ground_effect_height = 0.5
+ground_effect_strength = 1.5
+dt_variance = 0.0
+mass_variance = 0.05
+thrust_variance = 0.02
+
+[reward]
+task = "waypoint"
+distance_scale = 2.0
+distance_exp = 1.0
+reach_bonus = 15.0
+reach_radius = 0.3
+velocity_match_scale = 0.5
+uprightness_scale = 0.2
+energy_scale = 0.001
+jerk_scale = 0.0001
+collision_penalty = 20.0
+world_collision_penalty = 10.0
+drone_collision_penalty = 5.0
+alive_bonus = 0.02
+success_bonus = 150.0
+reward_min = -15.0
+reward_max = 15.0
+
+[training]
+algorithm = "ppo"
+learning_rate = 1e-4
+gamma = 0.995
+gae_lambda = 0.95
+clip_range = 0.2
+entropy_coef = 0.005
+value_coef = 0.5
+max_grad_norm = 0.5
+batch_size = 4096
+num_epochs = 8
+rollout_length = 256
+log_interval = 5
+save_interval = 50
+checkpoint_dir = "checkpoints/waypoint"
+
+[[sensors]]
+type = "imu"
+name = "main_imu"
+position = [0.0, 0.0, 0.0]
+orientation = [1.0, 0.0, 0.0, 0.0]
+sample_rate = 500.0
+noise_stddev = 0.01
+
+[[sensors]]
+type = "camera_depth"
+name = "front_depth"
+position = [0.05, 0.0, -0.02]
+orientation = [0.9239, 0.0, 0.3827, 0.0]  # 45 deg down
+sample_rate = 30.0
+width = 84
+height = 84
+near_clip = 0.1
+far_clip = 20.0

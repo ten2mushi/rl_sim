@@ -1,0 +1,28 @@
+# Crazyflie 2.0 preset with documented parameters
+# Reference: https://www.bitcraze.io/products/crazyflie-2-1/
+
+[drone]
+name = "crazyflie2"
+mass = 0.027          # 27 grams
+arm_length = 0.046    # 46mm motor-to-motor diagonal / 2
+ixx = 1.4e-5          # kg*m^2
+iyy = 1.4e-5
+izz = 2.17e-5
+collision_radius = 0.056
+k_thrust = 2.88e-8    # From motor characterization
+k_torque = 7.24e-10
+motor_tau = 0.02      # 20ms motor response time
+max_rpm = 21702.0     # Maximum motor RPM
+k_drag = 0.0
+k_drag_angular = 0.0
+max_velocity = 10.0
+max_angular_velocity = 35.0
+max_tilt_angle = 1.0
+color = [0.2, 0.6, 1.0]  # Blue
+scale = 1.0
+
+[physics]
+timestep = 0.02       # 50 Hz frame rate
+substeps = 4          # Effective 200 Hz physics
+gravity = 9.81
+integrator = "rk4"

@@ -1,0 +1,106 @@
+<?xml version="1.0"?>
+<!--
+  Crazyflie 2.0 URDF for drone simulation
+  Physical parameters based on Crazyflie 2.0 specifications
+-->
+<robot name="crazyflie2">
+
+  <!-- Base link - main body frame -->
+  <link name="base_link">
+
+    <!-- Inertial properties -->
+    <inertial>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <mass value="0.027"/>
+      <inertia ixx="1.4e-5" ixy="0" ixz="0"
+               iyy="1.4e-5" iyz="0"
+               izz="2.17e-5"/>
+    </inertial>
+
+    <!-- Visual representation -->
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="package://crazyflie_description/meshes/crazyflie.dae"/>
+      </geometry>
+    </visual>
+
+    <!-- Collision geometry - approximated as cylinder -->
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <cylinder radius="0.056" length="0.02"/>
+      </geometry>
+    </collision>
+
+    <!-- Custom drone properties extension -->
+    <properties
+      arm="0.046"
+      kf="2.88e-8"
+      km="7.24e-10"
+      motor_tau="0.02"
+      max_rpm="21702"/>
+
+  </link>
+
+  <!-- Motor 1 (front-right) -->
+  <link name="motor_1">
+    <inertial>
+      <mass value="0.001"/>
+      <inertia ixx="1e-9" ixy="0" ixz="0" iyy="1e-9" iyz="0" izz="1e-9"/>
+    </inertial>
+  </link>
+
+  <joint name="motor_1_joint" type="continuous">
+    <parent link="base_link"/>
+    <child link="motor_1"/>
+    <origin xyz="0.0325 -0.0325 0" rpy="0 0 0"/>
+    <axis xyz="0 0 1"/>
+  </joint>
+
+  <!-- Motor 2 (back-right) -->
+  <link name="motor_2">
+    <inertial>
+      <mass value="0.001"/>
+      <inertia ixx="1e-9" ixy="0" ixz="0" iyy="1e-9" iyz="0" izz="1e-9"/>
+    </inertial>
+  </link>
+
+  <joint name="motor_2_joint" type="continuous">
+    <parent link="base_link"/>
+    <child link="motor_2"/>
+    <origin xyz="-0.0325 -0.0325 0" rpy="0 0 0"/>
+    <axis xyz="0 0 1"/>
+  </joint>
+
+  <!-- Motor 3 (back-left) -->
+  <link name="motor_3">
+    <inertial>
+      <mass value="0.001"/>
+      <inertia ixx="1e-9" ixy="0" ixz="0" iyy="1e-9" iyz="0" izz="1e-9"/>
+    </inertial>
+  </link>
+
+  <joint name="motor_3_joint" type="continuous">
+    <parent link="base_link"/>
+    <child link="motor_3"/>
+    <origin xyz="-0.0325 0.0325 0" rpy="0 0 0"/>
+    <axis xyz="0 0 1"/>
+  </joint>
+
+  <!-- Motor 4 (front-left) -->
+  <link name="motor_4">
+    <inertial>
+      <mass value="0.001"/>
+      <inertia ixx="1e-9" ixy="0" ixz="0" iyy="1e-9" iyz="0" izz="1e-9"/>
+    </inertial>
+  </link>
+
+  <joint name="motor_4_joint" type="continuous">
+    <parent link="base_link"/>
+    <child link="motor_4"/>
+    <origin xyz="0.0325 0.0325 0" rpy="0 0 0"/>
+    <axis xyz="0 0 1"/>
+  </joint>
+
+</robot>

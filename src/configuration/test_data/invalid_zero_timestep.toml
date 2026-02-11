@@ -1,0 +1,3 @@
+# Invalid: zero timestep
+[physics]
+timestep = 0.0

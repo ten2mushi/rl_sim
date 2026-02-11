@@ -1,0 +1,1 @@
+SDF query batch: 34.7 µs (target: 25 µs) - needs SIMD vectorization

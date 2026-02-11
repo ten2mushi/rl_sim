@@ -1,0 +1,56 @@
+Phase 5-6 Sprint Baseline Results (2026-02-07)
+=================================================
+
+## Test Suite: 37/43 passed (6 pre-existing failures)
+Pre-existing failures:
+  - test_world_brick_map (SEGFAULT)
+  - test_world_materials (Failed)
+  - test_voxelize (SEGFAULT)
+  - test_roundtrip (SEGFAULT)
+  - test_determinism_deep (SEGFAULT)
+  - test_lidar_world_integration (Failed)
+
+## Physics Benchmarks (1024 drones, 200 iters)
+physics_step:              0.152 ms avg (0.135 min, 0.172 max)
+physics_step_ground_effect: 0.155 ms avg
+compute_derivatives:        0.004 ms avg
+compute_forces_torques:     0.001 ms avg
+rk4_combine:                0.005 ms avg
+quaternion_normalize:        0.000 ms avg
+
+## Physics Scaling
+256:   0.030 ms
+512:   0.070 ms
+1024:  0.148 ms
+2048:  0.381 ms
+4096:  1.122 ms
+
+## GPU Sensor Benchmarks (256 drones)
+cam_depth_32+imu:   CPU=35.967ms  GPU=1.214ms  29.6x
+cam_depth_64+imu:   CPU=139.121ms GPU=2.434ms  57.2x
+cam_rgb_32+imu:     CPU=35.326ms  GPU=1.449ms  24.4x
+lidar3d_16x64+imu:  CPU=34.181ms  GPU=1.272ms  26.9x
+lidar2d_64+imu:     CPU=1.417ms   GPU=0.893ms   1.6x
+tof+imu:            CPU=0.095ms   GPU=0.751ms   0.1x (dispatch overhead > work)
+
+## GPU Sensor Scaling (cam_depth_32)
+64:    CPU=9.253ms   GPU=0.852ms   10.9x
+256:   CPU=37.456ms  GPU=1.376ms   27.2x
+512:   CPU=74.330ms  GPU=2.003ms   37.1x
+1024:  CPU=147.103ms GPU=2.711ms   54.3x
+
+## GPU Engine Benchmarks (256 drones)
+MINIMAL:    CPU=0.053ms    GPU=0.449ms   0.1x
+LIGHT:      CPU=0.057ms    GPU=0.471ms   0.1x
+NAVIGATION: CPU=1.050ms    GPU=0.785ms   1.3x
+VISION:     CPU=36.162ms   GPU=1.329ms   27.2x
+FULL:       CPU=37.622ms   GPU=1.434ms   26.2x
+STRESS:     CPU=376.813ms  GPU=5.543ms   68.0x
+
+## GPU Engine Scaling (VISION profile)
+64:    CPU=13.762ms   GPU=0.988ms    13.9x
+256:   CPU=48.225ms   GPU=1.565ms    30.8x
+512:   CPU=100.920ms  GPU=2.847ms    35.4x
+1024:  CPU=206.368ms  GPU=3.780ms    54.6x
+
+## Key Metric: VISION @ 1024 drones = 3.780ms (target: 20ms) -- 5.3x headroom

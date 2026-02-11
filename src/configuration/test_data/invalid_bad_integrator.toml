@@ -1,0 +1,3 @@
+# Invalid: unknown integrator
+[physics]
+integrator = "leapfrog"

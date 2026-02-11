@@ -1,0 +1,149 @@
+# LiDAR 3D Configuration for Drone RL Environment
+#
+# This configuration focuses on 3D LiDAR-based perception for navigation tasks.
+# Suitable for obstacle avoidance, mapping, and environment exploration.
+#
+# Observation vector (per drone):
+#   - IMU: 6 (ax, ay, az, gx, gy, gz)
+#   - Position: 3 (x, y, z) [oracle sensor for training]
+#   - Velocity: 6 (vx, vy, vz, wx, wy, wz)
+#   - LiDAR 3D: 16x64 = 1024 ray distances
+#   Total: 1039 floats
+#
+# Action vector (per drone): 4 motor commands [-1, 1]
+
+[drone]
+name = "lidar_quad"
+mass = 0.5
+arm_length = 0.1
+ixx = 1e-4
+iyy = 1e-4
+izz = 2e-4
+collision_radius = 0.15
+k_thrust = 3e-8
+k_torque = 8e-10
+motor_tau = 0.03
+max_rpm = 3000.0
+k_drag = 0.1
+k_drag_angular = 0.01
+max_velocity = 15.0
+max_angular_velocity = 40.0
+max_tilt_angle = 1.0
+color = [0.2, 0.6, 0.9]  # Blue-ish for LiDAR variant
+scale = 1.0
+
+[environment]
+num_envs = 64
+drones_per_env = 16
+world_size = [50.0, 50.0, 25.0]
+world_origin = [0.0, 0.0, 12.5]
+voxel_size = 0.1
+max_bricks = 32768
+spawn_radius = 15.0
+spawn_height_min = 3.0
+spawn_height_max = 20.0
+min_separation = 2.5
+max_episode_steps = 1000
+auto_reset = true
+world_type = "obstacles"
+num_obstacles = 100
+seed = 42
+
+[physics]
+timestep = 0.02
+substeps = 4
+gravity = 9.81
+integrator = "rk4"
+velocity_clamp = 20.0
+angular_velocity_clamp = 35.0
+normalize_quaternions = true
+enable_ground_effect = true
+ground_effect_height = 0.5
+ground_effect_strength = 1.2
+dt_variance = 0.0
+mass_variance = 0.02
+thrust_variance = 0.01
+
+[reward]
+task = "waypoint"
+distance_scale = 2.0
+distance_exp = 1.0
+reach_bonus = 10.0
+reach_radius = 0.5
+velocity_match_scale = 0.3
+uprightness_scale = 0.15
+energy_scale = 0.0005
+jerk_scale = 0.0001
+collision_penalty = 25.0
+world_collision_penalty = 15.0
+drone_collision_penalty = 8.0
+alive_bonus = 0.01
+success_bonus = 100.0
+reward_min = -20.0
+reward_max = 20.0
+
+[training]
+algorithm = "ppo"
+learning_rate = 3e-4
+gamma = 0.99
+gae_lambda = 0.95
+clip_range = 0.2
+entropy_coef = 0.01
+value_coef = 0.5
+max_grad_norm = 0.5
+batch_size = 4096
+num_epochs = 4
+rollout_length = 128
+log_interval = 10
+save_interval = 100
+checkpoint_dir = "checkpoints/lidar_3d"
+
+# ============================================================================
+# Sensors Configuration
+# ============================================================================
+
+# IMU - Inertial Measurement Unit
+[[sensors]]
+type = "imu"
+name = "main_imu"
+position = [0.0, 0.0, 0.0]
+orientation = [1.0, 0.0, 0.0, 0.0]  # Identity quaternion
+sample_rate = 200.0
+noise_stddev = 0.02
+accel_noise = 0.01
+gyro_noise = 0.005
+
+# Position sensor (oracle - for training, remove for deployment)
+[[sensors]]
+type = "position"
+name = "oracle_position"
+position = [0.0, 0.0, 0.0]
+orientation = [1.0, 0.0, 0.0, 0.0]
+sample_rate = 0.0  # Every step
+noise_stddev = 0.0
+
+# Velocity sensor (oracle - for training)
+[[sensors]]
+type = "velocity"
+name = "oracle_velocity"
+position = [0.0, 0.0, 0.0]
+orientation = [1.0, 0.0, 0.0, 0.0]
+sample_rate = 0.0
+noise_stddev = 0.0
+
+# LiDAR 3D - Primary perception sensor
+# 16 vertical layers x 64 horizontal rays = 1024 rays
+# Horizontal FOV: 360 degrees (full sweep)
+# Vertical FOV: 60 degrees (-30 to +30)
+[[sensors]]
+type = "lidar_3d"
+name = "main_lidar"
+position = [0.0, 0.0, 0.02]  # Slightly above drone center
+orientation = [1.0, 0.0, 0.0, 0.0]
+sample_rate = 0.0  # Every step
+noise_stddev = 0.05  # 5cm noise stddev
+horizontal_rays = 64
+vertical_layers = 16
+horizontal_fov = 6.283185  # 2*PI = 360 degrees
+vertical_fov = 1.047198    # PI/3 = 60 degrees
+max_range = 50.0           # 50 meter range
