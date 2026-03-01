@@ -8,23 +8,23 @@
  *   2 - Material: material ID as float
  *   3 - Distance: raw hit distance for LiDAR/ToF
  *
- * Thread grid: (pixel_x, pixel_y, drone_id) for cameras
- *              (ray_idx, drone_id, 1)       for LiDAR/ToF
+ * Thread grid: (pixel_x, pixel_y, agent_id) for cameras
+ *              (ray_idx, agent_id, 1)       for LiDAR/ToF
  *
  * Buffer Layout:
  *   0: sdf_data      - int8  contiguous atlas [brick_count * 512]
  *   1: material_data  - uint8 contiguous atlas [brick_count * 512]
  *   2: brick_indices  - int32 grid [grid_total]
- *   3: pos_x          - float [drone_count]
- *   4: pos_y          - float [drone_count]
- *   5: pos_z          - float [drone_count]
- *   6: quat_w         - float [drone_count]
- *   7: quat_x         - float [drone_count]
- *   8: quat_y         - float [drone_count]
- *   9: quat_z         - float [drone_count]
+ *   3: pos_x          - float [agent_count]
+ *   4: pos_y          - float [agent_count]
+ *   5: pos_z          - float [agent_count]
+ *   6: quat_w         - float [agent_count]
+ *   7: quat_x         - float [agent_count]
+ *   8: quat_y         - float [agent_count]
+ *   9: quat_z         - float [agent_count]
  *  10: ray_directions  - float4 [ray_count] (xyz = dir, w = 0)
- *  11: output          - float [drone_count * rays_per_drone * floats_per_ray]
- *  12: drone_indices   - uint32 [drone_count] maps thread drone_id -> actual index
+ *  11: output          - float [agent_count * rays_per_drone * floats_per_ray]
+ *  12: agent_indices   - uint32 [agent_count] maps thread agent_id -> actual index
  * Constants:
  *  16: WorldParams
  *  17: RaymarchParams
@@ -204,17 +204,38 @@ inline float3 sdf_gradient(float3 pos,
                            constant WorldParams& wp,
                            device const char* sdf_data,
                            device const int* brick_indices) {
-    float eps = RAYMARCH_NORMAL_EPSILON;
+    float eps = wp.voxel_size;
 
-    float dx = sdf_query(pos + float3(eps, 0, 0), wp, sdf_data, brick_indices) -
-               sdf_query(pos - float3(eps, 0, 0), wp, sdf_data, brick_indices);
-    float dy = sdf_query(pos + float3(0, eps, 0), wp, sdf_data, brick_indices) -
-               sdf_query(pos - float3(0, eps, 0), wp, sdf_data, brick_indices);
-    float dz = sdf_query(pos + float3(0, 0, eps), wp, sdf_data, brick_indices) -
-               sdf_query(pos - float3(0, 0, eps), wp, sdf_data, brick_indices);
+    /* Clamp each SDF probe to ±(2*voxel_size) to prevent brick-boundary
+     * discontinuities (SURFACE→EMPTY returning sdf_scale) from dominating
+     * the gradient direction.  At a surface hit the true SDF nearby is O(eps),
+     * so values >> eps indicate a cross-brick jump, not a real gradient. */
+    float clamp_range = eps * 2.0f;
+
+    float sp_x = clamp(sdf_query(pos + float3(eps, 0, 0), wp, sdf_data, brick_indices),
+                        -clamp_range, clamp_range);
+    float sn_x = clamp(sdf_query(pos - float3(eps, 0, 0), wp, sdf_data, brick_indices),
+                        -clamp_range, clamp_range);
+    float sp_y = clamp(sdf_query(pos + float3(0, eps, 0), wp, sdf_data, brick_indices),
+                        -clamp_range, clamp_range);
+    float sn_y = clamp(sdf_query(pos - float3(0, eps, 0), wp, sdf_data, brick_indices),
+                        -clamp_range, clamp_range);
+    float sp_z = clamp(sdf_query(pos + float3(0, 0, eps), wp, sdf_data, brick_indices),
+                        -clamp_range, clamp_range);
+    float sn_z = clamp(sdf_query(pos - float3(0, 0, eps), wp, sdf_data, brick_indices),
+                        -clamp_range, clamp_range);
 
     float inv_eps2 = 0.5f / eps;
-    return float3(dx, dy, dz) * inv_eps2;
+    return float3(sp_x - sn_x, sp_y - sn_y, sp_z - sn_z) * inv_eps2;
+}
+
+/**
+ * Safe normalize: returns fallback direction for zero-length vectors.
+ * Metal's normalize() of a zero vector produces NaN.
+ */
+inline float3 safe_normalize(float3 v) {
+    float len = length(v);
+    return (len > 1e-6f) ? (v / len) : float3(0.0f, 0.0f, 1.0f);
 }
 
 /* ============================================================================
@@ -277,6 +298,192 @@ inline bool world_contains(float3 pos, constant WorldParams& wp) {
 }
 
 /* ============================================================================
+ * Output Helpers (fp32 and fp16)
+ * ============================================================================ */
+
+/**
+ * Write raymarch results to an fp32 output buffer.
+ * Handles all output modes: DEPTH, RGB, MATERIAL, DEPTH_NORMAL, DISTANCE.
+ */
+inline void write_output_fp32(device float* output,
+                              uint pixels_per_agent,
+                              uint ray_idx,
+                              uint agent_thread,
+                              bool hit,
+                              float t,
+                              float3 hit_pos,
+                              constant WorldParams& wp,
+                              constant RaymarchParams& rp,
+                              device const char* sdf_data,
+                              device const uchar* material_data,
+                              device const int* brick_indices) {
+    uint out_idx;
+
+    if (rp.output_mode == OUTPUT_MODE_DEPTH) {
+        out_idx = agent_thread * pixels_per_agent + ray_idx;
+        float depth = 1.0f;
+        if (hit && t >= rp.near_clip) {
+            depth = (t - rp.near_clip) * rp.inv_depth_range;
+            depth = clamp(depth, 0.0f, 1.0f);
+        }
+        output[out_idx] = depth;
+    }
+    else if (rp.output_mode == OUTPUT_MODE_RGB) {
+        out_idx = agent_thread * pixels_per_agent * 3 + ray_idx * 3;
+        if (hit && t >= rp.near_clip) {
+            uint mat_id = material_query(hit_pos, wp, material_data, brick_indices);
+            mat_id = min(mat_id, 15u);
+            float3 normal = safe_normalize(sdf_gradient(hit_pos, wp, sdf_data, brick_indices));
+            float ndotl = max(dot(normal, LIGHT_DIR), 0.0f);
+            float lighting = AMBIENT + DIFFUSE * ndotl;
+            output[out_idx + 0] = PALETTE_R[mat_id] * lighting;
+            output[out_idx + 1] = PALETTE_G[mat_id] * lighting;
+            output[out_idx + 2] = PALETTE_B[mat_id] * lighting;
+        } else {
+            output[out_idx + 0] = SKY_COLOR_R;
+            output[out_idx + 1] = SKY_COLOR_G;
+            output[out_idx + 2] = SKY_COLOR_B;
+        }
+    }
+    else if (rp.output_mode == OUTPUT_MODE_MATERIAL) {
+        out_idx = agent_thread * pixels_per_agent + ray_idx;
+        if (hit && t >= rp.near_clip) {
+            uint mat_id = material_query(hit_pos, wp, material_data, brick_indices);
+            output[out_idx] = float(mat_id);
+        } else {
+            output[out_idx] = 0.0f;
+        }
+    }
+    else if (rp.output_mode == OUTPUT_MODE_DEPTH_NORMAL) {
+        out_idx = agent_thread * pixels_per_agent * 4 + ray_idx * 4;
+        if (hit && t >= rp.near_clip) {
+            float depth = (t - rp.near_clip) * rp.inv_depth_range;
+            depth = clamp(depth, 0.0f, 1.0f);
+            float3 normal = safe_normalize(sdf_gradient(hit_pos, wp, sdf_data, brick_indices));
+            output[out_idx + 0] = depth;
+            output[out_idx + 1] = normal.x;
+            output[out_idx + 2] = normal.y;
+            output[out_idx + 3] = normal.z;
+        } else {
+            output[out_idx + 0] = 1.0f;
+            output[out_idx + 1] = 0.0f;
+            output[out_idx + 2] = 0.0f;
+            output[out_idx + 3] = 0.0f;
+        }
+    }
+    else { /* OUTPUT_MODE_DISTANCE */
+        out_idx = agent_thread * pixels_per_agent + ray_idx;
+        output[out_idx] = hit ? t : rp.max_distance;
+    }
+}
+
+/**
+ * Write raymarch results to an fp16 output buffer.
+ * Handles all output modes: DEPTH, RGB, MATERIAL, DISTANCE.
+ */
+inline void write_output_fp16(device half* output_fp16,
+                              uint pixels_per_agent,
+                              uint ray_idx,
+                              uint agent_thread,
+                              bool hit,
+                              float t,
+                              float3 hit_pos,
+                              constant WorldParams& wp,
+                              constant RaymarchParams& rp,
+                              device const char* sdf_data,
+                              device const uchar* material_data,
+                              device const int* brick_indices) {
+    uint out_idx;
+
+    if (rp.output_mode == OUTPUT_MODE_DEPTH) {
+        out_idx = agent_thread * pixels_per_agent + ray_idx;
+        float depth = 1.0f;
+        if (hit && t >= rp.near_clip) {
+            depth = (t - rp.near_clip) * rp.inv_depth_range;
+            depth = clamp(depth, 0.0f, 1.0f);
+        }
+        output_fp16[out_idx] = half(depth);
+    }
+    else if (rp.output_mode == OUTPUT_MODE_RGB) {
+        out_idx = agent_thread * pixels_per_agent * 3 + ray_idx * 3;
+        if (hit && t >= rp.near_clip) {
+            uint mat_id = material_query(hit_pos, wp, material_data, brick_indices);
+            mat_id = min(mat_id, 15u);
+            float3 normal = safe_normalize(sdf_gradient(hit_pos, wp, sdf_data, brick_indices));
+            float ndotl = max(dot(normal, LIGHT_DIR), 0.0f);
+            float lighting = AMBIENT + DIFFUSE * ndotl;
+            output_fp16[out_idx + 0] = half(PALETTE_R[mat_id] * lighting);
+            output_fp16[out_idx + 1] = half(PALETTE_G[mat_id] * lighting);
+            output_fp16[out_idx + 2] = half(PALETTE_B[mat_id] * lighting);
+        } else {
+            output_fp16[out_idx + 0] = half(SKY_COLOR_R);
+            output_fp16[out_idx + 1] = half(SKY_COLOR_G);
+            output_fp16[out_idx + 2] = half(SKY_COLOR_B);
+        }
+    }
+    else if (rp.output_mode == OUTPUT_MODE_MATERIAL) {
+        out_idx = agent_thread * pixels_per_agent + ray_idx;
+        if (hit && t >= rp.near_clip) {
+            uint mat_id = material_query(hit_pos, wp, material_data, brick_indices);
+            output_fp16[out_idx] = half(float(mat_id));
+        } else {
+            output_fp16[out_idx] = half(0.0f);
+        }
+    }
+    else { /* OUTPUT_MODE_DISTANCE */
+        out_idx = agent_thread * pixels_per_agent + ray_idx;
+        output_fp16[out_idx] = hit ? half(t) : half(rp.max_distance);
+    }
+}
+
+/* ============================================================================
+ * Sphere Tracing Helper
+ *
+ * Shared sphere tracing loop used by both fp32 and fp16 kernel variants.
+ * The Metal compiler inlines this at each call site.
+ * ============================================================================ */
+
+static inline bool sphere_trace(float3 origin, float3 dir,
+                                constant RaymarchParams& ray_params,
+                                constant WorldParams& world_params,
+                                device const char* sdf_data,
+                                device const int* brick_indices,
+                                thread float& t, thread float3& hit_pos) {
+    t = 0.0f;
+
+    for (uint step = 0; step < ray_params.max_steps; step++) {
+        float3 pos = origin + dir * t;
+
+        /* Per-thread bounds check (preserves original accuracy) */
+        if (!world_contains(pos, world_params) && t > 0.0f) {
+            break;
+        }
+
+        float dist = sdf_query(pos, world_params, sdf_data, brick_indices);
+
+        /* Hit detection */
+        if (dist < ray_params.hit_dist) {
+            hit_pos = pos;
+            return true;
+        }
+
+        /* Per-thread max distance check */
+        if (t > ray_params.max_distance) {
+            break;
+        }
+
+        /* Step forward */
+        t += max(dist, ray_params.epsilon);
+
+        /* SIMD-group early exit: when all threads in the group are done,
+         * skip remaining iterations. Helps when most rays are sky/miss. */
+        if (simd_all(t > ray_params.max_distance)) break;
+    }
+
+    return false;
+}
+
+/* ============================================================================
  * Unified Raymarch Kernel
  * ============================================================================ */
 
@@ -293,35 +500,35 @@ kernel void raymarch_unified(
     device const float*    quat_z         [[buffer(9)]],
     device const float4*   ray_directions [[buffer(10)]],
     device float*          output         [[buffer(11)]],
-    device const uint*     drone_indices  [[buffer(12)]],
+    device const uint*     agent_indices  [[buffer(12)]],
     constant WorldParams&  world_params   [[buffer(16)]],
     constant RaymarchParams& ray_params   [[buffer(17)]],
     uint3                  gid            [[thread_position_in_grid]])
 {
     /* Thread mapping:
      * gid.x = pixel_x (or ray_idx for LiDAR)
-     * gid.y = pixel_y (or drone_idx for LiDAR 1D)
-     * gid.z = drone_idx (for cameras)
+     * gid.y = pixel_y (or agent_idx for LiDAR 1D)
+     * gid.z = agent_idx (for cameras)
      */
     uint pixel_x = gid.x;
     uint pixel_y = gid.y;
-    uint drone_thread = gid.z;
+    uint agent_thread = gid.z;
 
     /* Bounds check */
     if (pixel_x >= ray_params.image_width ||
         pixel_y >= ray_params.image_height ||
-        drone_thread >= ray_params.drone_count) {
+        agent_thread >= ray_params.agent_count) {
         return;
     }
 
     /* Get actual drone index */
-    uint drone_idx = drone_indices[drone_thread];
+    uint agent_idx = agent_indices[agent_thread];
 
     /* Get drone pose */
-    float3 drone_pos = float3(pos_x[drone_idx], pos_y[drone_idx], pos_z[drone_idx]);
+    float3 agent_pos = float3(pos_x[agent_idx], pos_y[agent_idx], pos_z[agent_idx]);
     /* float4 layout: (x, y, z, w) so that q.xyz = vector part, q.w = scalar part */
-    float4 q = float4(quat_x[drone_idx], quat_y[drone_idx],
-                       quat_z[drone_idx], quat_w[drone_idx]);
+    float4 q = float4(quat_x[agent_idx], quat_y[agent_idx],
+                       quat_z[agent_idx], quat_w[agent_idx]);
 
     /* Get ray direction */
     uint ray_idx = pixel_y * ray_params.image_width + pixel_x;
@@ -329,117 +536,19 @@ kernel void raymarch_unified(
     float3 world_dir = quat_rotate(q, local_dir);
 
     /* Sensor position (no offset for now - offset applied by caller if needed) */
-    float3 origin = drone_pos;
+    float3 origin = agent_pos;
 
     /* ---- Sphere tracing ---- */
-    float t = 0.0f;
-    bool hit = false;
+    float t;
     float3 hit_pos;
-
-    for (uint step = 0; step < ray_params.max_steps; step++) {
-        float3 pos = origin + world_dir * t;
-
-        /* Per-thread bounds check (preserves original accuracy) */
-        if (!world_contains(pos, world_params) && t > 0.0f) {
-            break;
-        }
-
-        float dist = sdf_query(pos, world_params, sdf_data, brick_indices);
-
-        /* Hit detection */
-        if (dist < ray_params.hit_dist) {
-            hit = true;
-            hit_pos = pos;
-            break;
-        }
-
-        /* Per-thread max distance check */
-        if (t > ray_params.max_distance) {
-            break;
-        }
-
-        /* Step forward */
-        t += max(dist, ray_params.epsilon);
-
-        /* SIMD-group early exit: when all threads in the group are done,
-         * skip remaining iterations. Helps when most rays are sky/miss. */
-        if (simd_all(t > ray_params.max_distance)) break;
-    }
+    bool hit = sphere_trace(origin, world_dir, ray_params, world_params,
+                            sdf_data, brick_indices, t, hit_pos);
 
     /* ---- Output based on mode ---- */
-    uint pixels_per_drone = ray_params.image_width * ray_params.image_height;
-    uint out_idx;
-
-    if (ray_params.output_mode == OUTPUT_MODE_DEPTH) {
-        out_idx = drone_thread * pixels_per_drone + ray_idx;
-
-        float depth = 1.0f;
-        if (hit && t >= ray_params.near_clip) {
-            depth = (t - ray_params.near_clip) * ray_params.inv_depth_range;
-            depth = clamp(depth, 0.0f, 1.0f);
-        }
-        output[out_idx] = depth;
-    }
-    else if (ray_params.output_mode == OUTPUT_MODE_RGB) {
-        out_idx = drone_thread * pixels_per_drone * 3 + ray_idx * 3;
-
-        if (hit && t >= ray_params.near_clip) {
-            /* Get material and normal */
-            uint mat_id = material_query(hit_pos, world_params, material_data, brick_indices);
-            mat_id = min(mat_id, 15u);
-
-            float3 normal = normalize(sdf_gradient(hit_pos, world_params, sdf_data, brick_indices));
-
-            /* Phong shading */
-            float ndotl = max(dot(normal, LIGHT_DIR), 0.0f);
-            float lighting = AMBIENT + DIFFUSE * ndotl;
-
-            output[out_idx + 0] = PALETTE_R[mat_id] * lighting;
-            output[out_idx + 1] = PALETTE_G[mat_id] * lighting;
-            output[out_idx + 2] = PALETTE_B[mat_id] * lighting;
-        } else {
-            output[out_idx + 0] = SKY_COLOR_R;
-            output[out_idx + 1] = SKY_COLOR_G;
-            output[out_idx + 2] = SKY_COLOR_B;
-        }
-    }
-    else if (ray_params.output_mode == OUTPUT_MODE_MATERIAL) {
-        out_idx = drone_thread * pixels_per_drone + ray_idx;
-
-        if (hit && t >= ray_params.near_clip) {
-            uint mat_id = material_query(hit_pos, world_params, material_data, brick_indices);
-            output[out_idx] = float(mat_id);
-        } else {
-            output[out_idx] = 0.0f;
-        }
-    }
-    else if (ray_params.output_mode == OUTPUT_MODE_DEPTH_NORMAL) {
-        out_idx = drone_thread * pixels_per_drone * 4 + ray_idx * 4;
-
-        if (hit && t >= ray_params.near_clip) {
-            float depth = (t - ray_params.near_clip) * ray_params.inv_depth_range;
-            depth = clamp(depth, 0.0f, 1.0f);
-            float3 normal = normalize(sdf_gradient(hit_pos, world_params, sdf_data, brick_indices));
-            output[out_idx + 0] = depth;
-            output[out_idx + 1] = normal.x;
-            output[out_idx + 2] = normal.y;
-            output[out_idx + 3] = normal.z;
-        } else {
-            output[out_idx + 0] = 1.0f;
-            output[out_idx + 1] = 0.0f;
-            output[out_idx + 2] = 0.0f;
-            output[out_idx + 3] = 0.0f;
-        }
-    }
-    else { /* OUTPUT_MODE_DISTANCE */
-        out_idx = drone_thread * pixels_per_drone + ray_idx;
-
-        if (hit) {
-            output[out_idx] = t;
-        } else {
-            output[out_idx] = ray_params.max_distance;
-        }
-    }
+    uint pixels_per_agent = ray_params.image_width * ray_params.image_height;
+    write_output_fp32(output, pixels_per_agent, ray_idx, agent_thread,
+                      hit, t, hit_pos, world_params, ray_params,
+                      sdf_data, material_data, brick_indices);
 }
 
 /* ============================================================================
@@ -462,99 +571,42 @@ kernel void raymarch_unified_fp16(
     device const float*    quat_z         [[buffer(9)]],
     device const float4*   ray_directions [[buffer(10)]],
     device half*           output_fp16    [[buffer(11)]],
-    device const uint*     drone_indices  [[buffer(12)]],
+    device const uint*     agent_indices  [[buffer(12)]],
     constant WorldParams&  world_params   [[buffer(16)]],
     constant RaymarchParams& ray_params   [[buffer(17)]],
     uint3                  gid            [[thread_position_in_grid]])
 {
     uint pixel_x = gid.x;
     uint pixel_y = gid.y;
-    uint drone_thread = gid.z;
+    uint agent_thread = gid.z;
 
     if (pixel_x >= ray_params.image_width ||
         pixel_y >= ray_params.image_height ||
-        drone_thread >= ray_params.drone_count) {
+        agent_thread >= ray_params.agent_count) {
         return;
     }
 
-    uint drone_idx = drone_indices[drone_thread];
-    float3 drone_pos = float3(pos_x[drone_idx], pos_y[drone_idx], pos_z[drone_idx]);
-    float4 q = float4(quat_x[drone_idx], quat_y[drone_idx],
-                       quat_z[drone_idx], quat_w[drone_idx]);
+    uint agent_idx = agent_indices[agent_thread];
+    float3 agent_pos = float3(pos_x[agent_idx], pos_y[agent_idx], pos_z[agent_idx]);
+    float4 q = float4(quat_x[agent_idx], quat_y[agent_idx],
+                       quat_z[agent_idx], quat_w[agent_idx]);
 
     uint ray_idx = pixel_y * ray_params.image_width + pixel_x;
     float3 local_dir = ray_directions[ray_idx].xyz;
     float3 world_dir = quat_rotate(q, local_dir);
-    float3 origin = drone_pos;
+    float3 origin = agent_pos;
 
-    /* Sphere tracing (identical to FP32 variant) */
-    float t = 0.0f;
-    bool hit = false;
+    /* Sphere tracing (shared helper, identical to FP32 variant) */
+    float t;
     float3 hit_pos;
-
-    for (uint step = 0; step < ray_params.max_steps; step++) {
-        float3 pos = origin + world_dir * t;
-
-        if (!world_contains(pos, world_params) && t > 0.0f) break;
-
-        float dist = sdf_query(pos, world_params, sdf_data, brick_indices);
-
-        if (dist < ray_params.hit_dist) {
-            hit = true;
-            hit_pos = pos;
-            break;
-        }
-
-        if (t > ray_params.max_distance) break;
-
-        t += max(dist, ray_params.epsilon);
-
-        if (simd_all(t > ray_params.max_distance)) break;
-    }
+    bool hit = sphere_trace(origin, world_dir, ray_params, world_params,
+                            sdf_data, brick_indices, t, hit_pos);
 
     /* Output in half precision */
-    uint pixels_per_drone = ray_params.image_width * ray_params.image_height;
-    uint out_idx;
-
-    if (ray_params.output_mode == OUTPUT_MODE_DEPTH) {
-        out_idx = drone_thread * pixels_per_drone + ray_idx;
-        float depth = 1.0f;
-        if (hit && t >= ray_params.near_clip) {
-            depth = (t - ray_params.near_clip) * ray_params.inv_depth_range;
-            depth = clamp(depth, 0.0f, 1.0f);
-        }
-        output_fp16[out_idx] = half(depth);
-    }
-    else if (ray_params.output_mode == OUTPUT_MODE_RGB) {
-        out_idx = drone_thread * pixels_per_drone * 3 + ray_idx * 3;
-        if (hit && t >= ray_params.near_clip) {
-            uint mat_id = material_query(hit_pos, world_params, material_data, brick_indices);
-            mat_id = min(mat_id, 15u);
-            float3 normal = normalize(sdf_gradient(hit_pos, world_params, sdf_data, brick_indices));
-            float ndotl = max(dot(normal, LIGHT_DIR), 0.0f);
-            float lighting = AMBIENT + DIFFUSE * ndotl;
-            output_fp16[out_idx + 0] = half(PALETTE_R[mat_id] * lighting);
-            output_fp16[out_idx + 1] = half(PALETTE_G[mat_id] * lighting);
-            output_fp16[out_idx + 2] = half(PALETTE_B[mat_id] * lighting);
-        } else {
-            output_fp16[out_idx + 0] = half(SKY_COLOR_R);
-            output_fp16[out_idx + 1] = half(SKY_COLOR_G);
-            output_fp16[out_idx + 2] = half(SKY_COLOR_B);
-        }
-    }
-    else if (ray_params.output_mode == OUTPUT_MODE_MATERIAL) {
-        out_idx = drone_thread * pixels_per_drone + ray_idx;
-        if (hit && t >= ray_params.near_clip) {
-            uint mat_id = material_query(hit_pos, world_params, material_data, brick_indices);
-            output_fp16[out_idx] = half(float(mat_id));
-        } else {
-            output_fp16[out_idx] = half(0.0f);
-        }
-    }
-    else { /* OUTPUT_MODE_DISTANCE */
-        out_idx = drone_thread * pixels_per_drone + ray_idx;
-        output_fp16[out_idx] = hit ? half(t) : half(ray_params.max_distance);
-    }
+    uint pixels_per_agent = ray_params.image_width * ray_params.image_height;
+    write_output_fp16(output_fp16, pixels_per_agent, ray_idx, agent_thread,
+                      hit, t, hit_pos, world_params, ray_params,
+                      sdf_data, material_data, brick_indices);
 }
 
 /* ============================================================================
@@ -581,7 +633,7 @@ kernel void raymarch_unified_tiled(
     device const float*    quat_z         [[buffer(9)]],
     device const float4*   ray_directions [[buffer(10)]],
     device float*          output         [[buffer(11)]],
-    device const uint*     drone_indices  [[buffer(12)]],
+    device const uint*     agent_indices  [[buffer(12)]],
     constant WorldParams&  world_params   [[buffer(16)]],
     constant RaymarchParams& ray_params   [[buffer(17)]],
     uint3                  gid            [[thread_position_in_grid]],
@@ -595,18 +647,18 @@ kernel void raymarch_unified_tiled(
 
     uint pixel_x = gid.x;
     uint pixel_y = gid.y;
-    uint drone_thread = gid.z;
+    uint agent_thread = gid.z;
 
     if (pixel_x >= ray_params.image_width ||
         pixel_y >= ray_params.image_height ||
-        drone_thread >= ray_params.drone_count) {
+        agent_thread >= ray_params.agent_count) {
         return;
     }
 
-    uint drone_idx = drone_indices[drone_thread];
-    float3 drone_pos = float3(pos_x[drone_idx], pos_y[drone_idx], pos_z[drone_idx]);
-    float4 q = float4(quat_x[drone_idx], quat_y[drone_idx],
-                       quat_z[drone_idx], quat_w[drone_idx]);
+    uint agent_idx = agent_indices[agent_thread];
+    float3 agent_pos = float3(pos_x[agent_idx], pos_y[agent_idx], pos_z[agent_idx]);
+    float4 q = float4(quat_x[agent_idx], quat_y[agent_idx],
+                       quat_z[agent_idx], quat_w[agent_idx]);
 
     /* Pre-cache: Load brick at drone position into shared memory.
      * Most initial ray steps will be near the drone, so this covers
@@ -618,9 +670,9 @@ kernel void raymarch_unified_tiled(
         }
 
         /* Cache brick at drone position */
-        float rel_x = drone_pos.x - world_params.world_min_x;
-        float rel_y = drone_pos.y - world_params.world_min_y;
-        float rel_z = drone_pos.z - world_params.world_min_z;
+        float rel_x = agent_pos.x - world_params.world_min_x;
+        float rel_y = agent_pos.y - world_params.world_min_y;
+        float rel_z = agent_pos.z - world_params.world_min_z;
         int bx = (int)floor(rel_x * world_params.inv_brick_size);
         int by = (int)floor(rel_y * world_params.inv_brick_size);
         int bz = (int)floor(rel_z * world_params.inv_brick_size);
@@ -652,7 +704,7 @@ kernel void raymarch_unified_tiled(
     uint ray_idx = pixel_y * ray_params.image_width + pixel_x;
     float3 local_dir = ray_directions[ray_idx].xyz;
     float3 world_dir = quat_rotate(q, local_dir);
-    float3 origin = drone_pos;
+    float3 origin = agent_pos;
 
     /* Sphere tracing with tile-cached SDF for the pre-loaded brick */
     float t = 0.0f;
@@ -705,9 +757,17 @@ kernel void raymarch_unified_tiled(
                             float lx = (pos.x - brick_ox) * world_params.inv_voxel_size;
                             float ly = (pos.y - brick_oy) * world_params.inv_voxel_size;
                             float lz = (pos.z - brick_oz) * world_params.inv_voxel_size;
-                            int x0 = clamp((int)floor(lx), 0, GPU_BRICK_MASK - 1);
-                            int y0 = clamp((int)floor(ly), 0, GPU_BRICK_MASK - 1);
-                            int z0 = clamp((int)floor(lz), 0, GPU_BRICK_MASK - 1);
+                            int x0 = (int)floor(lx);
+                            int y0 = (int)floor(ly);
+                            int z0 = (int)floor(lz);
+                            if (x0 < 0 || x0 > GPU_BRICK_MASK - 1 ||
+                                y0 < 0 || y0 > GPU_BRICK_MASK - 1 ||
+                                z0 < 0 || z0 > GPU_BRICK_MASK - 1) {
+                                /* Cross-brick: fall back to global query with correct interpolation */
+                                dist = sdf_query(pos, world_params, sdf_data, brick_indices);
+                                cached = true;
+                                break;
+                            }
                             float fx = lx - float(x0), fy = ly - float(y0), fz = lz - float(z0);
                             int x1 = x0+1, y1 = y0+1, z1 = z0+1;
                             int iy0 = y0<<GPU_BRICK_SHIFT, iy1 = y1<<GPU_BRICK_SHIFT;
@@ -749,63 +809,8 @@ kernel void raymarch_unified_tiled(
     }
 
     /* Output (same as standard kernel) */
-    uint pixels_per_drone = ray_params.image_width * ray_params.image_height;
-    uint out_idx;
-
-    if (ray_params.output_mode == OUTPUT_MODE_DEPTH) {
-        out_idx = drone_thread * pixels_per_drone + ray_idx;
-        float depth = 1.0f;
-        if (hit && t >= ray_params.near_clip) {
-            depth = (t - ray_params.near_clip) * ray_params.inv_depth_range;
-            depth = clamp(depth, 0.0f, 1.0f);
-        }
-        output[out_idx] = depth;
-    }
-    else if (ray_params.output_mode == OUTPUT_MODE_RGB) {
-        out_idx = drone_thread * pixels_per_drone * 3 + ray_idx * 3;
-        if (hit && t >= ray_params.near_clip) {
-            uint mat_id = material_query(hit_pos, world_params, material_data, brick_indices);
-            mat_id = min(mat_id, 15u);
-            float3 normal = normalize(sdf_gradient(hit_pos, world_params, sdf_data, brick_indices));
-            float ndotl = max(dot(normal, LIGHT_DIR), 0.0f);
-            float lighting = AMBIENT + DIFFUSE * ndotl;
-            output[out_idx + 0] = PALETTE_R[mat_id] * lighting;
-            output[out_idx + 1] = PALETTE_G[mat_id] * lighting;
-            output[out_idx + 2] = PALETTE_B[mat_id] * lighting;
-        } else {
-            output[out_idx + 0] = SKY_COLOR_R;
-            output[out_idx + 1] = SKY_COLOR_G;
-            output[out_idx + 2] = SKY_COLOR_B;
-        }
-    }
-    else if (ray_params.output_mode == OUTPUT_MODE_MATERIAL) {
-        out_idx = drone_thread * pixels_per_drone + ray_idx;
-        if (hit && t >= ray_params.near_clip) {
-            uint mat_id = material_query(hit_pos, world_params, material_data, brick_indices);
-            output[out_idx] = float(mat_id);
-        } else {
-            output[out_idx] = 0.0f;
-        }
-    }
-    else if (ray_params.output_mode == OUTPUT_MODE_DEPTH_NORMAL) {
-        out_idx = drone_thread * pixels_per_drone * 4 + ray_idx * 4;
-        if (hit && t >= ray_params.near_clip) {
-            float depth = (t - ray_params.near_clip) * ray_params.inv_depth_range;
-            depth = clamp(depth, 0.0f, 1.0f);
-            float3 normal = normalize(sdf_gradient(hit_pos, world_params, sdf_data, brick_indices));
-            output[out_idx + 0] = depth;
-            output[out_idx + 1] = normal.x;
-            output[out_idx + 2] = normal.y;
-            output[out_idx + 3] = normal.z;
-        } else {
-            output[out_idx + 0] = 1.0f;
-            output[out_idx + 1] = 0.0f;
-            output[out_idx + 2] = 0.0f;
-            output[out_idx + 3] = 0.0f;
-        }
-    }
-    else { /* OUTPUT_MODE_DISTANCE */
-        out_idx = drone_thread * pixels_per_drone + ray_idx;
-        output[out_idx] = hit ? t : ray_params.max_distance;
-    }
+    uint pixels_per_agent = ray_params.image_width * ray_params.image_height;
+    write_output_fp32(output, pixels_per_agent, ray_idx, agent_thread,
+                      hit, t, hit_pos, world_params, ray_params,
+                      sdf_data, material_data, brick_indices);
 }

@@ -10,9 +10,9 @@
  */
 
 #include "../include/drone_state.h"
+#include "platform_quadcopter.h"
+#include "../../foundation/include/bench_harness.h"
 #include <stdio.h>
-#include <time.h>
-#include <stdint.h>
 #include <string.h>
 
 /* Benchmark parameters */
@@ -20,58 +20,11 @@
 #define WARMUP_ITERATIONS 100
 #define DRONE_COUNT 1024
 
-/* High-resolution timing */
-#if defined(__x86_64__) || defined(_M_X64)
-
-static inline uint64_t get_cycles(void) {
-    uint32_t lo, hi;
-    __asm__ volatile ("rdtsc" : "=a"(lo), "=d"(hi));
-    return ((uint64_t)hi << 32) | lo;
-}
-
-static inline double cycles_to_us(uint64_t cycles, double ghz) {
-    return (double)cycles / (ghz * 1000.0);
-}
-
-#elif defined(__aarch64__) || defined(_M_ARM64)
-
-static inline uint64_t get_cycles(void) {
-    uint64_t val;
-    __asm__ volatile ("mrs %0, cntvct_el0" : "=r"(val));
-    return val;
-}
-
-static inline double cycles_to_us(uint64_t cycles, double ghz) {
-    /* ARM counter frequency is typically lower than CPU frequency */
-    /* Approximate based on system counter, not actual cycles */
-    return (double)cycles / (ghz * 1000.0);
-}
-
-#else
-
-/* Fallback using clock_gettime */
-static inline uint64_t get_cycles(void) {
-    struct timespec ts;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
-    return (uint64_t)ts.tv_sec * 1000000000ULL + ts.tv_nsec;
-}
-
-static inline double cycles_to_us(uint64_t ns, double ghz) {
-    (void)ghz;  /* Unused for timespec fallback */
-    return (double)ns / 1000.0;
-}
-
-#endif
-
-/* Prevent compiler from optimizing away results */
-static volatile void* sink;
-static volatile float float_sink;
-
 /* ============================================================================
  * Benchmark Functions
  * ============================================================================ */
 
-static void bench_state_creation(double cpu_ghz) {
+static void bench_state_creation(void) {
     printf("\n--- State Creation Benchmark ---\n");
     printf("Creating %d drones %d times\n", DRONE_COUNT, BENCH_ITERATIONS);
 
@@ -84,38 +37,37 @@ static void bench_state_creation(double cpu_ghz) {
     /* Warmup */
     for (int i = 0; i < WARMUP_ITERATIONS; i++) {
         arena_reset(arena);
-        DroneStateSOA* states = drone_state_create(arena, DRONE_COUNT);
-        sink = states;
+        PlatformStateSOA* states = platform_state_create(arena, DRONE_COUNT, QUAD_STATE_EXT_COUNT);
+        bench_ptr_sink = states;
     }
 
     /* Benchmark */
-    uint64_t start = get_cycles();
+    double start = bench_time_ns();
     for (int i = 0; i < BENCH_ITERATIONS; i++) {
         arena_reset(arena);
-        DroneStateSOA* states = drone_state_create(arena, DRONE_COUNT);
-        sink = states;
+        PlatformStateSOA* states = platform_state_create(arena, DRONE_COUNT, QUAD_STATE_EXT_COUNT);
+        bench_ptr_sink = states;
     }
-    uint64_t end = get_cycles();
+    double elapsed = bench_time_ns() - start;
 
-    uint64_t total_cycles = end - start;
-    double avg_cycles = (double)total_cycles / BENCH_ITERATIONS;
-    double avg_us = cycles_to_us(avg_cycles, cpu_ghz);
-    double avg_ms = avg_us / 1000.0;
+    double per_op_ns = elapsed / BENCH_ITERATIONS;
+    double per_op_us = per_op_ns / 1000.0;
+    double per_op_ms = per_op_us / 1000.0;
+    double cycles = bench_ns_to_cycles(per_op_ns);
 
-    printf("  Total cycles: %llu\n", (unsigned long long)total_cycles);
-    printf("  Avg cycles: %.1f\n", avg_cycles);
-    printf("  Avg time: %.3f us (%.6f ms)\n", avg_us, avg_ms);
-    printf("  Target: <1 ms - %s\n", avg_ms < 1.0 ? "PASS" : "FAIL");
+    printf("  Avg: %.2f ns (~%.1f cycles, %.3f us, %.6f ms)\n",
+           per_op_ns, cycles, per_op_us, per_op_ms);
+    printf("  Target: <1 ms - %s\n", per_op_ms < 1.0 ? "PASS" : "FAIL");
 
     arena_destroy(arena);
 }
 
-static void bench_state_zero(double cpu_ghz) {
+static void bench_state_zero(void) {
     printf("\n--- State Zero Benchmark ---\n");
     printf("Zeroing %d drones %d times\n", DRONE_COUNT, BENCH_ITERATIONS);
 
     Arena* arena = arena_create(1024 * 1024);
-    DroneStateSOA* states = drone_state_create(arena, DRONE_COUNT);
+    PlatformStateSOA* states = platform_state_create(arena, DRONE_COUNT, QUAD_STATE_EXT_COUNT);
     if (!states) {
         printf("ERROR: Failed to create states\n");
         arena_destroy(arena);
@@ -124,35 +76,35 @@ static void bench_state_zero(double cpu_ghz) {
 
     /* Warmup */
     for (int i = 0; i < WARMUP_ITERATIONS; i++) {
-        drone_state_zero(states);
+        platform_state_zero(states);
     }
 
     /* Benchmark */
-    uint64_t start = get_cycles();
+    double start = bench_time_ns();
     for (int i = 0; i < BENCH_ITERATIONS; i++) {
-        drone_state_zero(states);
+        platform_state_zero(states);
     }
-    uint64_t end = get_cycles();
+    double elapsed = bench_time_ns() - start;
 
-    uint64_t total_cycles = end - start;
-    double avg_cycles = (double)total_cycles / BENCH_ITERATIONS;
-    double cycles_per_drone = avg_cycles / DRONE_COUNT;
-    double avg_us = cycles_to_us(avg_cycles, cpu_ghz);
+    double per_op_ns = elapsed / BENCH_ITERATIONS;
+    double per_op_us = per_op_ns / 1000.0;
+    double cycles = bench_ns_to_cycles(per_op_ns);
+    double cycles_per_drone = cycles / DRONE_COUNT;
 
-    printf("  Total cycles: %llu\n", (unsigned long long)total_cycles);
-    printf("  Avg cycles: %.1f (%.2f per drone)\n", avg_cycles, cycles_per_drone);
-    printf("  Avg time: %.3f us\n", avg_us);
-    printf("  Target: <100 us - %s\n", avg_us < 100.0 ? "PASS" : "FAIL");
+    printf("  Avg: %.2f ns (~%.1f cycles, %.2f per drone)\n",
+           per_op_ns, cycles, cycles_per_drone);
+    printf("  Avg time: %.3f us\n", per_op_us);
+    printf("  Target: <100 us - %s\n", per_op_us < 100.0 ? "PASS" : "FAIL");
 
     arena_destroy(arena);
 }
 
-static void bench_batch_reset(double cpu_ghz) {
+static void bench_batch_reset(void) {
     printf("\n--- Batch Reset Benchmark ---\n");
     printf("Resetting %d scattered drones %d times\n", DRONE_COUNT, BENCH_ITERATIONS);
 
     Arena* arena = arena_create(2 * 1024 * 1024);
-    DroneStateSOA* states = drone_state_create(arena, DRONE_COUNT);
+    PlatformStateSOA* states = platform_state_create(arena, DRONE_COUNT, QUAD_STATE_EXT_COUNT);
     if (!states) {
         printf("ERROR: Failed to create states\n");
         arena_destroy(arena);
@@ -165,41 +117,39 @@ static void bench_batch_reset(double cpu_ghz) {
     Quat* orientations = arena_alloc_array(arena, Quat, DRONE_COUNT);
 
     for (uint32_t i = 0; i < DRONE_COUNT; i++) {
-        indices[i] = i;  /* Sequential but simulates scattered access */
+        indices[i] = i;
         positions[i] = VEC3((float)i * 0.1f, (float)i * 0.2f, 1.0f);
         orientations[i] = QUAT_IDENTITY;
     }
 
     /* Warmup */
     for (int i = 0; i < WARMUP_ITERATIONS; i++) {
-        drone_state_reset_batch(states, indices, positions, orientations, DRONE_COUNT);
+        rigid_body_state_reset_batch(&states->rigid_body, indices, positions, orientations, DRONE_COUNT);
     }
 
     /* Benchmark */
-    uint64_t start = get_cycles();
+    double start = bench_time_ns();
     for (int i = 0; i < BENCH_ITERATIONS; i++) {
-        drone_state_reset_batch(states, indices, positions, orientations, DRONE_COUNT);
+        rigid_body_state_reset_batch(&states->rigid_body, indices, positions, orientations, DRONE_COUNT);
     }
-    uint64_t end = get_cycles();
+    double elapsed = bench_time_ns() - start;
 
-    uint64_t total_cycles = end - start;
-    double avg_cycles = (double)total_cycles / BENCH_ITERATIONS;
-    double avg_us = cycles_to_us(avg_cycles, cpu_ghz);
+    double per_op_ns = elapsed / BENCH_ITERATIONS;
+    double per_op_us = per_op_ns / 1000.0;
+    double cycles = bench_ns_to_cycles(per_op_ns);
 
-    printf("  Total cycles: %llu\n", (unsigned long long)total_cycles);
-    printf("  Avg cycles: %.1f\n", avg_cycles);
-    printf("  Avg time: %.3f us\n", avg_us);
-    printf("  Target: <500 us - %s\n", avg_us < 500.0 ? "PASS" : "FAIL");
+    printf("  Avg: %.2f ns (~%.1f cycles, %.3f us)\n", per_op_ns, cycles, per_op_us);
+    printf("  Target: <500 us - %s\n", per_op_us < 500.0 ? "PASS" : "FAIL");
 
     arena_destroy(arena);
 }
 
-static void bench_single_get(double cpu_ghz) {
+static void bench_single_get(void) {
     printf("\n--- Single Get Benchmark ---\n");
     printf("Getting single drone state %d times\n", BENCH_ITERATIONS);
 
     Arena* arena = arena_create(1024 * 1024);
-    DroneStateSOA* states = drone_state_create(arena, DRONE_COUNT);
+    PlatformStateSOA* states = platform_state_create(arena, DRONE_COUNT, QUAD_STATE_EXT_COUNT);
     if (!states) {
         printf("ERROR: Failed to create states\n");
         arena_destroy(arena);
@@ -207,90 +157,83 @@ static void bench_single_get(double cpu_ghz) {
     }
 
     /* Set some values so we're not just reading zeros */
-    for (uint32_t i = 0; i < states->capacity; i++) {
-        states->pos_x[i] = (float)i;
-        states->pos_y[i] = (float)i * 2;
-        states->pos_z[i] = (float)i * 3;
+    for (uint32_t i = 0; i < states->rigid_body.capacity; i++) {
+        states->rigid_body.pos_x[i] = (float)i;
+        states->rigid_body.pos_y[i] = (float)i * 2;
+        states->rigid_body.pos_z[i] = (float)i * 3;
     }
 
-    volatile DroneStateAoS result;
+    volatile PlatformStateAoS result;
 
     /* Warmup */
     for (int i = 0; i < WARMUP_ITERATIONS; i++) {
-        result = drone_state_get(states, i % DRONE_COUNT);
-        float_sink = result.position.x;
+        result = platform_state_get(states, i % DRONE_COUNT);
+        bench_float_sink = result.position.x;
     }
 
-    /* Benchmark - access sequential indices to measure cache-friendly access */
-    uint64_t start = get_cycles();
+    /* Benchmark */
+    double start = bench_time_ns();
     for (int i = 0; i < BENCH_ITERATIONS; i++) {
-        result = drone_state_get(states, i % DRONE_COUNT);
-        float_sink = result.position.x;  /* Prevent optimization */
+        result = platform_state_get(states, i % DRONE_COUNT);
+        bench_float_sink = result.position.x;
     }
-    uint64_t end = get_cycles();
+    double elapsed = bench_time_ns() - start;
 
-    uint64_t total_cycles = end - start;
-    double avg_cycles = (double)total_cycles / BENCH_ITERATIONS;
-    double avg_ns = cycles_to_us(avg_cycles, cpu_ghz) * 1000.0;
+    double per_op_ns = elapsed / BENCH_ITERATIONS;
+    double cycles = bench_ns_to_cycles(per_op_ns);
 
-    printf("  Total cycles: %llu\n", (unsigned long long)total_cycles);
-    printf("  Avg cycles: %.1f\n", avg_cycles);
-    printf("  Avg time: %.1f ns\n", avg_ns);
-    printf("  Target: <50 ns - %s\n", avg_ns < 50.0 ? "PASS" : "UNCERTAIN (depends on CPU)");
+    printf("  Avg: %.2f ns (~%.1f cycles)\n", per_op_ns, cycles);
+    printf("  Target: <50 ns - %s\n", per_op_ns < 50.0 ? "PASS" : "UNCERTAIN (depends on CPU)");
 
     arena_destroy(arena);
 }
 
-static void bench_single_set(double cpu_ghz) {
+static void bench_single_set(void) {
     printf("\n--- Single Set Benchmark ---\n");
     printf("Setting single drone state %d times\n", BENCH_ITERATIONS);
 
     Arena* arena = arena_create(1024 * 1024);
-    DroneStateSOA* states = drone_state_create(arena, DRONE_COUNT);
+    PlatformStateSOA* states = platform_state_create(arena, DRONE_COUNT, QUAD_STATE_EXT_COUNT);
     if (!states) {
         printf("ERROR: Failed to create states\n");
         arena_destroy(arena);
         return;
     }
 
-    DroneStateAoS state = {
+    PlatformStateAoS state = {
         .position = VEC3(1.0f, 2.0f, 3.0f),
         .velocity = VEC3(0.1f, 0.2f, 0.3f),
         .orientation = QUAT_IDENTITY,
         .omega = VEC3(0.01f, 0.02f, 0.03f),
-        .rpm = {1000.0f, 1100.0f, 1200.0f, 1300.0f}
     };
 
     /* Warmup */
     for (int i = 0; i < WARMUP_ITERATIONS; i++) {
-        drone_state_set(states, i % DRONE_COUNT, &state);
+        platform_state_set(states, i % DRONE_COUNT, &state);
     }
 
     /* Benchmark */
-    uint64_t start = get_cycles();
+    double start = bench_time_ns();
     for (int i = 0; i < BENCH_ITERATIONS; i++) {
-        drone_state_set(states, i % DRONE_COUNT, &state);
+        platform_state_set(states, i % DRONE_COUNT, &state);
     }
-    uint64_t end = get_cycles();
+    double elapsed = bench_time_ns() - start;
 
-    uint64_t total_cycles = end - start;
-    double avg_cycles = (double)total_cycles / BENCH_ITERATIONS;
-    double avg_ns = cycles_to_us(avg_cycles, cpu_ghz) * 1000.0;
+    double per_op_ns = elapsed / BENCH_ITERATIONS;
+    double cycles = bench_ns_to_cycles(per_op_ns);
 
-    printf("  Total cycles: %llu\n", (unsigned long long)total_cycles);
-    printf("  Avg cycles: %.1f\n", avg_cycles);
-    printf("  Avg time: %.1f ns\n", avg_ns);
+    printf("  Avg: %.2f ns (~%.1f cycles)\n", per_op_ns, cycles);
 
     arena_destroy(arena);
 }
 
-static void bench_copy(double cpu_ghz) {
+static void bench_copy(void) {
     printf("\n--- Copy Benchmark ---\n");
     printf("Copying %d drones %d times\n", DRONE_COUNT, BENCH_ITERATIONS);
 
     Arena* arena = arena_create(4 * 1024 * 1024);
-    DroneStateSOA* src = drone_state_create(arena, DRONE_COUNT);
-    DroneStateSOA* dst = drone_state_create(arena, DRONE_COUNT);
+    PlatformStateSOA* src = platform_state_create(arena, DRONE_COUNT, QUAD_STATE_EXT_COUNT);
+    PlatformStateSOA* dst = platform_state_create(arena, DRONE_COUNT, QUAD_STATE_EXT_COUNT);
     if (!src || !dst) {
         printf("ERROR: Failed to create states\n");
         arena_destroy(arena);
@@ -298,31 +241,30 @@ static void bench_copy(double cpu_ghz) {
     }
 
     /* Set source values */
-    for (uint32_t i = 0; i < src->capacity; i++) {
-        src->pos_x[i] = (float)i;
+    for (uint32_t i = 0; i < src->rigid_body.capacity; i++) {
+        src->rigid_body.pos_x[i] = (float)i;
     }
 
     /* Warmup */
     for (int i = 0; i < WARMUP_ITERATIONS; i++) {
-        drone_state_copy(dst, src, 0, 0, DRONE_COUNT);
+        rigid_body_state_copy(&dst->rigid_body, &src->rigid_body, 0, 0, DRONE_COUNT);
     }
 
     /* Benchmark */
-    uint64_t start = get_cycles();
+    double start = bench_time_ns();
     for (int i = 0; i < BENCH_ITERATIONS; i++) {
-        drone_state_copy(dst, src, 0, 0, DRONE_COUNT);
+        rigid_body_state_copy(&dst->rigid_body, &src->rigid_body, 0, 0, DRONE_COUNT);
     }
-    uint64_t end = get_cycles();
+    double elapsed = bench_time_ns() - start;
 
-    uint64_t total_cycles = end - start;
-    double avg_cycles = (double)total_cycles / BENCH_ITERATIONS;
-    double avg_us = cycles_to_us(avg_cycles, cpu_ghz);
+    double per_op_ns = elapsed / BENCH_ITERATIONS;
+    double per_op_us = per_op_ns / 1000.0;
+    double cycles = bench_ns_to_cycles(per_op_ns);
     double bytes_per_copy = DRONE_COUNT * 17 * sizeof(float);
-    double gbps = (bytes_per_copy * BENCH_ITERATIONS) / ((end - start) / (cpu_ghz * 1e9)) / 1e9;
+    double elapsed_sec = elapsed / 1e9;
+    double gbps = (bytes_per_copy * BENCH_ITERATIONS) / elapsed_sec / 1e9;
 
-    printf("  Total cycles: %llu\n", (unsigned long long)total_cycles);
-    printf("  Avg cycles: %.1f\n", avg_cycles);
-    printf("  Avg time: %.3f us\n", avg_us);
+    printf("  Avg: %.2f ns (~%.1f cycles, %.3f us)\n", per_op_ns, cycles, per_op_us);
     printf("  Throughput: ~%.1f GB/s\n", gbps);
 
     arena_destroy(arena);
@@ -331,9 +273,9 @@ static void bench_copy(double cpu_ghz) {
 static void bench_memory_usage(void) {
     printf("\n--- Memory Usage ---\n");
 
-    size_t state_size = drone_state_memory_size(DRONE_COUNT);
-    size_t params_size = drone_params_memory_size(DRONE_COUNT);
-    size_t episode_size = sizeof(DroneEpisodeData) * DRONE_COUNT;
+    size_t state_size = platform_state_memory_size(DRONE_COUNT, QUAD_STATE_EXT_COUNT);
+    size_t params_size = platform_params_memory_size(DRONE_COUNT, QUAD_PARAMS_EXT_COUNT);
+    size_t episode_size = sizeof(AgentEpisodeData) * DRONE_COUNT;
     size_t total_size = state_size + params_size + episode_size;
 
     printf("  State (%d drones): %zu bytes (%.1f KB)\n",
@@ -348,18 +290,18 @@ static void bench_memory_usage(void) {
     printf("\n  Per-drone memory:\n");
     printf("    State: %.1f bytes (target: 68)\n", (float)state_size / DRONE_COUNT);
     printf("    Params: %.1f bytes (target: 60)\n", (float)params_size / DRONE_COUNT);
-    printf("    Episode: %zu bytes (target: 28)\n", sizeof(DroneEpisodeData));
+    printf("    Episode: %zu bytes (target: 28)\n", sizeof(AgentEpisodeData));
 
     printf("\n  Target: State <70 KB for 1024 drones - %s\n",
            state_size <= 70 * 1024 ? "PASS" : "FAIL");
 }
 
-static void bench_validation(double cpu_ghz) {
+static void bench_validation(void) {
     printf("\n--- Validation Benchmark ---\n");
     printf("Validating single drone %d times\n", BENCH_ITERATIONS);
 
     Arena* arena = arena_create(1024 * 1024);
-    DroneStateSOA* states = drone_state_create(arena, DRONE_COUNT);
+    PlatformStateSOA* states = platform_state_create(arena, DRONE_COUNT, QUAD_STATE_EXT_COUNT);
     if (!states) {
         printf("ERROR: Failed to create states\n");
         arena_destroy(arena);
@@ -370,24 +312,22 @@ static void bench_validation(double cpu_ghz) {
 
     /* Warmup */
     for (int i = 0; i < WARMUP_ITERATIONS; i++) {
-        result = drone_state_validate(states, i % DRONE_COUNT);
+        result = platform_state_validate(states, i % DRONE_COUNT);
     }
 
     /* Benchmark */
-    uint64_t start = get_cycles();
+    double start = bench_time_ns();
     for (int i = 0; i < BENCH_ITERATIONS; i++) {
-        result = drone_state_validate(states, i % DRONE_COUNT);
+        result = platform_state_validate(states, i % DRONE_COUNT);
     }
-    uint64_t end = get_cycles();
+    double elapsed = bench_time_ns() - start;
 
-    (void)result;  /* Suppress unused warning */
+    (void)result;
 
-    uint64_t total_cycles = end - start;
-    double avg_cycles = (double)total_cycles / BENCH_ITERATIONS;
-    double avg_ns = cycles_to_us(avg_cycles, cpu_ghz) * 1000.0;
+    double per_op_ns = elapsed / BENCH_ITERATIONS;
+    double cycles = bench_ns_to_cycles(per_op_ns);
 
-    printf("  Avg cycles: %.1f\n", avg_cycles);
-    printf("  Avg time: %.1f ns\n", avg_ns);
+    printf("  Avg: %.2f ns (~%.1f cycles)\n", per_op_ns, cycles);
 
     arena_destroy(arena);
 }
@@ -400,25 +340,16 @@ int main(void) {
     printf("=== Drone State Module Benchmarks ===\n");
     printf("Drone count: %d\n", DRONE_COUNT);
     printf("Iterations: %d\n", BENCH_ITERATIONS);
-
-    /* Estimate CPU frequency (rough approximation) */
-    /* For accurate results, this should be calibrated per-system */
-#if defined(__aarch64__) || defined(_M_ARM64)
-    double cpu_ghz = 3.0;  /* Approximate for Apple Silicon / ARM64 */
-    printf("Platform: ARM64 (estimated %.1f GHz counter)\n", cpu_ghz);
-#else
-    double cpu_ghz = 3.0;  /* Approximate for modern x86_64 */
-    printf("Platform: x86_64 (estimated %.1f GHz)\n", cpu_ghz);
-#endif
+    printf("CPU freq assumption: %.1f GHz\n", BENCH_CPU_FREQ_GHZ);
 
     bench_memory_usage();
-    bench_state_creation(cpu_ghz);
-    bench_state_zero(cpu_ghz);
-    bench_batch_reset(cpu_ghz);
-    bench_single_get(cpu_ghz);
-    bench_single_set(cpu_ghz);
-    bench_copy(cpu_ghz);
-    bench_validation(cpu_ghz);
+    bench_state_creation();
+    bench_state_zero();
+    bench_batch_reset();
+    bench_single_get();
+    bench_single_set();
+    bench_copy();
+    bench_validation();
 
     printf("\n=== Benchmark Complete ===\n");
     return 0;

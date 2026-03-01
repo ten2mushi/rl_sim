@@ -11,10 +11,10 @@
 #include "test_harness.h"
 
 /* Helper: Create a small test engine */
-static BatchDroneEngine* create_test_engine(uint32_t num_envs, uint32_t drones_per_env) {
+static BatchEngine* create_test_engine(uint32_t num_envs, uint32_t agents_per_env) {
     EngineConfig cfg = engine_config_default();
     cfg.num_envs = num_envs;
-    cfg.drones_per_env = drones_per_env;
+    cfg.agents_per_env = agents_per_env;
     cfg.persistent_arena_size = 128 * 1024 * 1024;
     cfg.frame_arena_size = 32 * 1024 * 1024;
 
@@ -28,7 +28,7 @@ static BatchDroneEngine* create_test_engine(uint32_t num_envs, uint32_t drones_p
 
 /* 4.1 Step after reset works */
 TEST(step_after_reset) {
-    BatchDroneEngine* engine = create_test_engine(4, 4);
+    BatchEngine* engine = create_test_engine(4, 4);
     ASSERT_NOT_NULL(engine);
 
     engine_reset(engine);
@@ -42,7 +42,7 @@ TEST(step_after_reset) {
 
 /* 4.2 Step updates statistics */
 TEST(step_updates_stats) {
-    BatchDroneEngine* engine = create_test_engine(4, 4);
+    BatchEngine* engine = create_test_engine(4, 4);
     ASSERT_NOT_NULL(engine);
 
     engine_reset(engine);
@@ -59,7 +59,7 @@ TEST(step_updates_stats) {
 
 /* 4.3 Step computes rewards */
 TEST(step_computes_rewards) {
-    BatchDroneEngine* engine = create_test_engine(4, 4);
+    BatchEngine* engine = create_test_engine(4, 4);
     ASSERT_NOT_NULL(engine);
 
     engine_reset(engine);
@@ -75,18 +75,18 @@ TEST(step_computes_rewards) {
 
 /* 4.4 Actions affect physics */
 TEST(step_actions_affect_physics) {
-    BatchDroneEngine* engine = create_test_engine(4, 4);
+    BatchEngine* engine = create_test_engine(4, 4);
     ASSERT_NOT_NULL(engine);
 
     engine_reset(engine);
 
     /* Get initial position (Z is altitude in Z-up ENU) */
-    float z_before = engine->states->pos_z[0];
+    float z_before = engine->states->rigid_body.pos_z[0];
 
     /* Apply full thrust actions */
     float* actions = engine_get_actions(engine);
-    uint32_t total = engine_get_total_drones(engine);
-    for (uint32_t i = 0; i < total * ENGINE_ACTION_DIM; i++) {
+    uint32_t total = engine_get_total_agents(engine);
+    for (uint32_t i = 0; i < total * engine->action_dim; i++) {
         actions[i] = 1.0f;  /* Full thrust */
     }
 
@@ -96,7 +96,7 @@ TEST(step_actions_affect_physics) {
     }
 
     /* Position should have changed */
-    float z_after = engine->states->pos_z[0];
+    float z_after = engine->states->rigid_body.pos_z[0];
     /* Note: With gravity and thrust, position changes */
 
     engine_destroy(engine);
@@ -105,7 +105,7 @@ TEST(step_actions_affect_physics) {
 
 /* 4.5 Step timing is recorded */
 TEST(step_records_timing) {
-    BatchDroneEngine* engine = create_test_engine(4, 4);
+    BatchEngine* engine = create_test_engine(4, 4);
     ASSERT_NOT_NULL(engine);
 
     engine_reset(engine);
@@ -123,7 +123,7 @@ TEST(step_records_timing) {
 
 /* 4.6 Episode lengths increment */
 TEST(step_increments_episode_length) {
-    BatchDroneEngine* engine = create_test_engine(4, 4);
+    BatchEngine* engine = create_test_engine(4, 4);
     ASSERT_NOT_NULL(engine);
 
     engine_reset(engine);
@@ -140,7 +140,7 @@ TEST(step_increments_episode_length) {
 
 /* 4.7 Episode returns accumulate */
 TEST(step_accumulates_returns) {
-    BatchDroneEngine* engine = create_test_engine(4, 4);
+    BatchEngine* engine = create_test_engine(4, 4);
     ASSERT_NOT_NULL(engine);
 
     engine_reset(engine);
@@ -158,7 +158,7 @@ TEST(step_accumulates_returns) {
 
 /* 4.8 Multiple steps work correctly */
 TEST(multiple_steps) {
-    BatchDroneEngine* engine = create_test_engine(4, 4);
+    BatchEngine* engine = create_test_engine(4, 4);
     ASSERT_NOT_NULL(engine);
 
     engine_reset(engine);
@@ -175,13 +175,13 @@ TEST(multiple_steps) {
 
 /* 4.9 Step no reset leaves terminated drones */
 TEST(step_no_reset) {
-    BatchDroneEngine* engine = create_test_engine(4, 4);
+    BatchEngine* engine = create_test_engine(4, 4);
     ASSERT_NOT_NULL(engine);
 
     engine_reset(engine);
 
     /* Force a drone to be out of bounds (below world min) - this will trigger termination */
-    engine->states->pos_z[0] = engine->config.world_min.z - 10.0f;
+    engine->states->rigid_body.pos_z[0] = engine->config.world_min.z - 10.0f;
 
     engine_step_no_reset(engine);
 
@@ -197,7 +197,7 @@ TEST(step_no_reset) {
 
 /* 4.10 Frame arena resets each step */
 TEST(frame_arena_resets) {
-    BatchDroneEngine* engine = create_test_engine(4, 4);
+    BatchEngine* engine = create_test_engine(4, 4);
     ASSERT_NOT_NULL(engine);
 
     engine_reset(engine);

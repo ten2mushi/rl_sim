@@ -49,7 +49,7 @@ extern "C" {
 /* TOML configuration parsing and validation */
 #include "configuration.h"
 
-/* Top-level orchestration - BatchDroneEngine API */
+/* Top-level orchestration - BatchEngine API */
 #include "environment_manager.h"
 
 #ifdef __cplusplus

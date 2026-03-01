@@ -129,6 +129,7 @@ if(BUILD_TESTING)
             collision_system
             foundation
             drone_state
+            platform
             m
     )
 
@@ -161,6 +162,7 @@ if(BUILD_BENCHMARKS)
             collision_system
             foundation
             drone_state
+            platform
             m
     )
 

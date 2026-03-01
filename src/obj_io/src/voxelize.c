@@ -33,10 +33,29 @@ const VoxelizeOptions VOXELIZE_DEFAULTS = {
     .preserve_materials = true,
     .max_bricks = 0,        /* Auto-calculate */
     .shell_mode = false,
-    .shell_thickness = 0.0f /* Auto: 2 * voxel_size when shell_mode enabled */
+    .shell_thickness = 0.0f, /* Auto: 2 * voxel_size when shell_mode enabled */
+    .use_custom_bounds = false
 };
 
 /* RAY_DIRS[6] removed — multi-ray voting now in bvh_inside_outside_robust() */
+
+/**
+ * Compute shell half-thickness from options, defaulting to voxel_size if unset.
+ */
+static inline float compute_shell_half_thickness(const VoxelizeOptions* options,
+                                                  float voxel_size) {
+    float thickness = (options->shell_thickness > 0.0f)
+        ? options->shell_thickness : 2.0f * voxel_size;
+    return thickness * 0.5f;
+}
+
+/**
+ * Compute linear brick index from grid coordinates.
+ */
+static inline uint32_t brick_grid_index(uint32_t bx, uint32_t by, uint32_t bz,
+                                         uint32_t grid_x, uint32_t grid_y) {
+    return bx + by * grid_x + bz * grid_x * grid_y;
+}
 
 /* ============================================================================
  * Phase 1: Coarse Brick Classification
@@ -75,7 +94,7 @@ BrickClassification* classify_bricks_coarse(Arena* arena, const MeshBVH* bvh,
     for (uint32_t bz = 0; bz < cls->grid_z; bz++) {
         for (uint32_t by = 0; by < cls->grid_y; by++) {
             for (uint32_t bx = 0; bx < cls->grid_x; bx++) {
-                uint32_t idx = bx + by * cls->grid_x + bz * cls->grid_x * cls->grid_y;
+                uint32_t idx = brick_grid_index(bx, by, bz, cls->grid_x, cls->grid_y);
 
                 /* Compute brick AABB */
                 Vec3 brick_min = VEC3(
@@ -119,12 +138,8 @@ void classify_bricks_fine(BrickClassification* classes, const MeshBVH* bvh,
     }
 
     bool shell_mode = options && options->shell_mode;
-    float half_thickness = 0.0f;
-    if (shell_mode) {
-        float thickness = (options->shell_thickness > 0.0f)
-            ? options->shell_thickness : 2.0f * world->voxel_size;
-        half_thickness = thickness * 0.5f;
-    }
+    float half_thickness = shell_mode
+        ? compute_shell_half_thickness(options, world->voxel_size) : 0.0f;
 
     float brick_size = world->brick_size_world;
 
@@ -132,7 +147,7 @@ void classify_bricks_fine(BrickClassification* classes, const MeshBVH* bvh,
     for (uint32_t bz = 0; bz < classes->grid_z; bz++) {
         for (uint32_t by = 0; by < classes->grid_y; by++) {
             for (uint32_t bx = 0; bx < classes->grid_x; bx++) {
-                uint32_t idx = bx + by * classes->grid_x + bz * classes->grid_x * classes->grid_y;
+                uint32_t idx = brick_grid_index(bx, by, bz, classes->grid_x, classes->grid_y);
 
                 if (classes->classes[idx] != BRICK_CLASS_SURFACE) {
                     continue; /* Already classified */
@@ -237,8 +252,7 @@ static void voxelize_brick(WorldBrickMap* world, uint32_t bx, uint32_t by, uint3
     for (int32_t vz = 0; vz < BRICK_SIZE; vz++) {
         for (int32_t vy = 0; vy < BRICK_SIZE; vy++) {
             for (int32_t vx = 0; vx < BRICK_SIZE; vx++) {
-                uint32_t voxel_idx = (uint32_t)vx + ((uint32_t)vy << BRICK_SHIFT) +
-                                     ((uint32_t)vz << (BRICK_SHIFT * 2));
+                uint32_t voxel_idx = voxel_linear_index(vx, vy, vz);
 
                 /* Voxel center in world space */
                 Vec3 voxel_center = VEC3(
@@ -296,7 +310,7 @@ static void voxelize_brick(WorldBrickMap* world, uint32_t bx, uint32_t by, uint3
                 sdf[voxel_idx] = sdf_quantize(signed_dist, inv_sdf_scale);
 
                 /* Transfer material from closest face */
-                if (preserve_materials && closest_face != UINT32_MAX && signed_dist < 0) {
+                if (preserve_materials && closest_face != UINT32_MAX && signed_dist < voxel_size * 0.5f) {
                     material[voxel_idx] = mesh->face_mat[closest_face];
                 } else {
                     material[voxel_idx] = 0; /* Default material */
@@ -314,19 +328,15 @@ void voxelize_surface_bricks(WorldBrickMap* world, const BrickClassification* cl
     }
 
     bool shell_mode = options && options->shell_mode;
-    float shell_half_thickness = 0.0f;
-    if (shell_mode) {
-        float thickness = (options->shell_thickness > 0.0f)
-            ? options->shell_thickness : 2.0f * world->voxel_size;
-        shell_half_thickness = thickness * 0.5f;
-    }
+    float shell_half_thickness = shell_mode
+        ? compute_shell_half_thickness(options, world->voxel_size) : 0.0f;
     bool preserve_materials = options ? options->preserve_materials : true;
 
     /* Process each brick according to classification */
     for (uint32_t bz = 0; bz < classes->grid_z; bz++) {
         for (uint32_t by = 0; by < classes->grid_y; by++) {
             for (uint32_t bx = 0; bx < classes->grid_x; bx++) {
-                uint32_t idx = bx + by * classes->grid_x + bz * classes->grid_x * classes->grid_y;
+                uint32_t idx = brick_grid_index(bx, by, bz, classes->grid_x, classes->grid_y);
                 BrickClass bc = classes->classes[idx];
 
                 if (bc == BRICK_CLASS_SURFACE) {
@@ -339,6 +349,125 @@ void voxelize_surface_bricks(WorldBrickMap* world, const BrickClassification* cl
                     world_mark_brick_uniform_inside(world, (int32_t)bx, (int32_t)by, (int32_t)bz);
                 }
                 /* OUTSIDE bricks remain as BRICK_EMPTY_INDEX (default) */
+            }
+        }
+    }
+}
+
+/* ============================================================================
+ * Phase 3b: Phantom Zero Cleanup
+ *
+ * Int8 quantization via C truncation maps SDF values in
+ * (-sdf_scale/127, +sdf_scale/127) to int8=0 (dequant 0.0).  The raymarcher
+ * treats 0.0 < RAYMARCH_HIT_DIST as a surface hit, creating phantom surfaces
+ * in flat empty regions.  At actual zero-crossings, int8=0 voxels always have
+ * at least one face-neighbor with int8 < 0 (the interior side).  This sweep
+ * detects isolated zeros (no negative neighbor) and promotes them to +1.
+ * ============================================================================ */
+
+/**
+ * Read a single neighbor voxel's int8 SDF value, handling cross-brick lookups.
+ *
+ * Returns the int8 value, or +1 if the neighbor is in an unallocated/outside
+ * brick (meaning it cannot provide evidence of a zero crossing).
+ * Returns -1 if the neighbor is in a UNIFORM_INSIDE brick.
+ */
+static int8_t cleanup_read_neighbor_sdf(const WorldBrickMap* world,
+                                int32_t bx, int32_t by, int32_t bz,
+                                int32_t vx, int32_t vy, int32_t vz) {
+    /* Wrap voxel coords into neighboring brick if needed */
+    int32_t nbx = bx, nby = by, nbz = bz;
+    if (vx < 0)          { vx += BRICK_SIZE; nbx--; }
+    else if (vx >= BRICK_SIZE) { vx -= BRICK_SIZE; nbx++; }
+    if (vy < 0)          { vy += BRICK_SIZE; nby--; }
+    else if (vy >= BRICK_SIZE) { vy -= BRICK_SIZE; nby++; }
+    if (vz < 0)          { vz += BRICK_SIZE; nbz--; }
+    else if (vz >= BRICK_SIZE) { vz -= BRICK_SIZE; nbz++; }
+
+    /* Same brick — fast path (caller already has the sdf pointer) */
+    if (nbx == bx && nby == by && nbz == bz) {
+        return 0; /* Sentinel: caller handles same-brick reads directly */
+    }
+
+    /* Neighbor brick lookup */
+    int32_t idx = world_get_brick_index(world, nbx, nby, nbz);
+    if (idx == BRICK_UNIFORM_INSIDE)  return -1;
+    if (idx == BRICK_UNIFORM_OUTSIDE) return +1;
+    if (idx == BRICK_EMPTY_INDEX)     return +1;
+
+    const int8_t* nsdf = world_brick_sdf_const(world, idx);
+    if (!nsdf) return +1;
+
+    uint32_t vi = voxel_linear_index(vx, vy, vz);
+    return nsdf[vi];
+}
+
+/**
+ * Eliminate phantom int8=0 voxels that are not at actual zero crossings.
+ *
+ * A voxel with int8=0 is a genuine surface voxel only if at least one of
+ * its 6 face-neighbors has int8 < 0.  Isolated zeros in flat positive
+ * regions are quantization artifacts — promote them to int8=+1.
+ */
+void cleanup_phantom_zeros(WorldBrickMap* world,
+                           const BrickClassification* classes) {
+    /* 6 face-neighbor offsets */
+    static const int32_t DX[6] = {-1, +1,  0,  0,  0,  0};
+    static const int32_t DY[6] = { 0,  0, -1, +1,  0,  0};
+    static const int32_t DZ[6] = { 0,  0,  0,  0, -1, +1};
+
+    for (uint32_t bz = 0; bz < classes->grid_z; bz++) {
+        for (uint32_t by = 0; by < classes->grid_y; by++) {
+            for (uint32_t bx = 0; bx < classes->grid_x; bx++) {
+                uint32_t cidx = brick_grid_index(bx, by, bz, classes->grid_x, classes->grid_y);
+                if (classes->classes[cidx] != BRICK_CLASS_SURFACE) continue;
+
+                int32_t atlas_idx = world_get_brick_index(
+                    world, (int32_t)bx, (int32_t)by, (int32_t)bz);
+                if (atlas_idx < 0) continue;
+
+                int8_t* sdf = world_brick_sdf(world, atlas_idx);
+                if (!sdf) continue;
+
+                for (int32_t vz = 0; vz < BRICK_SIZE; vz++) {
+                    for (int32_t vy = 0; vy < BRICK_SIZE; vy++) {
+                        for (int32_t vx = 0; vx < BRICK_SIZE; vx++) {
+                            uint32_t vi = voxel_linear_index(vx, vy, vz);
+                            if (sdf[vi] != 0) continue;
+
+                            /* Check 6 face-neighbors for any negative value */
+                            bool has_negative_neighbor = false;
+                            for (int d = 0; d < 6; d++) {
+                                int32_t nx = vx + DX[d];
+                                int32_t ny = vy + DY[d];
+                                int32_t nz = vz + DZ[d];
+
+                                int8_t nval;
+                                if (nx >= 0 && nx < BRICK_SIZE &&
+                                    ny >= 0 && ny < BRICK_SIZE &&
+                                    nz >= 0 && nz < BRICK_SIZE) {
+                                    /* Same brick */
+                                    uint32_t ni = voxel_linear_index(nx, ny, nz);
+                                    nval = sdf[ni];
+                                } else {
+                                    /* Cross-brick */
+                                    nval = cleanup_read_neighbor_sdf(
+                                        world, (int32_t)bx, (int32_t)by,
+                                        (int32_t)bz, nx, ny, nz);
+                                }
+
+                                if (nval < 0) {
+                                    has_negative_neighbor = true;
+                                    break;
+                                }
+                            }
+
+                            if (!has_negative_neighbor) {
+                                sdf[vi] = 1; /* Promote to outside */
+                            }
+                        }
+                    }
+                }
             }
         }
     }
@@ -359,6 +488,7 @@ void voxelize_surface_bricks(WorldBrickMap* world, const BrickClassification* cl
 
 /* Minimum interior samples required; fewer → assume thin surface. */
 #define THICKNESS_MIN_INSIDE 4
+#define VOLUME_FRACTION_THRESHOLD 0.15f
 
 /* Boundary edge ratio above which a non-watertight mesh is considered
  * disconnected geometry (building walls) rather than a continuous sheet
@@ -427,6 +557,10 @@ void voxelize_options_auto_detect(VoxelizeOptions* opts, const MeshBVH* bvh,
         }
     }
 
+    /* Substantial interior volume → solid or network mesh, not thin surface */
+    float interior_fraction = (float)inside_count / (float)THICKNESS_SAMPLE_COUNT;
+    if (interior_fraction > VOLUME_FRACTION_THRESHOLD) return;
+
     /* Too few interior samples → degenerate or nearly zero-volume interior */
     if (inside_count < THICKNESS_MIN_INSIDE ||
         max_inside_dist / half_diag < THIN_SURFACE_RATIO) {
@@ -469,8 +603,7 @@ ObjIOResult mesh_to_sdf(Arena* arena, const TriangleMesh* mesh,
     Vec3 world_max = vec3_add(mesh->bbox_max, VEC3(padding, padding, padding));
 
     /* Expand to user-specified bounds if larger */
-    if (options->world_min.x != 0.0f || options->world_min.y != 0.0f || options->world_min.z != 0.0f ||
-        options->world_max.x != 0.0f || options->world_max.y != 0.0f || options->world_max.z != 0.0f) {
+    if (options->use_custom_bounds) {
         world_min = vec3_min(world_min, options->world_min);
         world_max = vec3_max(world_max, options->world_max);
     }
@@ -530,6 +663,9 @@ ObjIOResult mesh_to_sdf(Arena* arena, const TriangleMesh* mesh,
 
     /* Phase 3: Voxelize surface bricks */
     voxelize_surface_bricks(world, classes, bvh, mesh, &effective_opts);
+
+    /* Phase 3b: Eliminate phantom int8=0 voxels from quantization dead zone */
+    cleanup_phantom_zeros(world, classes);
 
     *out_world = world;
     return OBJ_IO_SUCCESS;

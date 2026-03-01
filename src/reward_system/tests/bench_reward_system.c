@@ -66,8 +66,8 @@ static BenchResult bench_hover_reward(void) {
     };
 
     Arena* arena = arena_create(16 * 1024 * 1024);
-    DroneStateSOA* states = drone_state_create(arena, DRONE_COUNT);
-    drone_state_zero(states);
+    RigidBodyStateSOA* states = rigid_body_state_create(arena, DRONE_COUNT);
+    rigid_body_state_zero(states);
 
     RewardConfig cfg = reward_config_default(TASK_HOVER);
     RewardSystem* sys = reward_create(arena, &cfg, DRONE_COUNT, 0);
@@ -130,8 +130,8 @@ static BenchResult bench_race_reward(void) {
     };
 
     Arena* arena = arena_create(16 * 1024 * 1024);
-    DroneStateSOA* states = drone_state_create(arena, DRONE_COUNT);
-    drone_state_zero(states);
+    RigidBodyStateSOA* states = rigid_body_state_create(arena, DRONE_COUNT);
+    rigid_body_state_zero(states);
 
     RewardConfig cfg = reward_config_default(TASK_RACE);
     RewardSystem* sys = reward_create(arena, &cfg, DRONE_COUNT, GATE_COUNT);
@@ -204,8 +204,8 @@ static BenchResult bench_termination_check(void) {
     };
 
     Arena* arena = arena_create(16 * 1024 * 1024);
-    DroneStateSOA* states = drone_state_create(arena, DRONE_COUNT);
-    drone_state_zero(states);
+    RigidBodyStateSOA* states = rigid_body_state_create(arena, DRONE_COUNT);
+    rigid_body_state_zero(states);
     RewardSystem* sys = reward_create(arena, NULL, DRONE_COUNT, 0);
 
     /* Setup collision results */
@@ -283,8 +283,8 @@ static BenchResult bench_track_reward(void) {
     };
 
     Arena* arena = arena_create(16 * 1024 * 1024);
-    DroneStateSOA* states = drone_state_create(arena, DRONE_COUNT);
-    drone_state_zero(states);
+    RigidBodyStateSOA* states = rigid_body_state_create(arena, DRONE_COUNT);
+    rigid_body_state_zero(states);
 
     RewardConfig cfg = reward_config_default(TASK_TRACK);
     RewardSystem* sys = reward_create(arena, &cfg, DRONE_COUNT, 0);
@@ -355,8 +355,8 @@ static BenchResult bench_full_frame(void) {
     };
 
     Arena* arena = arena_create(16 * 1024 * 1024);
-    DroneStateSOA* states = drone_state_create(arena, DRONE_COUNT);
-    drone_state_zero(states);
+    RigidBodyStateSOA* states = rigid_body_state_create(arena, DRONE_COUNT);
+    rigid_body_state_zero(states);
 
     RewardConfig cfg = reward_config_default(TASK_HOVER);
     RewardSystem* sys = reward_create(arena, &cfg, DRONE_COUNT, 0);

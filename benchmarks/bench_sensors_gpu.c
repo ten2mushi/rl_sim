@@ -25,7 +25,7 @@
 
 typedef struct GpuSensorBenchResult {
     const char* name;
-    uint32_t    drone_count;
+    uint32_t    agent_count;
     double      cpu_ms;
     double      gpu_ms;
     double      speedup;
@@ -39,17 +39,17 @@ typedef struct GpuSensorBenchResult {
 static GpuSensorBenchResult bench_sensor_gpu(const char* name,
                                                SensorConfig* configs,
                                                uint32_t num_configs,
-                                               uint32_t num_drones,
+                                               uint32_t num_agents,
                                                uint32_t warmup,
                                                uint32_t iterations) {
     GpuSensorBenchResult result = {0};
     result.name = name;
-    result.drone_count = num_drones;
+    result.agent_count = num_agents;
 
     /* Create two engines: one with GPU, one CPU-only */
     EngineConfig cfg = engine_config_default();
-    cfg.drones_per_env = 16;
-    cfg.num_envs = num_drones / cfg.drones_per_env;
+    cfg.agents_per_env = 16;
+    cfg.num_envs = num_agents / cfg.agents_per_env;
     if (cfg.num_envs == 0) cfg.num_envs = 1;
     cfg.persistent_arena_size = 256 * 1024 * 1024;
     cfg.frame_arena_size = 64 * 1024 * 1024;
@@ -59,7 +59,7 @@ static GpuSensorBenchResult bench_sensor_gpu(const char* name,
     char error[ENGINE_ERROR_MSG_SIZE];
 
     /* GPU-enabled engine */
-    BatchDroneEngine* gpu_engine = engine_create(&cfg, error);
+    BatchEngine* gpu_engine = engine_create(&cfg, error);
     if (!gpu_engine) {
         fprintf(stderr, "  Failed to create GPU engine: %s\n", error);
         return result;
@@ -124,7 +124,7 @@ static void gpu_print_header(void) {
 }
 
 static void gpu_print_row(const GpuSensorBenchResult* r) {
-    printf(GPU_ROW_FMT, r->name, r->drone_count,
+    printf(GPU_ROW_FMT, r->name, r->agent_count,
            r->cpu_ms, r->gpu_ms, r->speedup,
            r->passed ? "PASS" : "FAIL");
 }
@@ -191,14 +191,14 @@ int main(int argc, char** argv) {
      * Individual Sensor Benchmarks
      * ==================================================================== */
 
-    uint32_t drone_count = 1024;
-    if (cli.num_drone_counts > 0) {
-        drone_count = cli.drone_counts[0];
+    uint32_t agent_count = 1024;
+    if (cli.num_agent_counts > 0) {
+        agent_count = cli.agent_counts[0];
     }
     uint32_t warmup = cli.warmup > 0 ? cli.warmup : 10;
     uint32_t iters = cli.iterations > 0 ? cli.iterations : 50;
 
-    printf("=== Individual Sensor GPU Benchmarks (%u drones) ===\n\n", drone_count);
+    printf("=== Individual Sensor GPU Benchmarks (%u drones) ===\n\n", agent_count);
     gpu_print_header();
 
     GpuSensorBenchResult results[16];
@@ -208,7 +208,7 @@ int main(int argc, char** argv) {
     {
         SensorConfig cfgs[2] = {imu, cam_depth_32};
         results[num_results] = bench_sensor_gpu("cam_depth_32+imu", cfgs, 2,
-                                                  drone_count, warmup, iters);
+                                                  agent_count, warmup, iters);
         gpu_print_row(&results[num_results++]);
     }
 
@@ -216,7 +216,7 @@ int main(int argc, char** argv) {
     {
         SensorConfig cfgs[2] = {imu, cam_depth_64};
         results[num_results] = bench_sensor_gpu("cam_depth_64+imu", cfgs, 2,
-                                                  drone_count, warmup, iters);
+                                                  agent_count, warmup, iters);
         gpu_print_row(&results[num_results++]);
     }
 
@@ -224,7 +224,7 @@ int main(int argc, char** argv) {
     {
         SensorConfig cfgs[2] = {imu, cam_rgb_32};
         results[num_results] = bench_sensor_gpu("cam_rgb_32+imu", cfgs, 2,
-                                                  drone_count, warmup, iters);
+                                                  agent_count, warmup, iters);
         gpu_print_row(&results[num_results++]);
     }
 
@@ -232,7 +232,7 @@ int main(int argc, char** argv) {
     {
         SensorConfig cfgs[2] = {imu, lidar3d};
         results[num_results] = bench_sensor_gpu("lidar3d_16x64+imu", cfgs, 2,
-                                                  drone_count, warmup, iters);
+                                                  agent_count, warmup, iters);
         gpu_print_row(&results[num_results++]);
     }
 
@@ -240,7 +240,7 @@ int main(int argc, char** argv) {
     {
         SensorConfig cfgs[2] = {imu, lidar2d};
         results[num_results] = bench_sensor_gpu("lidar2d_64+imu", cfgs, 2,
-                                                  drone_count, warmup, iters);
+                                                  agent_count, warmup, iters);
         gpu_print_row(&results[num_results++]);
     }
 
@@ -248,7 +248,7 @@ int main(int argc, char** argv) {
     {
         SensorConfig cfgs[2] = {imu, tof};
         results[num_results] = bench_sensor_gpu("tof+imu", cfgs, 2,
-                                                  drone_count, warmup, iters);
+                                                  agent_count, warmup, iters);
         gpu_print_row(&results[num_results++]);
     }
 

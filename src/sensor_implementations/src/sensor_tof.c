@@ -14,6 +14,8 @@
 #include <string.h>
 #include <math.h>
 
+#define TOF_DEFAULT_MAX_RANGE 100.0f
+
 /* ============================================================================
  * ToF Sensor Implementation
  * ============================================================================ */
@@ -53,15 +55,15 @@ static void tof_batch_sample(Sensor* sensor, const SensorContext* ctx, float* ou
     ToFImpl* impl = (ToFImpl*)sensor->impl;
     if (impl == NULL) {
         /* Fill with max range if not properly initialized */
-        for (uint32_t i = 0; i < ctx->drone_count; i++) {
-            output_buffer[i] = 100.0f;  /* Default max range */
+        for (uint32_t i = 0; i < ctx->agent_count; i++) {
+            output_buffer[i] = TOF_DEFAULT_MAX_RANGE;
         }
         return;
     }
 
-    const DroneStateSOA* drones = ctx->drones;
-    const uint32_t* indices = ctx->drone_indices;
-    uint32_t count = ctx->drone_count;
+    const RigidBodyStateSOA* drones = ctx->agents;
+    const uint32_t* indices = ctx->agent_indices;
+    uint32_t count = ctx->agent_count;
     const struct WorldBrickMap* world = ctx->world;
 
     for (uint32_t i = 0; i < count; i++) {
@@ -102,9 +104,9 @@ static void tof_batch_sample(Sensor* sensor, const SensorContext* ctx, float* ou
     }
 }
 
-static void tof_reset(Sensor* sensor, uint32_t drone_index) {
+static void tof_reset(Sensor* sensor, uint32_t agent_index) {
     (void)sensor;
-    (void)drone_index;
+    (void)agent_index;
     /* No per-drone state to reset */
 }
 

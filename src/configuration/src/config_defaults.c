@@ -6,41 +6,36 @@
  */
 
 #include "configuration.h"
+#include "platform_quadcopter.h"
+#include "platform_diff_drive.h"
 #include <string.h>
+#include <stdio.h>
+#include <stdlib.h>
 
 /* ============================================================================
- * Drone Configuration Defaults (Crazyflie 2.0)
+ * Platform Configuration Defaults (Crazyflie 2.0)
  * ============================================================================ */
 
-void drone_config_set_defaults(DroneConfig* config) {
+void platform_config_set_defaults(PlatformConfig* config) {
     /* Zero entire struct first to ensure consistent padding */
-    memset(config, 0, sizeof(DroneConfig));
+    memset(config, 0, sizeof(PlatformConfig));
+
+    /* Platform type */
+    snprintf(config->type, CONFIG_NAME_MAX, "%s", "quadcopter");
 
     /* Crazyflie 2.0 defaults (well-documented reference drone) */
-    strncpy(config->name, "crazyflie2", CONFIG_NAME_MAX - 1);
-    config->name[CONFIG_NAME_MAX - 1] = '\0';
+    snprintf(config->name, CONFIG_NAME_MAX, "%s", "crazyflie2");
 
     /* Physical properties */
     config->mass = 0.027f;           /* 27 grams */
-    config->arm_length = 0.046f;     /* 46mm arm length */
 
     /* Inertia tensor (diagonal) - from Crazyflie documentation */
     config->ixx = 1.4e-5f;           /* kg*m^2 */
     config->iyy = 1.4e-5f;           /* kg*m^2 */
     config->izz = 2.17e-5f;          /* kg*m^2 */
 
-    /* Motor parameters - derived from motor characterization */
-    config->k_thrust = 2.88e-8f;     /* N/(rad/s)^2 */
-    config->k_torque = 7.24e-10f;    /* N*m/(rad/s)^2 */
-    config->motor_tau = 0.02f;       /* 20ms motor response time */
-    config->max_rpm = 21702.0f;      /* Maximum motor RPM */
-
     /* Geometry */
     config->collision_radius = 0.056f; /* arm_length + 0.01 safety margin */
-
-    /* Aerodynamics */
-    config->k_drag = 0.0f;           /* Linear drag coefficient */
-    config->k_drag_angular = 0.0f;   /* Angular drag coefficient */
 
     /* Limits */
     config->max_velocity = 10.0f;    /* m/s */
@@ -52,6 +47,21 @@ void drone_config_set_defaults(DroneConfig* config) {
     config->color[1] = 0.6f;         /* G */
     config->color[2] = 1.0f;         /* B - Crazyflie blue */
     config->scale = 1.0f;
+
+    /* Allocate and set quadcopter-specific defaults */
+    QuadcopterConfig* quad = (QuadcopterConfig*)malloc(sizeof(QuadcopterConfig));
+    if (quad) {
+        memset(quad, 0, sizeof(QuadcopterConfig));
+        quad->arm_length = 0.046f;       /* 46mm arm length */
+        quad->k_thrust = 2.88e-8f;       /* N/(rad/s)^2 */
+        quad->k_torque = 7.24e-10f;      /* N*m/(rad/s)^2 */
+        quad->motor_tau = 0.02f;         /* 20ms motor response time */
+        quad->max_rpm = 21702.0f;        /* Maximum motor RPM */
+        quad->k_drag = 0.0f;             /* Linear drag coefficient */
+        quad->k_ang_damp = 0.0f;         /* Angular drag coefficient */
+        config->platform_specific = quad;
+        config->platform_specific_size = sizeof(QuadcopterConfig);
+    }
 }
 
 /* ============================================================================
@@ -64,7 +74,7 @@ void environment_config_set_defaults(EnvironmentConfig* config) {
 
     /* Dimensions */
     config->num_envs = 64;
-    config->drones_per_env = 16;
+    config->agents_per_env = 16;
 
     /* World bounds */
     config->world_size[0] = 20.0f;   /* Width (m) */
@@ -89,8 +99,7 @@ void environment_config_set_defaults(EnvironmentConfig* config) {
     config->auto_reset = true;
 
     /* World generation */
-    strncpy(config->world_type, "obstacles", sizeof(config->world_type) - 1);
-    config->world_type[sizeof(config->world_type) - 1] = '\0';
+    snprintf(config->world_type, sizeof(config->world_type), "%s", "obstacles");
     config->num_obstacles = 20;
     config->seed = 42;
 }
@@ -109,8 +118,7 @@ void physics_config_set_defaults(ConfigPhysics* config) {
     config->gravity = 9.81f;         /* m/s^2 */
 
     /* Integration */
-    strncpy(config->integrator, "rk4", sizeof(config->integrator) - 1);
-    config->integrator[sizeof(config->integrator) - 1] = '\0';
+    snprintf(config->integrator, sizeof(config->integrator), "%s", "rk4");
 
     /* Stability clamps */
     config->velocity_clamp = 20.0f;
@@ -137,8 +145,7 @@ void reward_config_data_set_defaults(RewardConfigData* config) {
     memset(config, 0, sizeof(RewardConfigData));
 
     /* Task */
-    strncpy(config->task, "hover", sizeof(config->task) - 1);
-    config->task[sizeof(config->task) - 1] = '\0';
+    snprintf(config->task, sizeof(config->task), "%s", "hover");
 
     /* Distance rewards */
     config->distance_scale = 1.0f;
@@ -179,8 +186,7 @@ void training_config_set_defaults(TrainingConfig* config) {
     memset(config, 0, sizeof(TrainingConfig));
 
     /* Algorithm */
-    strncpy(config->algorithm, "ppo", sizeof(config->algorithm) - 1);
-    config->algorithm[sizeof(config->algorithm) - 1] = '\0';
+    snprintf(config->algorithm, sizeof(config->algorithm), "%s", "ppo");
 
     /* Hyperparameters (PPO defaults) */
     config->learning_rate = 3.0e-4f;
@@ -199,8 +205,7 @@ void training_config_set_defaults(TrainingConfig* config) {
     /* Logging */
     config->log_interval = 10;
     config->save_interval = 100;
-    strncpy(config->checkpoint_dir, "checkpoints", CONFIG_PATH_MAX - 1);
-    config->checkpoint_dir[CONFIG_PATH_MAX - 1] = '\0';
+    snprintf(config->checkpoint_dir, CONFIG_PATH_MAX, "%s", "checkpoints");
 }
 
 /* ============================================================================
@@ -212,22 +217,11 @@ SensorConfigEntry sensor_config_entry_default(const char* type) {
     memset(&entry, 0, sizeof(entry));
 
     /* Common defaults */
-    strncpy(entry.type, type, sizeof(entry.type) - 1);
-    entry.type[sizeof(entry.type) - 1] = '\0';
-    strncpy(entry.name, "sensor", sizeof(entry.name) - 1);
-    entry.name[sizeof(entry.name) - 1] = '\0';
+    snprintf(entry.type, sizeof(entry.type), "%s", type);
+    snprintf(entry.name, sizeof(entry.name), "%s", "sensor");
 
-    /* Default mounting - centered, no rotation */
-    entry.position[0] = 0.0f;
-    entry.position[1] = 0.0f;
-    entry.position[2] = 0.0f;
-    entry.orientation[0] = 1.0f;  /* w */
-    entry.orientation[1] = 0.0f;  /* x */
-    entry.orientation[2] = 0.0f;  /* y */
-    entry.orientation[3] = 0.0f;  /* z */
-
-    entry.sample_rate = 0.0f;     /* Every frame */
-    entry.num_noise_groups = 0;   /* No noise by default */
+    /* Identity quaternion (w=1) — all other fields zeroed by memset */
+    entry.orientation[0] = 1.0f;
 
     /* Type-specific defaults */
     if (strcmp(type, "imu") == 0) {
@@ -275,7 +269,7 @@ void config_set_defaults(Config* config) {
     memset(config, 0, sizeof(Config));
 
     /* Now set defaults for each section (which also zeroes their internals) */
-    drone_config_set_defaults(&config->drone);
+    platform_config_set_defaults(&config->platform);
     environment_config_set_defaults(&config->environment);
     physics_config_set_defaults(&config->physics);
     reward_config_data_set_defaults(&config->reward);

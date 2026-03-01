@@ -2,7 +2,7 @@
  * Engine Lifecycle Tests -- Comprehensive Behavioral Specification
  *
  * Tests for engine creation, destruction, validation, and pointer stability
- * across resets and steps. These tests operate at the BatchDroneEngine level
+ * across resets and steps. These tests operate at the BatchEngine level
  * (not PufferEnv) and serve as the authoritative specification for engine
  * lifecycle behavior.
  *
@@ -24,10 +24,10 @@
  * ============================================================================ */
 
 /** Create a small test engine with given parameters */
-static BatchDroneEngine* create_test_engine(uint32_t num_envs, uint32_t drones_per_env) {
+static BatchEngine* create_test_engine(uint32_t num_envs, uint32_t agents_per_env) {
     EngineConfig cfg = engine_config_default();
     cfg.num_envs = num_envs;
-    cfg.drones_per_env = drones_per_env;
+    cfg.agents_per_env = agents_per_env;
     cfg.persistent_arena_size = 128 * 1024 * 1024;  /* 128 MB */
     cfg.frame_arena_size = 32 * 1024 * 1024;        /* 32 MB */
 
@@ -36,11 +36,11 @@ static BatchDroneEngine* create_test_engine(uint32_t num_envs, uint32_t drones_p
 }
 
 /** Create a test engine with explicit seed */
-static BatchDroneEngine* create_test_engine_seeded(uint32_t num_envs, uint32_t drones_per_env,
+static BatchEngine* create_test_engine_seeded(uint32_t num_envs, uint32_t agents_per_env,
                                                      uint64_t seed) {
     EngineConfig cfg = engine_config_default();
     cfg.num_envs = num_envs;
-    cfg.drones_per_env = drones_per_env;
+    cfg.agents_per_env = agents_per_env;
     cfg.seed = seed;
     cfg.persistent_arena_size = 128 * 1024 * 1024;
     cfg.frame_arena_size = 32 * 1024 * 1024;
@@ -55,7 +55,7 @@ static BatchDroneEngine* create_test_engine_seeded(uint32_t num_envs, uint32_t d
 
 /** engine_create with valid config succeeds */
 TEST(engine_create_succeeds) {
-    BatchDroneEngine* engine = create_test_engine(4, 4);
+    BatchEngine* engine = create_test_engine(4, 4);
     ASSERT_NOT_NULL(engine);
     ASSERT_TRUE(engine->initialized);
     engine_destroy(engine);
@@ -68,18 +68,18 @@ TEST(engine_create_invalid_returns_null) {
     cfg.num_envs = 0;  /* Invalid */
 
     char error[ENGINE_ERROR_MSG_SIZE];
-    BatchDroneEngine* engine = engine_create(&cfg, error);
+    BatchEngine* engine = engine_create(&cfg, error);
     ASSERT_NULL(engine);
     return 0;
 }
 
-/** engine_create with invalid config (drones_per_env=0) returns NULL */
+/** engine_create with invalid config (agents_per_env=0) returns NULL */
 TEST(engine_create_zero_drones_returns_null) {
     EngineConfig cfg = engine_config_default();
-    cfg.drones_per_env = 0;
+    cfg.agents_per_env = 0;
 
     char error[ENGINE_ERROR_MSG_SIZE];
-    BatchDroneEngine* engine = engine_create(&cfg, error);
+    BatchEngine* engine = engine_create(&cfg, error);
     ASSERT_NULL(engine);
     return 0;
 }
@@ -87,7 +87,7 @@ TEST(engine_create_zero_drones_returns_null) {
 /** engine_create with NULL config returns NULL */
 TEST(engine_create_null_config_returns_null) {
     char error[ENGINE_ERROR_MSG_SIZE];
-    BatchDroneEngine* engine = engine_create(NULL, error);
+    BatchEngine* engine = engine_create(NULL, error);
     ASSERT_NULL(engine);
     return 0;
 }
@@ -107,12 +107,12 @@ TEST(engine_create_populates_error_on_failure) {
 TEST(engine_create_clears_error_on_success) {
     EngineConfig cfg = engine_config_default();
     cfg.num_envs = 1;
-    cfg.drones_per_env = 4;
+    cfg.agents_per_env = 4;
     cfg.persistent_arena_size = 128 * 1024 * 1024;
     cfg.frame_arena_size = 32 * 1024 * 1024;
 
     char error[ENGINE_ERROR_MSG_SIZE] = "stale error";
-    BatchDroneEngine* engine = engine_create(&cfg, error);
+    BatchEngine* engine = engine_create(&cfg, error);
     ASSERT_NOT_NULL(engine);
     ASSERT_EQ(error[0], '\0');  /* Error should be cleared */
     engine_destroy(engine);
@@ -125,7 +125,7 @@ TEST(engine_create_clears_error_on_success) {
 
 /** engine_create allocates all subsystems */
 TEST(engine_create_allocates_subsystems) {
-    BatchDroneEngine* engine = create_test_engine(4, 4);
+    BatchEngine* engine = create_test_engine(4, 4);
     ASSERT_NOT_NULL(engine);
 
     ASSERT_NOT_NULL(engine->states);
@@ -142,18 +142,18 @@ TEST(engine_create_allocates_subsystems) {
     return 0;
 }
 
-/** engine_create correctly computes total_drones */
-TEST(engine_computes_total_drones) {
-    BatchDroneEngine* engine = create_test_engine(8, 16);
+/** engine_create correctly computes total_agents */
+TEST(engine_computes_total_agents) {
+    BatchEngine* engine = create_test_engine(8, 16);
     ASSERT_NOT_NULL(engine);
-    ASSERT_EQ(engine->config.total_drones, 8u * 16u);
+    ASSERT_EQ(engine->config.total_agents, 8u * 16u);
     engine_destroy(engine);
     return 0;
 }
 
 /** engine_create initializes env_ids correctly */
 TEST(engine_initializes_env_ids) {
-    BatchDroneEngine* engine = create_test_engine(4, 4);
+    BatchEngine* engine = create_test_engine(4, 4);
     ASSERT_NOT_NULL(engine);
 
     for (uint32_t env = 0; env < 4; env++) {
@@ -169,7 +169,7 @@ TEST(engine_initializes_env_ids) {
 
 /** engine_create allocates all buffers */
 TEST(engine_allocates_buffers) {
-    BatchDroneEngine* engine = create_test_engine(4, 4);
+    BatchEngine* engine = create_test_engine(4, 4);
     ASSERT_NOT_NULL(engine);
 
     ASSERT_NOT_NULL(engine->observations);
@@ -188,7 +188,7 @@ TEST(engine_allocates_buffers) {
 
 /** engine_create allocates episode tracking arrays */
 TEST(engine_allocates_episode_tracking) {
-    BatchDroneEngine* engine = create_test_engine(4, 4);
+    BatchEngine* engine = create_test_engine(4, 4);
     ASSERT_NOT_NULL(engine);
 
     ASSERT_NOT_NULL(engine->episode_returns);
@@ -201,7 +201,7 @@ TEST(engine_allocates_episode_tracking) {
 
 /** engine_create sets correct obs_dim for default sensors (IMU+Position+Velocity=15) */
 TEST(engine_obs_dim_correct_for_defaults) {
-    BatchDroneEngine* engine = create_test_engine(1, 4);
+    BatchEngine* engine = create_test_engine(1, 4);
     ASSERT_NOT_NULL(engine);
     /* IMU(6) + Position(3) + Velocity(6) = 15 */
     ASSERT_EQ(engine->obs_dim, 15u);
@@ -209,11 +209,11 @@ TEST(engine_obs_dim_correct_for_defaults) {
     return 0;
 }
 
-/** engine_create sets action_dim to ENGINE_ACTION_DIM (4) */
+/** engine_create sets action_dim to 4 (quadcopter) */
 TEST(engine_action_dim_is_4) {
-    BatchDroneEngine* engine = create_test_engine(1, 4);
+    BatchEngine* engine = create_test_engine(1, 4);
     ASSERT_NOT_NULL(engine);
-    ASSERT_EQ(engine->action_dim, (uint32_t)ENGINE_ACTION_DIM);
+    ASSERT_EQ(engine->action_dim, 4u);
     ASSERT_EQ(engine->action_dim, 4u);
     engine_destroy(engine);
     return 0;
@@ -221,7 +221,7 @@ TEST(engine_action_dim_is_4) {
 
 /** engine_create initializes state flags correctly */
 TEST(engine_state_flags_after_create) {
-    BatchDroneEngine* engine = create_test_engine(1, 4);
+    BatchEngine* engine = create_test_engine(1, 4);
     ASSERT_NOT_NULL(engine);
 
     ASSERT_TRUE(engine->initialized);
@@ -235,7 +235,7 @@ TEST(engine_state_flags_after_create) {
 
 /** engine_create allocates both arenas */
 TEST(engine_arenas_allocated) {
-    BatchDroneEngine* engine = create_test_engine(1, 4);
+    BatchEngine* engine = create_test_engine(1, 4);
     ASSERT_NOT_NULL(engine);
     ASSERT_NOT_NULL(engine->persistent_arena);
     ASSERT_NOT_NULL(engine->frame_arena);
@@ -256,7 +256,7 @@ TEST(engine_destroy_null_safe) {
 /** Sequential create/destroy cycles don't leak (valgrind/asan test) */
 TEST(sequential_create_destroy_no_leak) {
     for (int i = 0; i < 8; i++) {
-        BatchDroneEngine* engine = create_test_engine_seeded(1, 4, 42 + (uint64_t)i);
+        BatchEngine* engine = create_test_engine_seeded(1, 4, 42 + (uint64_t)i);
         ASSERT_NOT_NULL(engine);
         engine_destroy(engine);
     }
@@ -266,7 +266,7 @@ TEST(sequential_create_destroy_no_leak) {
 /** Multiple engines can coexist and be destroyed in any order */
 TEST(multi_engine_destroy_any_order) {
     const int N = 4;
-    BatchDroneEngine* engines[4];
+    BatchEngine* engines[4];
 
     for (int i = 0; i < N; i++) {
         engines[i] = create_test_engine_seeded(1, 4, 42 + (uint64_t)i);
@@ -286,7 +286,7 @@ TEST(multi_engine_destroy_any_order) {
 
 /** engine_is_valid returns true for valid engine */
 TEST(engine_is_valid_true) {
-    BatchDroneEngine* engine = create_test_engine(4, 4);
+    BatchEngine* engine = create_test_engine(4, 4);
     ASSERT_NOT_NULL(engine);
     ASSERT_TRUE(engine_is_valid(engine));
     engine_destroy(engine);
@@ -316,7 +316,7 @@ TEST(engine_is_valid_false_for_null) {
  * Expected: sensors->obs_dim == engine->obs_dim
  * Actual: sensors->obs_dim=256, engine->obs_dim=15 */
 TEST(sensor_obs_dim_consistency) {
-    BatchDroneEngine* engine = create_test_engine(1, 4);
+    BatchEngine* engine = create_test_engine(1, 4);
     ASSERT_NOT_NULL(engine);
 
     uint32_t engine_dim = engine->obs_dim;
@@ -335,16 +335,16 @@ TEST(sensor_obs_dim_consistency) {
 
 /** The observations buffer must be large enough for sensor_system operations.
  *
- * BUG DETECTED: obs buffer = total_drones * engine->obs_dim * sizeof(float),
- * but sensor_system uses total_drones * sensors->obs_dim * sizeof(float).
+ * BUG DETECTED: obs buffer = total_agents * engine->obs_dim * sizeof(float),
+ * but sensor_system uses total_agents * sensors->obs_dim * sizeof(float).
  * With default config: 4 * 15 * 4 = 240 bytes vs 4 * 256 * 4 = 4096 bytes. */
 TEST(obs_buffer_size_vs_sensor_requirement) {
-    BatchDroneEngine* engine = create_test_engine(1, 4);
+    BatchEngine* engine = create_test_engine(1, 4);
     ASSERT_NOT_NULL(engine);
 
-    uint32_t td = engine->config.total_drones;
+    uint32_t td = engine->config.total_agents;
     size_t buf_alloc = ((size_t)td * engine->obs_dim * sizeof(float) + 31) & ~(size_t)31;
-    size_t sensor_needs = (size_t)engine->sensors->max_drones *
+    size_t sensor_needs = (size_t)engine->sensors->max_agents *
                            engine->sensors->obs_dim * sizeof(float);
 
     printf("\n    [DIAG] obs buffer allocated: %zu bytes\n", buf_alloc);
@@ -367,12 +367,12 @@ TEST(obs_buffer_size_vs_sensor_requirement) {
 
 /** All subsystem pointers remain valid after engine_reset */
 TEST(engine_pointers_stable_after_reset) {
-    BatchDroneEngine* engine = create_test_engine(1, 4);
+    BatchEngine* engine = create_test_engine(1, 4);
     ASSERT_NOT_NULL(engine);
 
     /* Save all pointers before reset */
-    DroneStateSOA* states = engine->states;
-    DroneParamsSOA* params = engine->params;
+    PlatformStateSOA* states = engine->states;
+    PlatformParamsSOA* params = engine->params;
     WorldBrickMap* world = engine->world;
     PhysicsSystem* physics = engine->physics;
     CollisionSystem* collision = engine->collision;
@@ -414,7 +414,7 @@ TEST(engine_pointers_stable_after_reset) {
 
 /** Pointers stable after multiple resets */
 TEST(engine_pointers_stable_after_many_resets) {
-    BatchDroneEngine* engine = create_test_engine(1, 4);
+    BatchEngine* engine = create_test_engine(1, 4);
     ASSERT_NOT_NULL(engine);
 
     float* obs = engine->observations;
@@ -437,7 +437,7 @@ TEST(engine_pointers_stable_after_many_resets) {
 
 /** All subsystem pointers remain valid after engine_step */
 TEST(engine_pointers_stable_after_step) {
-    BatchDroneEngine* engine = create_test_engine(1, 4);
+    BatchEngine* engine = create_test_engine(1, 4);
     ASSERT_NOT_NULL(engine);
 
     engine_reset(engine);
@@ -446,7 +446,7 @@ TEST(engine_pointers_stable_after_step) {
     float* actions = engine->actions;
     float* rewards_buf = engine->rewards_buffer;
     uint8_t* dones = engine->dones;
-    DroneStateSOA* states = engine->states;
+    PlatformStateSOA* states = engine->states;
     SensorSystem* sensors = engine->sensors;
 
     engine_step(engine);
@@ -465,7 +465,7 @@ TEST(engine_pointers_stable_after_step) {
 
 /** Pointers stable across many steps */
 TEST(engine_pointers_stable_after_many_steps) {
-    BatchDroneEngine* engine = create_test_engine(1, 4);
+    BatchEngine* engine = create_test_engine(1, 4);
     ASSERT_NOT_NULL(engine);
 
     engine_reset(engine);
@@ -482,7 +482,7 @@ TEST(engine_pointers_stable_after_many_steps) {
 
 /** engine_step increments total_steps */
 TEST(engine_step_increments_total_steps) {
-    BatchDroneEngine* engine = create_test_engine(1, 4);
+    BatchEngine* engine = create_test_engine(1, 4);
     ASSERT_NOT_NULL(engine);
 
     engine_reset(engine);
@@ -500,7 +500,7 @@ TEST(engine_step_increments_total_steps) {
 
 /** engine_step clears needs_reset after reset */
 TEST(engine_needs_reset_cleared) {
-    BatchDroneEngine* engine = create_test_engine(1, 4);
+    BatchEngine* engine = create_test_engine(1, 4);
     ASSERT_NOT_NULL(engine);
 
     ASSERT_TRUE(engine->needs_reset);
@@ -517,7 +517,7 @@ TEST(engine_needs_reset_cleared) {
 
 /** Frame arena is reset at start of each step (used grows, then resets) */
 TEST(frame_arena_reset_each_step) {
-    BatchDroneEngine* engine = create_test_engine(1, 4);
+    BatchEngine* engine = create_test_engine(1, 4);
     ASSERT_NOT_NULL(engine);
 
     engine_reset(engine);
@@ -554,7 +554,7 @@ TEST(frame_arena_reset_each_step) {
 
 /** Observations buffer is 32-byte aligned */
 TEST(observations_32byte_aligned) {
-    BatchDroneEngine* engine = create_test_engine(1, 4);
+    BatchEngine* engine = create_test_engine(1, 4);
     ASSERT_NOT_NULL(engine);
     ASSERT_TRUE(((uintptr_t)engine->observations & 31) == 0);
     engine_destroy(engine);
@@ -563,7 +563,7 @@ TEST(observations_32byte_aligned) {
 
 /** Actions buffer is 32-byte aligned */
 TEST(actions_32byte_aligned) {
-    BatchDroneEngine* engine = create_test_engine(1, 4);
+    BatchEngine* engine = create_test_engine(1, 4);
     ASSERT_NOT_NULL(engine);
     ASSERT_TRUE(((uintptr_t)engine->actions & 31) == 0);
     engine_destroy(engine);
@@ -572,7 +572,7 @@ TEST(actions_32byte_aligned) {
 
 /** Rewards buffer is 32-byte aligned */
 TEST(rewards_32byte_aligned) {
-    BatchDroneEngine* engine = create_test_engine(1, 4);
+    BatchEngine* engine = create_test_engine(1, 4);
     ASSERT_NOT_NULL(engine);
     ASSERT_TRUE(((uintptr_t)engine->rewards_buffer & 31) == 0);
     engine_destroy(engine);
@@ -585,10 +585,10 @@ TEST(rewards_32byte_aligned) {
 
 /** All buffers are zeroed after creation */
 TEST(buffers_zeroed_after_create) {
-    BatchDroneEngine* engine = create_test_engine(1, 4);
+    BatchEngine* engine = create_test_engine(1, 4);
     ASSERT_NOT_NULL(engine);
 
-    uint32_t td = engine->config.total_drones;
+    uint32_t td = engine->config.total_agents;
 
     /* Observations should be zeroed */
     for (uint32_t i = 0; i < td * engine->obs_dim; i++) {
@@ -621,10 +621,10 @@ TEST(buffers_zeroed_after_create) {
 
 /** Episode tracking is zeroed after creation */
 TEST(episode_tracking_zeroed) {
-    BatchDroneEngine* engine = create_test_engine(1, 4);
+    BatchEngine* engine = create_test_engine(1, 4);
     ASSERT_NOT_NULL(engine);
 
-    uint32_t td = engine->config.total_drones;
+    uint32_t td = engine->config.total_agents;
     for (uint32_t i = 0; i < td; i++) {
         ASSERT_FLOAT_EQ(engine->episode_returns[i], 0.0f);
         ASSERT_EQ(engine->episode_lengths[i], 0u);
@@ -670,7 +670,7 @@ TEST(act_buffer_size_aligned) {
  * Section 12: Various Config Sizes
  * ============================================================================ */
 
-/** Engine creation works for various sizes of num_envs and drones_per_env */
+/** Engine creation works for various sizes of num_envs and agents_per_env */
 TEST(various_config_sizes) {
     uint32_t configs[][2] = {
         {1, 1},
@@ -681,9 +681,9 @@ TEST(various_config_sizes) {
     };
 
     for (int i = 0; i < 5; i++) {
-        BatchDroneEngine* engine = create_test_engine(configs[i][0], configs[i][1]);
+        BatchEngine* engine = create_test_engine(configs[i][0], configs[i][1]);
         ASSERT_NOT_NULL(engine);
-        ASSERT_EQ(engine->config.total_drones, configs[i][0] * configs[i][1]);
+        ASSERT_EQ(engine->config.total_agents, configs[i][0] * configs[i][1]);
         ASSERT_EQ(engine->obs_dim, 15u);  /* Default sensors always give 15 */
         engine_destroy(engine);
     }
@@ -714,7 +714,7 @@ TEST(various_config_sizes) {
  * Option (a) is simplest: add sensor_system.obs_dim = engine->obs_dim after
  * the set_external_buffer call in engine_lifecycle.c ~line 576. */
 TEST(external_buffer_stride_matches_obs_dim) {
-    BatchDroneEngine* engine = create_test_engine(1, 4);
+    BatchEngine* engine = create_test_engine(1, 4);
     ASSERT_NOT_NULL(engine);
 
     /* The external buffer pointer should be the engine's observations */
@@ -754,7 +754,7 @@ int main(void) {
 
     /* Subsystem allocation */
     RUN_TEST(engine_create_allocates_subsystems);
-    RUN_TEST(engine_computes_total_drones);
+    RUN_TEST(engine_computes_total_agents);
     RUN_TEST(engine_initializes_env_ids);
     RUN_TEST(engine_allocates_buffers);
     RUN_TEST(engine_allocates_episode_tracking);

@@ -11,7 +11,9 @@
  */
 
 #include "configuration.h"
+#include "platform_quadcopter.h"
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 /* ============================================================================
@@ -40,9 +42,31 @@ uint64_t config_hash(const Config* config) {
 
     uint64_t hash = FNV_OFFSET;
 
-    /* Hash drone config */
-    hash ^= fnv1a_hash(&config->drone, sizeof(DroneConfig));
+    /* Hash platform config (excluding pointer fields) */
+    /* Hash type, name, model_path, and common numeric fields */
+    hash ^= fnv1a_hash(config->platform.type, sizeof(config->platform.type));
     hash *= FNV_PRIME;
+    hash ^= fnv1a_hash(config->platform.name, sizeof(config->platform.name));
+    hash *= FNV_PRIME;
+    hash ^= fnv1a_hash(config->platform.model_path, sizeof(config->platform.model_path));
+    hash *= FNV_PRIME;
+    hash ^= fnv1a_hash(&config->platform.mass, sizeof(float));
+    hash *= FNV_PRIME;
+    hash ^= fnv1a_hash(&config->platform.ixx, sizeof(float) * 3); /* ixx, iyy, izz */
+    hash *= FNV_PRIME;
+    hash ^= fnv1a_hash(&config->platform.collision_radius, sizeof(float) * 5); /* collision_radius through max_tilt_angle */
+    hash *= FNV_PRIME;
+    hash ^= fnv1a_hash(config->platform.color, sizeof(float) * 3);
+    hash *= FNV_PRIME;
+    hash ^= fnv1a_hash(&config->platform.scale, sizeof(float));
+    hash *= FNV_PRIME;
+
+    /* Hash platform_specific CONTENTS (not the pointer!) */
+    if (config->platform.platform_specific && config->platform.platform_specific_size > 0) {
+        hash ^= fnv1a_hash(config->platform.platform_specific,
+                           config->platform.platform_specific_size);
+        hash *= FNV_PRIME;
+    }
 
     /* Hash environment config */
     hash ^= fnv1a_hash(&config->environment, sizeof(EnvironmentConfig));
@@ -80,35 +104,44 @@ int config_save(const char* path, const Config* config) {
     FILE* fp = fopen(path, "w");
     if (!fp) return -1;
 
-    /* [drone] section */
-    fprintf(fp, "[drone]\n");
-    fprintf(fp, "name = \"%s\"\n", config->drone.name);
-    if (config->drone.model_path[0]) {
-        fprintf(fp, "model_path = \"%s\"\n", config->drone.model_path);
+    const PlatformConfig* plat = &config->platform;
+
+    /* [platform] section */
+    fprintf(fp, "[platform]\n");
+    fprintf(fp, "type = \"%s\"\n", plat->type);
+    fprintf(fp, "name = \"%s\"\n", plat->name);
+    if (plat->model_path[0]) {
+        fprintf(fp, "model_path = \"%s\"\n", plat->model_path);
     }
-    fprintf(fp, "mass = %.6f\n", config->drone.mass);
-    fprintf(fp, "arm_length = %.4f\n", config->drone.arm_length);
-    fprintf(fp, "ixx = %.6e\n", config->drone.ixx);
-    fprintf(fp, "iyy = %.6e\n", config->drone.iyy);
-    fprintf(fp, "izz = %.6e\n", config->drone.izz);
-    fprintf(fp, "collision_radius = %.4f\n", config->drone.collision_radius);
-    fprintf(fp, "k_thrust = %.6e\n", config->drone.k_thrust);
-    fprintf(fp, "k_torque = %.6e\n", config->drone.k_torque);
-    fprintf(fp, "motor_tau = %.4f\n", config->drone.motor_tau);
-    fprintf(fp, "max_rpm = %.1f\n", config->drone.max_rpm);
-    fprintf(fp, "k_drag = %.6f\n", config->drone.k_drag);
-    fprintf(fp, "k_drag_angular = %.6f\n", config->drone.k_drag_angular);
-    fprintf(fp, "max_velocity = %.1f\n", config->drone.max_velocity);
-    fprintf(fp, "max_angular_velocity = %.1f\n", config->drone.max_angular_velocity);
-    fprintf(fp, "max_tilt_angle = %.2f\n", config->drone.max_tilt_angle);
+    fprintf(fp, "mass = %.6f\n", plat->mass);
+    fprintf(fp, "ixx = %.6e\n", plat->ixx);
+    fprintf(fp, "iyy = %.6e\n", plat->iyy);
+    fprintf(fp, "izz = %.6e\n", plat->izz);
+    fprintf(fp, "collision_radius = %.4f\n", plat->collision_radius);
+    fprintf(fp, "max_velocity = %.1f\n", plat->max_velocity);
+    fprintf(fp, "max_angular_velocity = %.1f\n", plat->max_angular_velocity);
+    fprintf(fp, "max_tilt_angle = %.2f\n", plat->max_tilt_angle);
     fprintf(fp, "color = [%.2f, %.2f, %.2f]\n",
-            config->drone.color[0], config->drone.color[1], config->drone.color[2]);
-    fprintf(fp, "scale = %.2f\n", config->drone.scale);
+            plat->color[0], plat->color[1], plat->color[2]);
+    fprintf(fp, "scale = %.2f\n", plat->scale);
+
+    /* [platform.quadcopter] sub-section */
+    if (strcmp(plat->type, "quadcopter") == 0 && plat->platform_specific) {
+        const QuadcopterConfig* quad = (const QuadcopterConfig*)plat->platform_specific;
+        fprintf(fp, "\n[platform.quadcopter]\n");
+        fprintf(fp, "arm_length = %.4f\n", quad->arm_length);
+        fprintf(fp, "k_thrust = %.6e\n", quad->k_thrust);
+        fprintf(fp, "k_torque = %.6e\n", quad->k_torque);
+        fprintf(fp, "motor_tau = %.4f\n", quad->motor_tau);
+        fprintf(fp, "max_rpm = %.1f\n", quad->max_rpm);
+        fprintf(fp, "k_drag = %.6f\n", quad->k_drag);
+        fprintf(fp, "k_drag_angular = %.6f\n", quad->k_ang_damp);
+    }
 
     /* [environment] section */
     fprintf(fp, "\n[environment]\n");
     fprintf(fp, "num_envs = %u\n", config->environment.num_envs);
-    fprintf(fp, "drones_per_env = %u\n", config->environment.drones_per_env);
+    fprintf(fp, "agents_per_env = %u\n", config->environment.agents_per_env);
     fprintf(fp, "world_size = [%.1f, %.1f, %.1f]\n",
             config->environment.world_size[0],
             config->environment.world_size[1],
@@ -270,16 +303,18 @@ int config_save(const char* path, const Config* config) {
 int config_to_json(const Config* config, char* buffer, size_t buffer_size) {
     if (!config || !buffer || buffer_size == 0) return -1;
 
+    const PlatformConfig* plat = &config->platform;
+
     int written = snprintf(buffer, buffer_size,
         "{\n"
-        "  \"drone\": {\n"
+        "  \"platform\": {\n"
+        "    \"type\": \"%s\",\n"
         "    \"name\": \"%s\",\n"
-        "    \"mass\": %.6f,\n"
-        "    \"arm_length\": %.4f\n"
+        "    \"mass\": %.6f\n"
         "  },\n"
         "  \"environment\": {\n"
         "    \"num_envs\": %u,\n"
-        "    \"drones_per_env\": %u,\n"
+        "    \"agents_per_env\": %u,\n"
         "    \"max_episode_steps\": %u\n"
         "  },\n"
         "  \"physics\": {\n"
@@ -297,11 +332,11 @@ int config_to_json(const Config* config, char* buffer, size_t buffer_size) {
         "  \"num_sensors\": %u,\n"
         "  \"config_hash\": \"0x%016llx\"\n"
         "}",
-        config->drone.name,
-        config->drone.mass,
-        config->drone.arm_length,
+        plat->type,
+        plat->name,
+        plat->mass,
         config->environment.num_envs,
-        config->environment.drones_per_env,
+        config->environment.agents_per_env,
         config->environment.max_episode_steps,
         config->physics.timestep,
         config->physics.gravity,
@@ -327,8 +362,30 @@ int config_compare(const Config* a, const Config* b) {
     uint64_t hash_b = config_hash(b);
     if (hash_a != hash_b) return 1;
 
-    /* Deep comparison for hash collision detection */
-    if (memcmp(&a->drone, &b->drone, sizeof(DroneConfig)) != 0) return 1;
+    /* Deep comparison - can't memcmp PlatformConfig because of pointer field.
+     * Compare field by field for the platform section. */
+    if (memcmp(a->platform.type, b->platform.type, sizeof(a->platform.type)) != 0) return 1;
+    if (memcmp(a->platform.name, b->platform.name, sizeof(a->platform.name)) != 0) return 1;
+    if (memcmp(a->platform.model_path, b->platform.model_path, sizeof(a->platform.model_path)) != 0) return 1;
+    if (a->platform.mass != b->platform.mass) return 1;
+    if (a->platform.ixx != b->platform.ixx) return 1;
+    if (a->platform.iyy != b->platform.iyy) return 1;
+    if (a->platform.izz != b->platform.izz) return 1;
+    if (a->platform.collision_radius != b->platform.collision_radius) return 1;
+    if (a->platform.max_velocity != b->platform.max_velocity) return 1;
+    if (a->platform.max_angular_velocity != b->platform.max_angular_velocity) return 1;
+    if (a->platform.max_tilt_angle != b->platform.max_tilt_angle) return 1;
+    if (memcmp(a->platform.color, b->platform.color, sizeof(a->platform.color)) != 0) return 1;
+    if (a->platform.scale != b->platform.scale) return 1;
+    if (a->platform.platform_specific_size != b->platform.platform_specific_size) return 1;
+
+    /* Compare platform_specific contents */
+    if (a->platform.platform_specific_size > 0) {
+        if (!a->platform.platform_specific || !b->platform.platform_specific) return 1;
+        if (memcmp(a->platform.platform_specific, b->platform.platform_specific,
+                   a->platform.platform_specific_size) != 0) return 1;
+    }
+
     if (memcmp(&a->environment, &b->environment, sizeof(EnvironmentConfig)) != 0) return 1;
     if (memcmp(&a->physics, &b->physics, sizeof(ConfigPhysics)) != 0) return 1;
     if (memcmp(&a->reward, &b->reward, sizeof(RewardConfigData)) != 0) return 1;
@@ -372,6 +429,21 @@ void config_clone(const Config* src, Config* dst, Arena* arena) {
         dst->num_sensors = 0;
     }
 
+    /* Deep copy platform_specific */
+    if (src->platform.platform_specific && src->platform.platform_specific_size > 0) {
+        void* new_ps = malloc(src->platform.platform_specific_size);
+        if (new_ps) {
+            memcpy(new_ps, src->platform.platform_specific, src->platform.platform_specific_size);
+            dst->platform.platform_specific = new_ps;
+        } else {
+            dst->platform.platform_specific = NULL;
+            dst->platform.platform_specific_size = 0;
+        }
+    } else {
+        dst->platform.platform_specific = NULL;
+        dst->platform.platform_specific_size = 0;
+    }
+
     /* Clear path and recompute hash */
     memset(dst->config_path, 0, sizeof(dst->config_path));
     dst->config_hash = config_hash(dst);
@@ -391,21 +463,28 @@ void config_print(const Config* config) {
     printf("Source: %s\n", config->config_path[0] ? config->config_path : "(in-memory)");
     printf("Hash: 0x%016llx\n\n", (unsigned long long)config->config_hash);
 
-    printf("[drone]\n");
-    printf("  name: %s\n", config->drone.name);
-    printf("  mass: %.4f kg\n", config->drone.mass);
-    printf("  arm_length: %.4f m\n", config->drone.arm_length);
+    const PlatformConfig* plat = &config->platform;
+    printf("[platform]\n");
+    printf("  type: %s\n", plat->type);
+    printf("  name: %s\n", plat->name);
+    printf("  mass: %.4f kg\n", plat->mass);
     printf("  inertia: [%.2e, %.2e, %.2e] kg*m^2\n",
-           config->drone.ixx, config->drone.iyy, config->drone.izz);
-    printf("  k_thrust: %.2e N/(rad/s)^2\n", config->drone.k_thrust);
-    printf("  k_torque: %.2e N*m/(rad/s)^2\n", config->drone.k_torque);
-    printf("  motor_tau: %.4f s\n", config->drone.motor_tau);
-    printf("  max_rpm: %.0f\n", config->drone.max_rpm);
-    printf("  collision_radius: %.4f m\n", config->drone.collision_radius);
+           plat->ixx, plat->iyy, plat->izz);
+    printf("  collision_radius: %.4f m\n", plat->collision_radius);
+
+    if (strcmp(plat->type, "quadcopter") == 0 && plat->platform_specific) {
+        const QuadcopterConfig* quad = (const QuadcopterConfig*)plat->platform_specific;
+        printf("  [quadcopter]\n");
+        printf("    arm_length: %.4f m\n", quad->arm_length);
+        printf("    k_thrust: %.2e N/(rad/s)^2\n", quad->k_thrust);
+        printf("    k_torque: %.2e N*m/(rad/s)^2\n", quad->k_torque);
+        printf("    motor_tau: %.4f s\n", quad->motor_tau);
+        printf("    max_rpm: %.0f\n", quad->max_rpm);
+    }
 
     printf("\n[environment]\n");
     printf("  num_envs: %u\n", config->environment.num_envs);
-    printf("  drones_per_env: %u\n", config->environment.drones_per_env);
+    printf("  agents_per_env: %u\n", config->environment.agents_per_env);
     printf("  world_size: [%.1f, %.1f, %.1f] m\n",
            config->environment.world_size[0],
            config->environment.world_size[1],

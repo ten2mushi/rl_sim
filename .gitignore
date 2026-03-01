@@ -47,6 +47,11 @@ Thumbs.db
 # Generated output
 output/
 orbit_output/
+experiments/
+
+# Claude Code
+CLAUDE.md
+.claude/
 
 # Large mesh files (regenerate with utils/generate_gyroid_cube.py)
 input/from_utils/

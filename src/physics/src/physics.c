@@ -1,17 +1,20 @@
 /**
  * Physics Engine Module Implementation
  *
- * RK4-integrated quadcopter physics with SIMD-optimized batch processing.
+ * RK4-integrated rigid body physics with platform-agnostic VTable dispatch.
+ * Forces/torques, actuator dynamics, and platform effects are dispatched
+ * through the PlatformVTable set at physics_create() time.
  */
 
 #include "../include/physics.h"
+#include "platform.h"
 #include <math.h>
 
 /* Small epsilon for numerical stability */
 #define PHYSICS_EPSILON 1e-8f
 
 /* ============================================================================
- * Section 1: Lifecycle Functions (Phase 1)
+ * Section 1: Lifecycle Functions
  * ============================================================================ */
 
 PhysicsConfig physics_config_default(void) {
@@ -43,8 +46,9 @@ PhysicsConfig physics_config_default(void) {
 }
 
 PhysicsSystem* physics_create(Arena* persistent_arena, Arena* scratch_arena,
-                              const PhysicsConfig* config, uint32_t max_drones) {
-    if (persistent_arena == NULL || scratch_arena == NULL || max_drones == 0) {
+                              const PhysicsConfig* config, uint32_t max_agents,
+                              const PlatformVTable* vtable) {
+    if (persistent_arena == NULL || scratch_arena == NULL || max_agents == 0) {
         return NULL;
     }
 
@@ -61,18 +65,19 @@ PhysicsSystem* physics_create(Arena* persistent_arena, Arena* scratch_arena,
         physics->config = physics_config_default();
     }
 
+    physics->vtable = vtable;
     physics->scratch_arena = scratch_arena;
-    physics->max_drones = max_drones;
+    physics->max_agents = max_agents;
     physics->step_count = 0;
-    physics->total_integration_time = 0.0;
+    physics->total_integration_time = 0.0f;
     physics->sdf_distances = NULL;
 
-    /* Allocate RK4 scratch buffers (5 DroneStateSOA structures) */
-    physics->k1 = drone_state_create(persistent_arena, max_drones);
-    physics->k2 = drone_state_create(persistent_arena, max_drones);
-    physics->k3 = drone_state_create(persistent_arena, max_drones);
-    physics->k4 = drone_state_create(persistent_arena, max_drones);
-    physics->temp_state = drone_state_create(persistent_arena, max_drones);
+    /* Allocate RK4 scratch buffers (5 RigidBodyStateSOA structures) */
+    physics->k1 = rigid_body_state_create(persistent_arena, max_agents);
+    physics->k2 = rigid_body_state_create(persistent_arena, max_agents);
+    physics->k3 = rigid_body_state_create(persistent_arena, max_agents);
+    physics->k4 = rigid_body_state_create(persistent_arena, max_agents);
+    physics->temp_state = rigid_body_state_create(persistent_arena, max_agents);
 
     if (physics->k1 == NULL || physics->k2 == NULL || physics->k3 == NULL ||
         physics->k4 == NULL || physics->temp_state == NULL) {
@@ -80,7 +85,7 @@ PhysicsSystem* physics_create(Arena* persistent_arena, Arena* scratch_arena,
     }
 
     /* Allocate force/torque buffers (6 float arrays, 32-byte aligned) */
-    size_t aligned_size = align_up_size(max_drones * sizeof(float), 32);
+    size_t aligned_size = align_up_size(max_agents * sizeof(float), 32);
 
     physics->forces_x = arena_alloc_aligned(persistent_arena, aligned_size, 32);
     physics->forces_y = arena_alloc_aligned(persistent_arena, aligned_size, 32);
@@ -103,36 +108,22 @@ void physics_destroy(PhysicsSystem* physics) {
         return;
     }
 
-    /* Arena memory can't be individually freed, just reset statistics */
-    physics->step_count = 0;
-    physics->total_integration_time = 0.0;
-
-    /* Nullify pointers for safety */
-    physics->k1 = NULL;
-    physics->k2 = NULL;
-    physics->k3 = NULL;
-    physics->k4 = NULL;
-    physics->temp_state = NULL;
-    physics->forces_x = NULL;
-    physics->forces_y = NULL;
-    physics->forces_z = NULL;
-    physics->torques_x = NULL;
-    physics->torques_y = NULL;
-    physics->torques_z = NULL;
+    /* Arena memory can't be individually freed; zero entire struct for safety */
+    memset(physics, 0, sizeof(PhysicsSystem));
 }
 
-size_t physics_memory_size(uint32_t max_drones) {
-    if (max_drones == 0) {
+size_t physics_memory_size(uint32_t max_agents) {
+    if (max_agents == 0) {
         return 0;
     }
 
-    size_t aligned_array = align_up_size(max_drones * sizeof(float), 32);
+    size_t aligned_array = align_up_size(max_agents * sizeof(float), 32);
 
     /* PhysicsSystem struct */
     size_t total = sizeof(PhysicsSystem);
 
-    /* 5 DroneStateSOA structures for RK4 */
-    total += 5 * drone_state_memory_size(max_drones);
+    /* 5 RigidBodyStateSOA structures for RK4 */
+    total += 5 * rigid_body_state_memory_size(max_agents);
 
     /* 6 force/torque arrays */
     total += 6 * aligned_array;
@@ -141,24 +132,26 @@ size_t physics_memory_size(uint32_t max_drones) {
 }
 
 /* ============================================================================
- * Section 2: Numerical Stability Functions (Phase 2)
+ * Section 2: Numerical Stability Functions
  * ============================================================================ */
 
-void physics_normalize_quaternions(DroneStateSOA* states, uint32_t count) {
+void physics_normalize_quaternions(PlatformStateSOA* states, uint32_t count) {
     FOUNDATION_ASSERT(states != NULL, "states is NULL");
 
     if (states == NULL || count == 0) {
         return;
     }
 
+    RigidBodyStateSOA* rb = &states->rigid_body;
+
     SIMD_LOOP_START(count);
 
     /* SIMD loop */
     for (uint32_t i = 0; i < _simd_count; i += FOUNDATION_SIMD_WIDTH) {
-        simd_float w = simd_load_ps(&states->quat_w[i]);
-        simd_float x = simd_load_ps(&states->quat_x[i]);
-        simd_float y = simd_load_ps(&states->quat_y[i]);
-        simd_float z = simd_load_ps(&states->quat_z[i]);
+        simd_float w = simd_load_ps(&rb->quat_w[i]);
+        simd_float x = simd_load_ps(&rb->quat_x[i]);
+        simd_float y = simd_load_ps(&rb->quat_y[i]);
+        simd_float z = simd_load_ps(&rb->quat_z[i]);
 
         /* ||q||^2 = w^2 + x^2 + y^2 + z^2 */
         simd_float mag_sq = simd_fmadd_ps(w, w,
@@ -175,25 +168,25 @@ void physics_normalize_quaternions(DroneStateSOA* states, uint32_t count) {
                   simd_mul_ps(simd_mul_ps(half, mag_sq),
                   simd_mul_ps(inv_mag, inv_mag))));
 
-        simd_store_ps(&states->quat_w[i], simd_mul_ps(w, inv_mag));
-        simd_store_ps(&states->quat_x[i], simd_mul_ps(x, inv_mag));
-        simd_store_ps(&states->quat_y[i], simd_mul_ps(y, inv_mag));
-        simd_store_ps(&states->quat_z[i], simd_mul_ps(z, inv_mag));
+        simd_store_ps(&rb->quat_w[i], simd_mul_ps(w, inv_mag));
+        simd_store_ps(&rb->quat_x[i], simd_mul_ps(x, inv_mag));
+        simd_store_ps(&rb->quat_y[i], simd_mul_ps(y, inv_mag));
+        simd_store_ps(&rb->quat_z[i], simd_mul_ps(z, inv_mag));
     }
 
     /* Scalar remainder */
     SIMD_LOOP_REMAINDER(i, count) {
-        float w = states->quat_w[i], x = states->quat_x[i];
-        float y = states->quat_y[i], z = states->quat_z[i];
+        float w = rb->quat_w[i], x = rb->quat_x[i];
+        float y = rb->quat_y[i], z = rb->quat_z[i];
         float inv_mag = 1.0f / sqrtf(w*w + x*x + y*y + z*z + PHYSICS_EPSILON);
-        states->quat_w[i] = w * inv_mag;
-        states->quat_x[i] = x * inv_mag;
-        states->quat_y[i] = y * inv_mag;
-        states->quat_z[i] = z * inv_mag;
+        rb->quat_w[i] = w * inv_mag;
+        rb->quat_x[i] = x * inv_mag;
+        rb->quat_y[i] = y * inv_mag;
+        rb->quat_z[i] = z * inv_mag;
     }
 }
 
-void physics_clamp_velocities(DroneStateSOA* states, const DroneParamsSOA* params, uint32_t count) {
+void physics_clamp_velocities(PlatformStateSOA* states, const PlatformParamsSOA* params, uint32_t count) {
     FOUNDATION_ASSERT(states != NULL, "states is NULL");
     FOUNDATION_ASSERT(params != NULL, "params is NULL");
 
@@ -201,14 +194,17 @@ void physics_clamp_velocities(DroneStateSOA* states, const DroneParamsSOA* param
         return;
     }
 
+    RigidBodyStateSOA* rb = &states->rigid_body;
+    const RigidBodyParamsSOA* rbp = &params->rigid_body;
+
     SIMD_LOOP_START(count);
 
     /* SIMD loop for linear velocity clamping */
     for (uint32_t i = 0; i < _simd_count; i += FOUNDATION_SIMD_WIDTH) {
-        simd_float vx = simd_load_ps(&states->vel_x[i]);
-        simd_float vy = simd_load_ps(&states->vel_y[i]);
-        simd_float vz = simd_load_ps(&states->vel_z[i]);
-        simd_float max_vel = simd_load_ps(&params->max_vel[i]);
+        simd_float vx = simd_load_ps(&rb->vel_x[i]);
+        simd_float vy = simd_load_ps(&rb->vel_y[i]);
+        simd_float vz = simd_load_ps(&rb->vel_z[i]);
+        simd_float max_vel = simd_load_ps(&rbp->max_vel[i]);
 
         /* Compute speed^2 */
         simd_float speed_sq = simd_fmadd_ps(vx, vx,
@@ -222,17 +218,17 @@ void physics_clamp_velocities(DroneStateSOA* states, const DroneParamsSOA* param
         simd_float scale = simd_mul_ps(max_vel, inv_speed);
         scale = simd_blendv_ps(simd_set1_ps(1.0f), scale, needs_clamp);
 
-        simd_store_ps(&states->vel_x[i], simd_mul_ps(vx, scale));
-        simd_store_ps(&states->vel_y[i], simd_mul_ps(vy, scale));
-        simd_store_ps(&states->vel_z[i], simd_mul_ps(vz, scale));
+        simd_store_ps(&rb->vel_x[i], simd_mul_ps(vx, scale));
+        simd_store_ps(&rb->vel_y[i], simd_mul_ps(vy, scale));
+        simd_store_ps(&rb->vel_z[i], simd_mul_ps(vz, scale));
     }
 
     /* SIMD loop for angular velocity clamping */
     for (uint32_t i = 0; i < _simd_count; i += FOUNDATION_SIMD_WIDTH) {
-        simd_float ox = simd_load_ps(&states->omega_x[i]);
-        simd_float oy = simd_load_ps(&states->omega_y[i]);
-        simd_float oz = simd_load_ps(&states->omega_z[i]);
-        simd_float max_omega = simd_load_ps(&params->max_omega[i]);
+        simd_float ox = simd_load_ps(&rb->omega_x[i]);
+        simd_float oy = simd_load_ps(&rb->omega_y[i]);
+        simd_float oz = simd_load_ps(&rb->omega_z[i]);
+        simd_float max_omega = simd_load_ps(&rbp->max_omega[i]);
 
         simd_float omega_sq = simd_fmadd_ps(ox, ox,
                              simd_fmadd_ps(oy, oy,
@@ -244,33 +240,33 @@ void physics_clamp_velocities(DroneStateSOA* states, const DroneParamsSOA* param
         simd_float scale = simd_mul_ps(max_omega, inv_omega);
         scale = simd_blendv_ps(simd_set1_ps(1.0f), scale, needs_clamp);
 
-        simd_store_ps(&states->omega_x[i], simd_mul_ps(ox, scale));
-        simd_store_ps(&states->omega_y[i], simd_mul_ps(oy, scale));
-        simd_store_ps(&states->omega_z[i], simd_mul_ps(oz, scale));
+        simd_store_ps(&rb->omega_x[i], simd_mul_ps(ox, scale));
+        simd_store_ps(&rb->omega_y[i], simd_mul_ps(oy, scale));
+        simd_store_ps(&rb->omega_z[i], simd_mul_ps(oz, scale));
     }
 
     /* Scalar remainder */
     SIMD_LOOP_REMAINDER(i, count) {
         /* Linear velocity */
-        float vx = states->vel_x[i], vy = states->vel_y[i], vz = states->vel_z[i];
+        float vx = rb->vel_x[i], vy = rb->vel_y[i], vz = rb->vel_z[i];
         float speed_sq = vx*vx + vy*vy + vz*vz;
-        float max_vel = params->max_vel[i];
+        float max_vel = rbp->max_vel[i];
         if (speed_sq > max_vel * max_vel) {
             float scale = max_vel / sqrtf(speed_sq + PHYSICS_EPSILON);
-            states->vel_x[i] = vx * scale;
-            states->vel_y[i] = vy * scale;
-            states->vel_z[i] = vz * scale;
+            rb->vel_x[i] = vx * scale;
+            rb->vel_y[i] = vy * scale;
+            rb->vel_z[i] = vz * scale;
         }
 
         /* Angular velocity */
-        float ox = states->omega_x[i], oy = states->omega_y[i], oz = states->omega_z[i];
+        float ox = rb->omega_x[i], oy = rb->omega_y[i], oz = rb->omega_z[i];
         float omega_sq = ox*ox + oy*oy + oz*oz;
-        float max_omega = params->max_omega[i];
+        float max_omega = rbp->max_omega[i];
         if (omega_sq > max_omega * max_omega) {
             float scale = max_omega / sqrtf(omega_sq + PHYSICS_EPSILON);
-            states->omega_x[i] = ox * scale;
-            states->omega_y[i] = oy * scale;
-            states->omega_z[i] = oz * scale;
+            rb->omega_x[i] = ox * scale;
+            rb->omega_y[i] = oy * scale;
+            rb->omega_z[i] = oz * scale;
         }
     }
 }
@@ -317,74 +313,79 @@ void physics_clamp_accelerations(float* accel_x, float* accel_y, float* accel_z,
     }
 }
 
-uint32_t physics_sanitize_state(DroneStateSOA* states, uint32_t count) {
+uint32_t physics_sanitize_state(PlatformStateSOA* states, uint32_t count) {
     FOUNDATION_ASSERT(states != NULL, "states is NULL");
 
     if (states == NULL || count == 0) {
         return 0;
     }
 
+    RigidBodyStateSOA* rb = &states->rigid_body;
     uint32_t reset_count = 0;
 
     for (uint32_t i = 0; i < count; i++) {
         bool needs_reset = false;
 
         /* Check for NaN/Inf in position */
-        if (!isfinite(states->pos_x[i]) || !isfinite(states->pos_y[i]) ||
-            !isfinite(states->pos_z[i])) {
+        if (!isfinite(rb->pos_x[i]) || !isfinite(rb->pos_y[i]) ||
+            !isfinite(rb->pos_z[i])) {
 #ifndef NDEBUG
-            FOUNDATION_ASSERT(0, "NaN/Inf detected in drone position after physics step");
+            FOUNDATION_ASSERT(0, "NaN/Inf detected in agent position after physics step");
 #endif
             needs_reset = true;
         }
 
         /* Check for NaN/Inf in velocity */
-        if (!isfinite(states->vel_x[i]) || !isfinite(states->vel_y[i]) ||
-            !isfinite(states->vel_z[i])) {
+        if (!isfinite(rb->vel_x[i]) || !isfinite(rb->vel_y[i]) ||
+            !isfinite(rb->vel_z[i])) {
             needs_reset = true;
         }
 
         /* Check for NaN/Inf in quaternion */
-        if (!isfinite(states->quat_w[i]) || !isfinite(states->quat_x[i]) ||
-            !isfinite(states->quat_y[i]) || !isfinite(states->quat_z[i])) {
+        if (!isfinite(rb->quat_w[i]) || !isfinite(rb->quat_x[i]) ||
+            !isfinite(rb->quat_y[i]) || !isfinite(rb->quat_z[i])) {
             needs_reset = true;
         }
 
         /* Check for NaN/Inf in angular velocity */
-        if (!isfinite(states->omega_x[i]) || !isfinite(states->omega_y[i]) ||
-            !isfinite(states->omega_z[i])) {
+        if (!isfinite(rb->omega_x[i]) || !isfinite(rb->omega_y[i]) ||
+            !isfinite(rb->omega_z[i])) {
             needs_reset = true;
         }
 
-        /* Check for NaN/Inf in RPMs */
-        if (!isfinite(states->rpm_0[i]) || !isfinite(states->rpm_1[i]) ||
-            !isfinite(states->rpm_2[i]) || !isfinite(states->rpm_3[i])) {
-            needs_reset = true;
+        /* Check extensions for NaN/Inf */
+        for (uint32_t e = 0; e < states->extension_count; e++) {
+            if (states->extension[e] != NULL && !isfinite(states->extension[e][i])) {
+                needs_reset = true;
+                break;
+            }
         }
 
         if (needs_reset) {
-            /* Reset to safe state */
-            states->pos_x[i] = 0.0f;
-            states->pos_y[i] = 0.0f;
-            states->pos_z[i] = 0.0f;
+            /* Reset rigid body to safe state */
+            rb->pos_x[i] = 0.0f;
+            rb->pos_y[i] = 0.0f;
+            rb->pos_z[i] = 0.0f;
 
-            states->vel_x[i] = 0.0f;
-            states->vel_y[i] = 0.0f;
-            states->vel_z[i] = 0.0f;
+            rb->vel_x[i] = 0.0f;
+            rb->vel_y[i] = 0.0f;
+            rb->vel_z[i] = 0.0f;
 
-            states->quat_w[i] = 1.0f;
-            states->quat_x[i] = 0.0f;
-            states->quat_y[i] = 0.0f;
-            states->quat_z[i] = 0.0f;
+            rb->quat_w[i] = 1.0f;
+            rb->quat_x[i] = 0.0f;
+            rb->quat_y[i] = 0.0f;
+            rb->quat_z[i] = 0.0f;
 
-            states->omega_x[i] = 0.0f;
-            states->omega_y[i] = 0.0f;
-            states->omega_z[i] = 0.0f;
+            rb->omega_x[i] = 0.0f;
+            rb->omega_y[i] = 0.0f;
+            rb->omega_z[i] = 0.0f;
 
-            states->rpm_0[i] = 0.0f;
-            states->rpm_1[i] = 0.0f;
-            states->rpm_2[i] = 0.0f;
-            states->rpm_3[i] = 0.0f;
+            /* Zero extensions */
+            for (uint32_t e = 0; e < states->extension_count; e++) {
+                if (states->extension[e] != NULL) {
+                    states->extension[e][i] = 0.0f;
+                }
+            }
 
             reset_count++;
         }
@@ -394,349 +395,68 @@ uint32_t physics_sanitize_state(DroneStateSOA* states, uint32_t count) {
 }
 
 /* ============================================================================
- * Section 3: Physics Primitives (Phase 3)
+ * Section 3: Derivative Computation (generic via VTable)
  * ============================================================================ */
 
-void physics_motor_dynamics(const float* rpm_commands, float* actual_rpms,
-                            const DroneParamsSOA* params, float dt, uint32_t count) {
-    FOUNDATION_ASSERT(rpm_commands != NULL, "rpm_commands is NULL");
-    FOUNDATION_ASSERT(actual_rpms != NULL, "actual_rpms is NULL");
-    FOUNDATION_ASSERT(params != NULL, "params is NULL");
-
-    if (rpm_commands == NULL || actual_rpms == NULL || params == NULL || count == 0) {
-        return;
-    }
-
-    /* Process all 4 motors for each drone */
-    /* Motor 0 */
-    SIMD_LOOP_START(count);
-
-    for (uint32_t i = 0; i < _simd_count; i += FOUNDATION_SIMD_WIDTH) {
-        simd_float tau = simd_load_ps(&params->motor_tau[i]);
-        simd_float max_rpm = simd_load_ps(&params->max_rpm[i]);
-        simd_float dt_v = simd_set1_ps(dt);
-        simd_float one = simd_set1_ps(1.0f);
-        simd_float zero = simd_setzero_ps();
-
-        /* Compute alpha = min(dt / tau, 1.0) */
-        simd_float alpha = simd_div_ps(dt_v, simd_add_ps(tau, simd_set1_ps(PHYSICS_EPSILON)));
-        alpha = simd_min_ps(alpha, one);
-
-        /* Motor 0 */
-        simd_float cmd0 = simd_load_ps(&rpm_commands[i * 4]);
-        simd_float curr0 = simd_load_ps(&actual_rpms[i * 4]);
-        cmd0 = simd_min_ps(simd_max_ps(cmd0, zero), max_rpm);
-        simd_float new0 = simd_fmadd_ps(simd_sub_ps(cmd0, curr0), alpha, curr0);
-        simd_store_ps(&actual_rpms[i * 4], new0);
-    }
-
-    /* Scalar processing for all motors (simpler and correct) */
-    for (uint32_t i = 0; i < count; i++) {
-        float tau = params->motor_tau[i];
-        float max_rpm = params->max_rpm[i];
-        float alpha = dt / (tau + PHYSICS_EPSILON);
-        if (alpha > 1.0f) alpha = 1.0f;
-
-        for (int m = 0; m < 4; m++) {
-            float cmd = rpm_commands[i * 4 + m];
-            cmd = clampf(cmd, 0.0f, max_rpm);
-            float curr = actual_rpms[i * 4 + m];
-            actual_rpms[i * 4 + m] = curr + (cmd - curr) * alpha;
-        }
-    }
-}
-
-void physics_compute_forces_torques(const DroneStateSOA* states, const DroneParamsSOA* params,
-                                    float* forces_x, float* forces_y, float* forces_z,
-                                    float* torques_x, float* torques_y, float* torques_z,
-                                    uint32_t count) {
-    FOUNDATION_ASSERT(states != NULL, "states is NULL");
-    FOUNDATION_ASSERT(params != NULL, "params is NULL");
-
-    if (states == NULL || params == NULL || count == 0) {
-        return;
-    }
-
-    SIMD_LOOP_START(count);
-
-    for (uint32_t i = 0; i < _simd_count; i += FOUNDATION_SIMD_WIDTH) {
-        /* Load motor RPMs */
-        simd_float rpm0 = simd_load_ps(&states->rpm_0[i]);
-        simd_float rpm1 = simd_load_ps(&states->rpm_1[i]);
-        simd_float rpm2 = simd_load_ps(&states->rpm_2[i]);
-        simd_float rpm3 = simd_load_ps(&states->rpm_3[i]);
-
-        /* Load parameters */
-        simd_float k_thrust = simd_load_ps(&params->k_thrust[i]);
-        simd_float k_torque = simd_load_ps(&params->k_torque[i]);
-        simd_float arm_len = simd_load_ps(&params->arm_length[i]);
-
-        /* Compute thrust for each motor: T_i = k_thrust * rpm^2 */
-        simd_float T0 = simd_mul_ps(k_thrust, simd_mul_ps(rpm0, rpm0));
-        simd_float T1 = simd_mul_ps(k_thrust, simd_mul_ps(rpm1, rpm1));
-        simd_float T2 = simd_mul_ps(k_thrust, simd_mul_ps(rpm2, rpm2));
-        simd_float T3 = simd_mul_ps(k_thrust, simd_mul_ps(rpm3, rpm3));
-
-        /* Total thrust in body frame (along body Z axis) */
-        simd_float total_thrust = simd_add_ps(simd_add_ps(T0, T1), simd_add_ps(T2, T3));
-
-        /* Load quaternion */
-        simd_float qw = simd_load_ps(&states->quat_w[i]);
-        simd_float qx = simd_load_ps(&states->quat_x[i]);
-        simd_float qy = simd_load_ps(&states->quat_y[i]);
-        simd_float qz = simd_load_ps(&states->quat_z[i]);
-
-        /* Rotate thrust to world frame
-         * For F_body = [0, 0, thrust], optimized rotation:
-         * fx = 2 * (qx*qz + qw*qy) * thrust
-         * fy = 2 * (qy*qz - qw*qx) * thrust
-         * fz = (qw^2 - qx^2 - qy^2 + qz^2) * thrust
-         */
-        simd_float two = simd_set1_ps(2.0f);
-
-        simd_float fx_world = simd_mul_ps(two,
-                             simd_mul_ps(simd_add_ps(simd_mul_ps(qx, qz),
-                                                     simd_mul_ps(qw, qy)),
-                                        total_thrust));
-
-        simd_float fy_world = simd_mul_ps(two,
-                             simd_mul_ps(simd_sub_ps(simd_mul_ps(qy, qz),
-                                                     simd_mul_ps(qw, qx)),
-                                        total_thrust));
-
-        simd_float qw2 = simd_mul_ps(qw, qw);
-        simd_float qx2 = simd_mul_ps(qx, qx);
-        simd_float qy2 = simd_mul_ps(qy, qy);
-        simd_float qz2 = simd_mul_ps(qz, qz);
-
-        simd_float fz_world = simd_mul_ps(
-            simd_sub_ps(simd_add_ps(qw2, qz2), simd_add_ps(qx2, qy2)),
-            total_thrust);
-
-        simd_store_ps(&forces_x[i], fx_world);
-        simd_store_ps(&forces_y[i], fy_world);
-        simd_store_ps(&forces_z[i], fz_world);
-
-        /* Compute torques (body frame, X-configuration)
-         * Roll (tau_x): arm_length * (T1 + T3 - T0 - T2)
-         * Pitch (tau_y): arm_length * (T0 + T1 - T2 - T3)
-         * Yaw (tau_z): k_torque * (rpm0^2 + rpm1^2 - rpm2^2 - rpm3^2)
-         */
-        simd_float tau_x = simd_mul_ps(arm_len,
-                          simd_sub_ps(simd_add_ps(T1, T3), simd_add_ps(T0, T2)));
-        simd_float tau_y = simd_mul_ps(arm_len,
-                          simd_sub_ps(simd_add_ps(T0, T1), simd_add_ps(T2, T3)));
-
-        /* Yaw torque from motor reaction torques */
-        simd_float rpm0_sq = simd_mul_ps(rpm0, rpm0);
-        simd_float rpm1_sq = simd_mul_ps(rpm1, rpm1);
-        simd_float rpm2_sq = simd_mul_ps(rpm2, rpm2);
-        simd_float rpm3_sq = simd_mul_ps(rpm3, rpm3);
-        simd_float tau_z = simd_mul_ps(k_torque,
-                          simd_sub_ps(simd_add_ps(rpm0_sq, rpm1_sq),
-                                      simd_add_ps(rpm2_sq, rpm3_sq)));
-
-        simd_store_ps(&torques_x[i], tau_x);
-        simd_store_ps(&torques_y[i], tau_y);
-        simd_store_ps(&torques_z[i], tau_z);
-    }
-
-    /* Scalar remainder */
-    SIMD_LOOP_REMAINDER(i, count) {
-        float rpm0 = states->rpm_0[i], rpm1 = states->rpm_1[i];
-        float rpm2 = states->rpm_2[i], rpm3 = states->rpm_3[i];
-        float k_thrust = params->k_thrust[i];
-        float k_torque = params->k_torque[i];
-        float arm_len = params->arm_length[i];
-
-        /* Thrusts */
-        float T0 = k_thrust * rpm0 * rpm0;
-        float T1 = k_thrust * rpm1 * rpm1;
-        float T2 = k_thrust * rpm2 * rpm2;
-        float T3 = k_thrust * rpm3 * rpm3;
-        float total_thrust = T0 + T1 + T2 + T3;
-
-        /* Rotate to world frame */
-        float qw = states->quat_w[i], qx = states->quat_x[i];
-        float qy = states->quat_y[i], qz = states->quat_z[i];
-
-        forces_x[i] = 2.0f * (qx*qz + qw*qy) * total_thrust;
-        forces_y[i] = 2.0f * (qy*qz - qw*qx) * total_thrust;
-        forces_z[i] = (qw*qw - qx*qx - qy*qy + qz*qz) * total_thrust;
-
-        /* Torques */
-        torques_x[i] = arm_len * (T1 + T3 - T0 - T2);
-        torques_y[i] = arm_len * (T0 + T1 - T2 - T3);
-        torques_z[i] = k_torque * (rpm0*rpm0 + rpm1*rpm1 - rpm2*rpm2 - rpm3*rpm3);
-    }
-}
-
-void physics_apply_drag(const DroneStateSOA* states, const DroneParamsSOA* params,
-                        float* forces_x, float* forces_y, float* forces_z,
-                        uint32_t count, float air_density) {
-    FOUNDATION_ASSERT(states != NULL, "states is NULL");
-    FOUNDATION_ASSERT(params != NULL, "params is NULL");
-
-    if (states == NULL || params == NULL || count == 0) {
-        return;
-    }
-
-    (void)air_density;  /* For now, using simplified linear drag model */
-
-    SIMD_LOOP_START(count);
-
-    for (uint32_t i = 0; i < _simd_count; i += FOUNDATION_SIMD_WIDTH) {
-        simd_float vx = simd_load_ps(&states->vel_x[i]);
-        simd_float vy = simd_load_ps(&states->vel_y[i]);
-        simd_float vz = simd_load_ps(&states->vel_z[i]);
-        simd_float k_drag = simd_load_ps(&params->k_drag[i]);
-
-        /* Compute speed */
-        simd_float speed_sq = simd_fmadd_ps(vx, vx,
-                             simd_fmadd_ps(vy, vy,
-                             simd_mul_ps(vz, vz)));
-        simd_float speed = simd_sqrt_ps(simd_add_ps(speed_sq, simd_set1_ps(PHYSICS_EPSILON)));
-
-        /* F_drag = -k_drag * |v| * v (linear drag model) */
-        simd_float drag_factor = simd_mul_ps(simd_sub_ps(simd_setzero_ps(), k_drag), speed);
-
-        simd_float fx = simd_load_ps(&forces_x[i]);
-        simd_float fy = simd_load_ps(&forces_y[i]);
-        simd_float fz = simd_load_ps(&forces_z[i]);
-
-        simd_store_ps(&forces_x[i], simd_fmadd_ps(drag_factor, vx, fx));
-        simd_store_ps(&forces_y[i], simd_fmadd_ps(drag_factor, vy, fy));
-        simd_store_ps(&forces_z[i], simd_fmadd_ps(drag_factor, vz, fz));
-    }
-
-    SIMD_LOOP_REMAINDER(i, count) {
-        float vx = states->vel_x[i], vy = states->vel_y[i], vz = states->vel_z[i];
-        float k_drag = params->k_drag[i];
-        float speed = sqrtf(vx*vx + vy*vy + vz*vz + PHYSICS_EPSILON);
-        float drag_factor = -k_drag * speed;
-
-        forces_x[i] += drag_factor * vx;
-        forces_y[i] += drag_factor * vy;
-        forces_z[i] += drag_factor * vz;
-    }
-}
-
-void physics_apply_ground_effect(const DroneStateSOA* states, const DroneParamsSOA* params,
-                                 float* forces_z, const float* sdf_distances,
-                                 uint32_t count,
-                                 float ground_height, float effect_coeff) {
-    FOUNDATION_ASSERT(states != NULL, "states is NULL");
-
-    if (states == NULL || sdf_distances == NULL || count == 0) {
-        return;
-    }
-
-    (void)params;  /* Currently unused */
-
-    SIMD_LOOP_START(count);
-
-    simd_float h_ref = simd_set1_ps(ground_height);
-    simd_float k_max = simd_set1_ps(effect_coeff);
-    simd_float one = simd_set1_ps(1.0f);
-    simd_float zero = simd_setzero_ps();
-
-    for (uint32_t i = 0; i < _simd_count; i += FOUNDATION_SIMD_WIDTH) {
-        simd_float sdf = simd_load_ps(&sdf_distances[i]);
-        simd_float fz = simd_load_ps(&forces_z[i]);
-
-        /* k_ge = 1 + (k_max - 1) * exp(-sdf / h_ref)
-         * Apply when sdf > 0 (outside surface) AND sdf < ground_height (close) */
-        simd_float ratio = simd_div_ps(simd_sub_ps(zero, sdf),
-                                        simd_add_ps(h_ref, simd_set1_ps(PHYSICS_EPSILON)));
-
-        /* Clamp ratio to prevent extreme values */
-        ratio = simd_max_ps(ratio, simd_set1_ps(-10.0f));
-        ratio = simd_min_ps(ratio, simd_set1_ps(0.0f));
-
-        /* exp approximation: 1 + x + x^2/2 (good for small x) */
-        simd_float exp_approx = simd_fmadd_ps(
-            simd_mul_ps(ratio, ratio), simd_set1_ps(0.5f),
-            simd_add_ps(one, ratio));
-
-        simd_float k_ge = simd_fmadd_ps(simd_sub_ps(k_max, one), exp_approx, one);
-        k_ge = simd_max_ps(k_ge, one);  /* Clamp to at least 1 */
-
-        /* Only apply when close to surface (sdf < ground_height) AND outside (sdf > 0) */
-        simd_float close_to_surface = simd_cmp_lt_ps(sdf, h_ref);
-        simd_float outside_surface = simd_cmp_gt_ps(sdf, zero);
-        simd_float apply_ge = simd_and_ps(close_to_surface, outside_surface);
-        simd_float final_k = simd_blendv_ps(one, k_ge, apply_ge);
-
-        simd_store_ps(&forces_z[i], simd_mul_ps(fz, final_k));
-    }
-
-    SIMD_LOOP_REMAINDER(i, count) {
-        float sdf = sdf_distances[i];
-        if (sdf > 0.0f && sdf < ground_height) {
-            float ratio = -sdf / (ground_height + PHYSICS_EPSILON);
-            float exp_val = expf(ratio);
-            float k_ge = 1.0f + (effect_coeff - 1.0f) * exp_val;
-            forces_z[i] *= k_ge;
-        }
-    }
-}
-
-/* ============================================================================
- * Section 4: Derivative Computation (Phase 4)
- * ============================================================================ */
-
-void physics_compute_derivatives(const DroneStateSOA* states, const DroneParamsSOA* params,
-                                 const float* actions, DroneStateSOA* derivatives,
-                                 uint32_t count, const PhysicsConfig* config,
-                                 const float* sdf_distances) {
+void physics_compute_derivatives(PhysicsSystem* physics,
+                                 const PlatformStateSOA* states,
+                                 const PlatformParamsSOA* params,
+                                 RigidBodyStateSOA* derivatives,
+                                 uint32_t count) {
+    FOUNDATION_ASSERT(physics != NULL, "physics is NULL");
     FOUNDATION_ASSERT(states != NULL, "states is NULL");
     FOUNDATION_ASSERT(params != NULL, "params is NULL");
     FOUNDATION_ASSERT(derivatives != NULL, "derivatives is NULL");
-    FOUNDATION_ASSERT(config != NULL, "config is NULL");
 
-    if (states == NULL || params == NULL || derivatives == NULL ||
-        config == NULL || count == 0) {
+    if (physics == NULL || states == NULL || params == NULL ||
+        derivatives == NULL || count == 0) {
         return;
     }
 
-    (void)actions;  /* Actions affect RPMs which are in states */
+    const RigidBodyStateSOA* rb = &states->rigid_body;
+    const RigidBodyParamsSOA* rbp = &params->rigid_body;
+    const PhysicsConfig* config = &physics->config;
 
     /* Position derivative = velocity */
     SIMD_LOOP_START(count);
 
     for (uint32_t i = 0; i < _simd_count; i += FOUNDATION_SIMD_WIDTH) {
-        simd_store_ps(&derivatives->pos_x[i], simd_load_ps(&states->vel_x[i]));
-        simd_store_ps(&derivatives->pos_y[i], simd_load_ps(&states->vel_y[i]));
-        simd_store_ps(&derivatives->pos_z[i], simd_load_ps(&states->vel_z[i]));
+        simd_store_ps(&derivatives->pos_x[i], simd_load_ps(&rb->vel_x[i]));
+        simd_store_ps(&derivatives->pos_y[i], simd_load_ps(&rb->vel_y[i]));
+        simd_store_ps(&derivatives->pos_z[i], simd_load_ps(&rb->vel_z[i]));
     }
 
     SIMD_LOOP_REMAINDER(i, count) {
-        derivatives->pos_x[i] = states->vel_x[i];
-        derivatives->pos_y[i] = states->vel_y[i];
-        derivatives->pos_z[i] = states->vel_z[i];
+        derivatives->pos_x[i] = rb->vel_x[i];
+        derivatives->pos_y[i] = rb->vel_y[i];
+        derivatives->pos_z[i] = rb->vel_z[i];
     }
 
-    /* Compute thrust forces and torques */
-    /* Use derivatives arrays temporarily for force/torque storage */
-    float* forces_x = derivatives->vel_x;
-    float* forces_y = derivatives->vel_y;
-    float* forces_z = derivatives->vel_z;
+    /* Compute platform-specific forces and torques via vtable */
+    float* forces_x = physics->forces_x;
+    float* forces_y = physics->forces_y;
+    float* forces_z = physics->forces_z;
+    float* torques_x = physics->torques_x;
+    float* torques_y = physics->torques_y;
+    float* torques_z = physics->torques_z;
 
-    physics_compute_forces_torques(states, params,
-                                   forces_x, forces_y, forces_z,
-                                   derivatives->omega_x, derivatives->omega_y, derivatives->omega_z,
-                                   count);
-
-    /* Apply drag if enabled */
-    if (config->enable_drag) {
-        physics_apply_drag(states, params, forces_x, forces_y, forces_z,
-                          count, config->air_density);
-    }
-
-    /* Apply ground effect if enabled and SDF distances available */
-    if (config->enable_ground_effect && sdf_distances != NULL) {
-        physics_apply_ground_effect(states, params, forces_z, sdf_distances, count,
-                                   config->ground_effect_height, config->ground_effect_coeff);
+    if (physics->vtable && physics->vtable->compute_forces_torques) {
+        physics->vtable->compute_forces_torques(
+            rb,
+            (float* const*)states->extension, states->extension_count,
+            (float* const*)params->extension, params->extension_count,
+            rbp,
+            forces_x, forces_y, forces_z,
+            torques_x, torques_y, torques_z,
+            count);
+    } else {
+        /* No platform forces - zero everything */
+        memset(forces_x, 0, count * sizeof(float));
+        memset(forces_y, 0, count * sizeof(float));
+        memset(forces_z, 0, count * sizeof(float));
+        memset(torques_x, 0, count * sizeof(float));
+        memset(torques_y, 0, count * sizeof(float));
+        memset(torques_z, 0, count * sizeof(float));
     }
 
     /* Add gravity and convert forces to accelerations */
@@ -744,8 +464,8 @@ void physics_compute_derivatives(const DroneStateSOA* states, const DroneParamsS
         simd_float fx = simd_load_ps(&forces_x[i]);
         simd_float fy = simd_load_ps(&forces_y[i]);
         simd_float fz = simd_load_ps(&forces_z[i]);
-        simd_float mass = simd_load_ps(&params->mass[i]);
-        simd_float gravity = simd_load_ps(&params->gravity[i]);
+        simd_float mass = simd_load_ps(&rbp->mass[i]);
+        simd_float gravity = simd_load_ps(&rbp->gravity[i]);
         simd_float inv_mass = simd_div_ps(simd_set1_ps(1.0f),
                              simd_add_ps(mass, simd_set1_ps(PHYSICS_EPSILON)));
 
@@ -757,8 +477,8 @@ void physics_compute_derivatives(const DroneStateSOA* states, const DroneParamsS
     }
 
     SIMD_LOOP_REMAINDER(i, count) {
-        float mass = params->mass[i];
-        float gravity = params->gravity[i];
+        float mass = rbp->mass[i];
+        float gravity = rbp->gravity[i];
         float inv_mass = 1.0f / (mass + PHYSICS_EPSILON);
 
         derivatives->vel_x[i] = forces_x[i] * inv_mass;
@@ -774,25 +494,17 @@ void physics_compute_derivatives(const DroneStateSOA* states, const DroneParamsS
      * Euler equation for rigid body with diagonal inertia tensor
      */
     for (uint32_t i = 0; i < _simd_count; i += FOUNDATION_SIMD_WIDTH) {
-        simd_float tau_x = simd_load_ps(&derivatives->omega_x[i]);
-        simd_float tau_y = simd_load_ps(&derivatives->omega_y[i]);
-        simd_float tau_z = simd_load_ps(&derivatives->omega_z[i]);
+        simd_float tau_x = simd_load_ps(&torques_x[i]);
+        simd_float tau_y = simd_load_ps(&torques_y[i]);
+        simd_float tau_z = simd_load_ps(&torques_z[i]);
 
-        simd_float ox = simd_load_ps(&states->omega_x[i]);
-        simd_float oy = simd_load_ps(&states->omega_y[i]);
-        simd_float oz = simd_load_ps(&states->omega_z[i]);
+        simd_float ox = simd_load_ps(&rb->omega_x[i]);
+        simd_float oy = simd_load_ps(&rb->omega_y[i]);
+        simd_float oz = simd_load_ps(&rb->omega_z[i]);
 
-        simd_float ixx = simd_load_ps(&params->ixx[i]);
-        simd_float iyy = simd_load_ps(&params->iyy[i]);
-        simd_float izz = simd_load_ps(&params->izz[i]);
-
-        /* Load angular damping */
-        simd_float k_ang_damp = simd_load_ps(&params->k_ang_damp[i]);
-
-        /* Apply angular damping: tau -= k_ang_damp * omega */
-        tau_x = simd_sub_ps(tau_x, simd_mul_ps(k_ang_damp, ox));
-        tau_y = simd_sub_ps(tau_y, simd_mul_ps(k_ang_damp, oy));
-        tau_z = simd_sub_ps(tau_z, simd_mul_ps(k_ang_damp, oz));
+        simd_float ixx = simd_load_ps(&rbp->ixx[i]);
+        simd_float iyy = simd_load_ps(&rbp->iyy[i]);
+        simd_float izz = simd_load_ps(&rbp->izz[i]);
 
         /* Euler equations:
          * omega_dot_x = (tau_x - (izz - iyy) * oy * oz) / ixx
@@ -819,23 +531,17 @@ void physics_compute_derivatives(const DroneStateSOA* states, const DroneParamsS
     }
 
     SIMD_LOOP_REMAINDER(i, count) {
-        float tau_x = derivatives->omega_x[i];
-        float tau_y = derivatives->omega_y[i];
-        float tau_z = derivatives->omega_z[i];
+        float tau_x = torques_x[i];
+        float tau_y = torques_y[i];
+        float tau_z = torques_z[i];
 
-        float ox = states->omega_x[i];
-        float oy = states->omega_y[i];
-        float oz = states->omega_z[i];
+        float ox = rb->omega_x[i];
+        float oy = rb->omega_y[i];
+        float oz = rb->omega_z[i];
 
-        float ixx = params->ixx[i];
-        float iyy = params->iyy[i];
-        float izz = params->izz[i];
-        float k_ang_damp = params->k_ang_damp[i];
-
-        /* Apply damping */
-        tau_x -= k_ang_damp * ox;
-        tau_y -= k_ang_damp * oy;
-        tau_z -= k_ang_damp * oz;
+        float ixx = rbp->ixx[i];
+        float iyy = rbp->iyy[i];
+        float izz = rbp->izz[i];
 
         derivatives->omega_x[i] = (tau_x - (izz - iyy) * oy * oz) / (ixx + PHYSICS_EPSILON);
         derivatives->omega_y[i] = (tau_y - (ixx - izz) * oz * ox) / (iyy + PHYSICS_EPSILON);
@@ -848,23 +554,17 @@ void physics_compute_derivatives(const DroneStateSOA* states, const DroneParamsS
 
     /* Compute quaternion derivative: q_dot = 0.5 * q * [0, omega] */
     for (uint32_t i = 0; i < _simd_count; i += FOUNDATION_SIMD_WIDTH) {
-        simd_float qw = simd_load_ps(&states->quat_w[i]);
-        simd_float qx = simd_load_ps(&states->quat_x[i]);
-        simd_float qy = simd_load_ps(&states->quat_y[i]);
-        simd_float qz = simd_load_ps(&states->quat_z[i]);
+        simd_float qw = simd_load_ps(&rb->quat_w[i]);
+        simd_float qx = simd_load_ps(&rb->quat_x[i]);
+        simd_float qy = simd_load_ps(&rb->quat_y[i]);
+        simd_float qz = simd_load_ps(&rb->quat_z[i]);
 
-        simd_float ox = simd_load_ps(&states->omega_x[i]);
-        simd_float oy = simd_load_ps(&states->omega_y[i]);
-        simd_float oz = simd_load_ps(&states->omega_z[i]);
+        simd_float ox = simd_load_ps(&rb->omega_x[i]);
+        simd_float oy = simd_load_ps(&rb->omega_y[i]);
+        simd_float oz = simd_load_ps(&rb->omega_z[i]);
 
         simd_float half = simd_set1_ps(0.5f);
 
-        /* q_dot = 0.5 * q * [0, omega]
-         * qw_dot = 0.5 * (-qx*ox - qy*oy - qz*oz)
-         * qx_dot = 0.5 * (qw*ox + qy*oz - qz*oy)
-         * qy_dot = 0.5 * (qw*oy + qz*ox - qx*oz)
-         * qz_dot = 0.5 * (qw*oz + qx*oy - qy*ox)
-         */
         simd_float qw_dot = simd_mul_ps(half,
             simd_sub_ps(simd_sub_ps(simd_sub_ps(simd_setzero_ps(),
                 simd_mul_ps(qx, ox)), simd_mul_ps(qy, oy)), simd_mul_ps(qz, oz)));
@@ -888,39 +588,23 @@ void physics_compute_derivatives(const DroneStateSOA* states, const DroneParamsS
     }
 
     SIMD_LOOP_REMAINDER(i, count) {
-        float qw = states->quat_w[i], qx = states->quat_x[i];
-        float qy = states->quat_y[i], qz = states->quat_z[i];
-        float ox = states->omega_x[i], oy = states->omega_y[i], oz = states->omega_z[i];
+        float qw = rb->quat_w[i], qx = rb->quat_x[i];
+        float qy = rb->quat_y[i], qz = rb->quat_z[i];
+        float ox = rb->omega_x[i], oy = rb->omega_y[i], oz = rb->omega_z[i];
 
         derivatives->quat_w[i] = 0.5f * (-qx*ox - qy*oy - qz*oz);
         derivatives->quat_x[i] = 0.5f * (qw*ox + qy*oz - qz*oy);
         derivatives->quat_y[i] = 0.5f * (qw*oy + qz*ox - qx*oz);
         derivatives->quat_z[i] = 0.5f * (qw*oz + qx*oy - qy*ox);
     }
-
-    /* Zero RPM derivatives (motor dynamics handled separately) */
-    for (uint32_t i = 0; i < _simd_count; i += FOUNDATION_SIMD_WIDTH) {
-        simd_float zero = simd_setzero_ps();
-        simd_store_ps(&derivatives->rpm_0[i], zero);
-        simd_store_ps(&derivatives->rpm_1[i], zero);
-        simd_store_ps(&derivatives->rpm_2[i], zero);
-        simd_store_ps(&derivatives->rpm_3[i], zero);
-    }
-
-    SIMD_LOOP_REMAINDER(i, count) {
-        derivatives->rpm_0[i] = 0.0f;
-        derivatives->rpm_1[i] = 0.0f;
-        derivatives->rpm_2[i] = 0.0f;
-        derivatives->rpm_3[i] = 0.0f;
-    }
 }
 
 /* ============================================================================
- * Section 5: RK4 Integration (Phase 5)
+ * Section 4: RK4 Integration (operates on RigidBodyStateSOA)
  * ============================================================================ */
 
-void physics_rk4_substep(const DroneStateSOA* current, const DroneStateSOA* derivative,
-                         DroneStateSOA* output, float dt_scale, uint32_t count) {
+void physics_rk4_substep(const RigidBodyStateSOA* current, const RigidBodyStateSOA* derivative,
+                         RigidBodyStateSOA* output, float dt_scale, uint32_t count) {
     FOUNDATION_ASSERT(current != NULL, "current is NULL");
     FOUNDATION_ASSERT(derivative != NULL, "derivative is NULL");
     FOUNDATION_ASSERT(output != NULL, "output is NULL");
@@ -987,14 +671,6 @@ void physics_rk4_substep(const DroneStateSOA* current, const DroneStateSOA* deri
                          simd_load_ps(&current->omega_z[i])));
     }
 
-    /* RPMs: copy from current (motor dynamics handled separately) */
-    for (uint32_t i = 0; i < _simd_count; i += FOUNDATION_SIMD_WIDTH) {
-        simd_store_ps(&output->rpm_0[i], simd_load_ps(&current->rpm_0[i]));
-        simd_store_ps(&output->rpm_1[i], simd_load_ps(&current->rpm_1[i]));
-        simd_store_ps(&output->rpm_2[i], simd_load_ps(&current->rpm_2[i]));
-        simd_store_ps(&output->rpm_3[i], simd_load_ps(&current->rpm_3[i]));
-    }
-
     /* Scalar remainder */
     SIMD_LOOP_REMAINDER(i, count) {
         output->pos_x[i] = current->pos_x[i] + derivative->pos_x[i] * dt_scale;
@@ -1013,17 +689,12 @@ void physics_rk4_substep(const DroneStateSOA* current, const DroneStateSOA* deri
         output->omega_x[i] = current->omega_x[i] + derivative->omega_x[i] * dt_scale;
         output->omega_y[i] = current->omega_y[i] + derivative->omega_y[i] * dt_scale;
         output->omega_z[i] = current->omega_z[i] + derivative->omega_z[i] * dt_scale;
-
-        output->rpm_0[i] = current->rpm_0[i];
-        output->rpm_1[i] = current->rpm_1[i];
-        output->rpm_2[i] = current->rpm_2[i];
-        output->rpm_3[i] = current->rpm_3[i];
     }
 }
 
-void physics_rk4_combine(DroneStateSOA* states, const DroneStateSOA* k1,
-                         const DroneStateSOA* k2, const DroneStateSOA* k3,
-                         const DroneStateSOA* k4, float dt, uint32_t count) {
+void physics_rk4_combine(RigidBodyStateSOA* states, const RigidBodyStateSOA* k1,
+                         const RigidBodyStateSOA* k2, const RigidBodyStateSOA* k3,
+                         const RigidBodyStateSOA* k4, float dt, uint32_t count) {
     FOUNDATION_ASSERT(states != NULL, "states is NULL");
     FOUNDATION_ASSERT(k1 != NULL, "k1 is NULL");
     FOUNDATION_ASSERT(k2 != NULL, "k2 is NULL");
@@ -1096,8 +767,8 @@ void physics_rk4_combine(DroneStateSOA* states, const DroneStateSOA* k1,
     }
 }
 
-void physics_rk4_integrate(PhysicsSystem* physics, DroneStateSOA* states,
-                           const DroneParamsSOA* params, const float* actions,
+void physics_rk4_integrate(PhysicsSystem* physics, PlatformStateSOA* states,
+                           const PlatformParamsSOA* params,
                            float dt, uint32_t count) {
     FOUNDATION_ASSERT(physics != NULL, "physics is NULL");
     FOUNDATION_ASSERT(states != NULL, "states is NULL");
@@ -1107,39 +778,63 @@ void physics_rk4_integrate(PhysicsSystem* physics, DroneStateSOA* states,
         return;
     }
 
+    RigidBodyStateSOA* rb = &states->rigid_body;
+
     /* k1 = f(t, y) */
-    physics_compute_derivatives(states, params, actions, physics->k1, count, &physics->config, physics->sdf_distances);
+    physics_compute_derivatives(physics, states, params, physics->k1, count);
 
     /* k2 = f(t + dt/2, y + k1*dt/2) */
-    physics_rk4_substep(states, physics->k1, physics->temp_state, dt * 0.5f, count);
-    physics_normalize_quaternions(physics->temp_state, count);
-    physics_compute_derivatives(physics->temp_state, params, actions, physics->k2, count, &physics->config, physics->sdf_distances);
+    physics_rk4_substep(rb, physics->k1, physics->temp_state, dt * 0.5f, count);
+    /* Copy temp_state back to rb for derivative evaluation */
+    {
+        /* Temporarily swap rb pointers for k2 evaluation:
+         * We need to compute derivatives at temp_state position, but with
+         * the platform's extension arrays (RPMs etc.) unchanged.
+         * Strategy: copy temp_state into rb, compute, then restore. */
+        /* Actually, we create a temporary PlatformStateSOA on the stack
+         * that points to temp_state's rb arrays but keeps the original extensions */
+        PlatformStateSOA temp_plat;
+        temp_plat.rigid_body = *physics->temp_state;
+        temp_plat.extension = states->extension;
+        temp_plat.extension_count = states->extension_count;
+        physics_compute_derivatives(physics, &temp_plat, params, physics->k2, count);
+    }
 
     /* k3 = f(t + dt/2, y + k2*dt/2) */
-    physics_rk4_substep(states, physics->k2, physics->temp_state, dt * 0.5f, count);
-    physics_normalize_quaternions(physics->temp_state, count);
-    physics_compute_derivatives(physics->temp_state, params, actions, physics->k3, count, &physics->config, physics->sdf_distances);
+    physics_rk4_substep(rb, physics->k2, physics->temp_state, dt * 0.5f, count);
+    {
+        PlatformStateSOA temp_plat;
+        temp_plat.rigid_body = *physics->temp_state;
+        temp_plat.extension = states->extension;
+        temp_plat.extension_count = states->extension_count;
+        physics_compute_derivatives(physics, &temp_plat, params, physics->k3, count);
+    }
 
     /* k4 = f(t + dt, y + k3*dt) */
-    physics_rk4_substep(states, physics->k3, physics->temp_state, dt, count);
-    physics_normalize_quaternions(physics->temp_state, count);
-    physics_compute_derivatives(physics->temp_state, params, actions, physics->k4, count, &physics->config, physics->sdf_distances);
+    physics_rk4_substep(rb, physics->k3, physics->temp_state, dt, count);
+    {
+        PlatformStateSOA temp_plat;
+        temp_plat.rigid_body = *physics->temp_state;
+        temp_plat.extension = states->extension;
+        temp_plat.extension_count = states->extension_count;
+        physics_compute_derivatives(physics, &temp_plat, params, physics->k4, count);
+    }
 
     /* y_new = y + (k1 + 2*k2 + 2*k3 + k4) * dt/6 */
-    physics_rk4_combine(states, physics->k1, physics->k2, physics->k3, physics->k4, dt, count);
+    physics_rk4_combine(rb, physics->k1, physics->k2, physics->k3, physics->k4, dt, count);
 }
 
 /* ============================================================================
- * Section 6: Main Physics Step (Phase 6)
+ * Section 5: Main Physics Step (generic via VTable)
  * ============================================================================ */
 
-void physics_step(PhysicsSystem* physics, DroneStateSOA* states,
-                  const DroneParamsSOA* params, const float* actions, uint32_t count) {
+void physics_step(PhysicsSystem* physics, PlatformStateSOA* states,
+                  const PlatformParamsSOA* params, const float* actions, uint32_t count) {
     physics_step_dt(physics, states, params, actions, count, physics->config.dt);
 }
 
-void physics_step_dt(PhysicsSystem* physics, DroneStateSOA* states,
-                     const DroneParamsSOA* params, const float* actions,
+void physics_step_dt(PhysicsSystem* physics, PlatformStateSOA* states,
+                     const PlatformParamsSOA* params, const float* actions,
                      uint32_t count, float dt) {
     FOUNDATION_ASSERT(physics != NULL, "physics is NULL");
     FOUNDATION_ASSERT(states != NULL, "states is NULL");
@@ -1149,65 +844,72 @@ void physics_step_dt(PhysicsSystem* physics, DroneStateSOA* states,
         return;
     }
 
+    const PlatformVTable* vtable = physics->vtable;
+
     /* Calculate substep dt */
     uint32_t substeps = physics->config.substeps;
     if (substeps == 0) substeps = 1;
     float substep_dt = dt / (float)substeps;
 
-    /* Convert actions to RPM commands (4 per drone) */
-    /* Allocate temporary buffer for RPM commands */
-    float* rpm_commands = physics->forces_x;  /* Reuse buffer temporarily */
+    /* Reset scratch arena -- all allocations below are local to this call */
+    arena_reset(physics->scratch_arena);
 
-    if (actions != NULL) {
-        for (uint32_t i = 0; i < count; i++) {
-            float max_rpm = params->max_rpm[i];
-            rpm_commands[i * 4 + 0] = action_to_rpm(actions[i * 4 + 0], max_rpm);
-            rpm_commands[i * 4 + 1] = action_to_rpm(actions[i * 4 + 1], max_rpm);
-            rpm_commands[i * 4 + 2] = action_to_rpm(actions[i * 4 + 2], max_rpm);
-            rpm_commands[i * 4 + 3] = action_to_rpm(actions[i * 4 + 3], max_rpm);
-        }
-    }
-
-    /* Pack current RPMs into array for motor dynamics */
-    float* actual_rpms = physics->forces_y;  /* Reuse buffer */
-    for (uint32_t i = 0; i < count; i++) {
-        actual_rpms[i * 4 + 0] = states->rpm_0[i];
-        actual_rpms[i * 4 + 1] = states->rpm_1[i];
-        actual_rpms[i * 4 + 2] = states->rpm_2[i];
-        actual_rpms[i * 4 + 3] = states->rpm_3[i];
+    /* Allocate command buffer from scratch arena */
+    float* commands = NULL;
+    if (actions != NULL && vtable != NULL) {
+        size_t cmd_size = align_up_size(count * vtable->action_dim * sizeof(float), 32);
+        commands = (float*)arena_alloc_aligned(physics->scratch_arena, cmd_size, 32);
     }
 
     /* Run substeps */
     for (uint32_t s = 0; s < substeps; s++) {
-        /* Apply motor dynamics if enabled */
-        if (physics->config.enable_motor_dynamics && actions != NULL) {
-            physics_motor_dynamics(rpm_commands, actual_rpms, params, substep_dt, count);
-
-            /* Unpack RPMs back to state */
-            for (uint32_t i = 0; i < count; i++) {
-                states->rpm_0[i] = actual_rpms[i * 4 + 0];
-                states->rpm_1[i] = actual_rpms[i * 4 + 1];
-                states->rpm_2[i] = actual_rpms[i * 4 + 2];
-                states->rpm_3[i] = actual_rpms[i * 4 + 3];
+        /* Map actions and apply actuator dynamics via vtable */
+        if (vtable != NULL && actions != NULL && commands != NULL) {
+            /* Map normalized actions to platform-specific commands */
+            if (vtable->map_actions) {
+                vtable->map_actions(actions, commands,
+                                    (float* const*)params->extension, params->extension_count,
+                                    count);
             }
-        } else if (actions != NULL) {
-            /* No motor dynamics - set RPMs directly */
-            for (uint32_t i = 0; i < count; i++) {
-                states->rpm_0[i] = rpm_commands[i * 4 + 0];
-                states->rpm_1[i] = rpm_commands[i * 4 + 1];
-                states->rpm_2[i] = rpm_commands[i * 4 + 2];
-                states->rpm_3[i] = rpm_commands[i * 4 + 3];
+
+            /* Apply actuator dynamics (e.g., motor lag) */
+            if (vtable->actuator_dynamics && physics->config.enable_motor_dynamics) {
+                vtable->actuator_dynamics(commands,
+                                          states->extension, states->extension_count,
+                                          (float* const*)params->extension, params->extension_count,
+                                          substep_dt, count);
+            } else if (vtable->actuator_dynamics) {
+                /* Motor dynamics disabled: set RPMs directly from commands */
+                uint32_t adim = vtable->action_dim;
+                for (uint32_t i = 0; i < count; i++) {
+                    for (uint32_t d = 0; d < adim && d < states->extension_count; d++) {
+                        states->extension[d][i] = commands[i * adim + d];
+                    }
+                }
             }
         }
 
-        /* RK4 integration */
-        physics_rk4_integrate(physics, states, params, actions, substep_dt, count);
+        /* RK4 integration of rigid body state */
+        physics_rk4_integrate(physics, states, params, substep_dt, count);
 
         /* Normalize quaternions */
         physics_normalize_quaternions(states, count);
 
         /* Clamp velocities */
         physics_clamp_velocities(states, params, count);
+
+        /* Apply platform-specific effects (drag, ground effect, etc.) */
+        if (vtable != NULL && vtable->apply_platform_effects) {
+            vtable->apply_platform_effects(
+                &states->rigid_body,
+                states->extension, states->extension_count,
+                &params->rigid_body,
+                (float* const*)params->extension, params->extension_count,
+                physics->forces_x, physics->forces_y, physics->forces_z,
+                physics->sdf_distances,
+                &physics->config,
+                count);
+        }
     }
 
     /* Sanitize state (detect NaN/Inf) */

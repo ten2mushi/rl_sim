@@ -1,6 +1,6 @@
 /**
  * @file test_engine_core.c
- * @brief Core Functionality Tests for BatchDroneEngine (8 tests)
+ * @brief Core Functionality Tests for BatchEngine (8 tests)
  *
  * Tests verify fundamental engine behavior:
  * - Engine lifecycle (create/destroy)
@@ -13,6 +13,7 @@
  */
 
 #include "environment_manager.h"
+#include "platform_quadcopter.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -27,10 +28,10 @@
 /**
  * Create a test engine with fixed seed and reasonable defaults
  */
-static BatchDroneEngine* create_test_engine(uint64_t seed) {
+static BatchEngine* create_test_engine(uint64_t seed) {
     EngineConfig cfg = engine_config_default();
     cfg.num_envs = 4;
-    cfg.drones_per_env = 4;
+    cfg.agents_per_env = 4;
     cfg.seed = seed;
     cfg.persistent_arena_size = 128 * 1024 * 1024;  /* 128 MB */
     cfg.frame_arena_size = 32 * 1024 * 1024;        /* 32 MB */
@@ -56,20 +57,20 @@ TEST(engine_create_destroy) {
 
     EngineConfig cfg = engine_config_default();
     cfg.num_envs = 2;
-    cfg.drones_per_env = 2;
+    cfg.agents_per_env = 2;
     cfg.seed = 42;
     cfg.persistent_arena_size = 64 * 1024 * 1024;
     cfg.frame_arena_size = 16 * 1024 * 1024;
 
     /* Create engine */
-    BatchDroneEngine* engine = engine_create(&cfg, error);
+    BatchEngine* engine = engine_create(&cfg, error);
     ASSERT_NOT_NULL(engine);
 
     /* Verify engine is initialized */
     ASSERT_TRUE(engine->initialized);
     ASSERT_EQ(engine->config.num_envs, 2);
-    ASSERT_EQ(engine->config.drones_per_env, 2);
-    ASSERT_EQ(engine->config.total_drones, 4);
+    ASSERT_EQ(engine->config.agents_per_env, 2);
+    ASSERT_EQ(engine->config.total_agents, 4);
 
     /* Verify subsystems are allocated */
     ASSERT_NOT_NULL(engine->states);
@@ -102,7 +103,7 @@ TEST(engine_create_destroy) {
  * ============================================================================ */
 
 TEST(buffer_alignment_32byte) {
-    BatchDroneEngine* engine = create_test_engine(12345);
+    BatchEngine* engine = create_test_engine(12345);
     ASSERT_NOT_NULL(engine);
 
     /* External buffers must be 32-byte aligned for AVX2 */
@@ -113,33 +114,33 @@ TEST(buffer_alignment_32byte) {
     ASSERT_TRUE(is_aligned_32(engine->truncations));
 
     /* SoA state arrays must be 32-byte aligned */
-    ASSERT_TRUE(is_aligned_32(engine->states->pos_x));
-    ASSERT_TRUE(is_aligned_32(engine->states->pos_y));
-    ASSERT_TRUE(is_aligned_32(engine->states->pos_z));
-    ASSERT_TRUE(is_aligned_32(engine->states->vel_x));
-    ASSERT_TRUE(is_aligned_32(engine->states->vel_y));
-    ASSERT_TRUE(is_aligned_32(engine->states->vel_z));
-    ASSERT_TRUE(is_aligned_32(engine->states->quat_w));
-    ASSERT_TRUE(is_aligned_32(engine->states->quat_x));
-    ASSERT_TRUE(is_aligned_32(engine->states->quat_y));
-    ASSERT_TRUE(is_aligned_32(engine->states->quat_z));
-    ASSERT_TRUE(is_aligned_32(engine->states->omega_x));
-    ASSERT_TRUE(is_aligned_32(engine->states->omega_y));
-    ASSERT_TRUE(is_aligned_32(engine->states->omega_z));
-    ASSERT_TRUE(is_aligned_32(engine->states->rpm_0));
-    ASSERT_TRUE(is_aligned_32(engine->states->rpm_1));
-    ASSERT_TRUE(is_aligned_32(engine->states->rpm_2));
-    ASSERT_TRUE(is_aligned_32(engine->states->rpm_3));
+    ASSERT_TRUE(is_aligned_32(engine->states->rigid_body.pos_x));
+    ASSERT_TRUE(is_aligned_32(engine->states->rigid_body.pos_y));
+    ASSERT_TRUE(is_aligned_32(engine->states->rigid_body.pos_z));
+    ASSERT_TRUE(is_aligned_32(engine->states->rigid_body.vel_x));
+    ASSERT_TRUE(is_aligned_32(engine->states->rigid_body.vel_y));
+    ASSERT_TRUE(is_aligned_32(engine->states->rigid_body.vel_z));
+    ASSERT_TRUE(is_aligned_32(engine->states->rigid_body.quat_w));
+    ASSERT_TRUE(is_aligned_32(engine->states->rigid_body.quat_x));
+    ASSERT_TRUE(is_aligned_32(engine->states->rigid_body.quat_y));
+    ASSERT_TRUE(is_aligned_32(engine->states->rigid_body.quat_z));
+    ASSERT_TRUE(is_aligned_32(engine->states->rigid_body.omega_x));
+    ASSERT_TRUE(is_aligned_32(engine->states->rigid_body.omega_y));
+    ASSERT_TRUE(is_aligned_32(engine->states->rigid_body.omega_z));
+    ASSERT_TRUE(is_aligned_32(engine->states->extension[QUAD_EXT_RPM_0]));
+    ASSERT_TRUE(is_aligned_32(engine->states->extension[QUAD_EXT_RPM_1]));
+    ASSERT_TRUE(is_aligned_32(engine->states->extension[QUAD_EXT_RPM_2]));
+    ASSERT_TRUE(is_aligned_32(engine->states->extension[QUAD_EXT_RPM_3]));
 
     /* SoA parameter arrays must be 32-byte aligned */
-    ASSERT_TRUE(is_aligned_32(engine->params->mass));
-    ASSERT_TRUE(is_aligned_32(engine->params->ixx));
-    ASSERT_TRUE(is_aligned_32(engine->params->iyy));
-    ASSERT_TRUE(is_aligned_32(engine->params->izz));
-    ASSERT_TRUE(is_aligned_32(engine->params->arm_length));
-    ASSERT_TRUE(is_aligned_32(engine->params->collision_radius));
-    ASSERT_TRUE(is_aligned_32(engine->params->k_thrust));
-    ASSERT_TRUE(is_aligned_32(engine->params->k_torque));
+    ASSERT_TRUE(is_aligned_32(engine->params->rigid_body.mass));
+    ASSERT_TRUE(is_aligned_32(engine->params->rigid_body.ixx));
+    ASSERT_TRUE(is_aligned_32(engine->params->rigid_body.iyy));
+    ASSERT_TRUE(is_aligned_32(engine->params->rigid_body.izz));
+    ASSERT_TRUE(is_aligned_32(engine->params->extension[QUAD_PEXT_ARM_LENGTH]));
+    ASSERT_TRUE(is_aligned_32(engine->params->rigid_body.collision_radius));
+    ASSERT_TRUE(is_aligned_32(engine->params->extension[QUAD_PEXT_K_THRUST]));
+    ASSERT_TRUE(is_aligned_32(engine->params->extension[QUAD_PEXT_K_TORQUE]));
 
     engine_destroy(engine);
     return 0;
@@ -150,19 +151,19 @@ TEST(buffer_alignment_32byte) {
  * ============================================================================ */
 
 TEST(reset_spawn_positions) {
-    BatchDroneEngine* engine = create_test_engine(12345);
+    BatchEngine* engine = create_test_engine(12345);
     ASSERT_NOT_NULL(engine);
 
     engine_reset(engine);
 
     const Vec3 world_min = engine->config.world_min;
     const Vec3 world_max = engine->config.world_max;
-    const uint32_t total_drones = engine->config.total_drones;
+    const uint32_t total_agents = engine->config.total_agents;
 
-    for (uint32_t i = 0; i < total_drones; i++) {
-        float px = engine->states->pos_x[i];
-        float py = engine->states->pos_y[i];
-        float pz = engine->states->pos_z[i];
+    for (uint32_t i = 0; i < total_agents; i++) {
+        float px = engine->states->rigid_body.pos_x[i];
+        float py = engine->states->rigid_body.pos_y[i];
+        float pz = engine->states->rigid_body.pos_z[i];
 
         /* Positions must be within world bounds */
         ASSERT_GE(px, world_min.x);
@@ -187,19 +188,19 @@ TEST(reset_spawn_positions) {
  * ============================================================================ */
 
 TEST(reset_quaternion_normalization) {
-    BatchDroneEngine* engine = create_test_engine(12345);
+    BatchEngine* engine = create_test_engine(12345);
     ASSERT_NOT_NULL(engine);
 
     engine_reset(engine);
 
-    const uint32_t total_drones = engine->config.total_drones;
+    const uint32_t total_agents = engine->config.total_agents;
     const float epsilon = 1e-4f;
 
-    for (uint32_t i = 0; i < total_drones; i++) {
-        float qw = engine->states->quat_w[i];
-        float qx = engine->states->quat_x[i];
-        float qy = engine->states->quat_y[i];
-        float qz = engine->states->quat_z[i];
+    for (uint32_t i = 0; i < total_agents; i++) {
+        float qw = engine->states->rigid_body.quat_w[i];
+        float qx = engine->states->rigid_body.quat_x[i];
+        float qy = engine->states->rigid_body.quat_y[i];
+        float qz = engine->states->rigid_body.quat_z[i];
 
         /* Quaternion components must be finite */
         ASSERT_TRUE(isfinite(qw));
@@ -221,15 +222,15 @@ TEST(reset_quaternion_normalization) {
  * ============================================================================ */
 
 TEST(physics_stability_100_steps) {
-    BatchDroneEngine* engine = create_test_engine(12345);
+    BatchEngine* engine = create_test_engine(12345);
     ASSERT_NOT_NULL(engine);
 
     engine_reset(engine);
 
     /* Apply moderate actions */
     float* actions = engine_get_actions(engine);
-    const uint32_t total_drones = engine->config.total_drones;
-    for (uint32_t i = 0; i < total_drones * ENGINE_ACTION_DIM; i++) {
+    const uint32_t total_agents = engine->config.total_agents;
+    for (uint32_t i = 0; i < total_agents * engine->action_dim; i++) {
         actions[i] = 0.5f;
     }
 
@@ -239,39 +240,39 @@ TEST(physics_stability_100_steps) {
     }
 
     /* Verify no NaN or Inf values in state */
-    for (uint32_t i = 0; i < total_drones; i++) {
+    for (uint32_t i = 0; i < total_agents; i++) {
         /* Position */
-        ASSERT_TRUE(isfinite(engine->states->pos_x[i]));
-        ASSERT_TRUE(isfinite(engine->states->pos_y[i]));
-        ASSERT_TRUE(isfinite(engine->states->pos_z[i]));
+        ASSERT_TRUE(isfinite(engine->states->rigid_body.pos_x[i]));
+        ASSERT_TRUE(isfinite(engine->states->rigid_body.pos_y[i]));
+        ASSERT_TRUE(isfinite(engine->states->rigid_body.pos_z[i]));
 
         /* Velocity */
-        ASSERT_TRUE(isfinite(engine->states->vel_x[i]));
-        ASSERT_TRUE(isfinite(engine->states->vel_y[i]));
-        ASSERT_TRUE(isfinite(engine->states->vel_z[i]));
+        ASSERT_TRUE(isfinite(engine->states->rigid_body.vel_x[i]));
+        ASSERT_TRUE(isfinite(engine->states->rigid_body.vel_y[i]));
+        ASSERT_TRUE(isfinite(engine->states->rigid_body.vel_z[i]));
 
         /* Quaternion */
-        ASSERT_TRUE(isfinite(engine->states->quat_w[i]));
-        ASSERT_TRUE(isfinite(engine->states->quat_x[i]));
-        ASSERT_TRUE(isfinite(engine->states->quat_y[i]));
-        ASSERT_TRUE(isfinite(engine->states->quat_z[i]));
+        ASSERT_TRUE(isfinite(engine->states->rigid_body.quat_w[i]));
+        ASSERT_TRUE(isfinite(engine->states->rigid_body.quat_x[i]));
+        ASSERT_TRUE(isfinite(engine->states->rigid_body.quat_y[i]));
+        ASSERT_TRUE(isfinite(engine->states->rigid_body.quat_z[i]));
 
         /* Angular velocity */
-        ASSERT_TRUE(isfinite(engine->states->omega_x[i]));
-        ASSERT_TRUE(isfinite(engine->states->omega_y[i]));
-        ASSERT_TRUE(isfinite(engine->states->omega_z[i]));
+        ASSERT_TRUE(isfinite(engine->states->rigid_body.omega_x[i]));
+        ASSERT_TRUE(isfinite(engine->states->rigid_body.omega_y[i]));
+        ASSERT_TRUE(isfinite(engine->states->rigid_body.omega_z[i]));
 
         /* RPMs */
-        ASSERT_TRUE(isfinite(engine->states->rpm_0[i]));
-        ASSERT_TRUE(isfinite(engine->states->rpm_1[i]));
-        ASSERT_TRUE(isfinite(engine->states->rpm_2[i]));
-        ASSERT_TRUE(isfinite(engine->states->rpm_3[i]));
+        ASSERT_TRUE(isfinite(engine->states->extension[QUAD_EXT_RPM_0][i]));
+        ASSERT_TRUE(isfinite(engine->states->extension[QUAD_EXT_RPM_1][i]));
+        ASSERT_TRUE(isfinite(engine->states->extension[QUAD_EXT_RPM_2][i]));
+        ASSERT_TRUE(isfinite(engine->states->extension[QUAD_EXT_RPM_3][i]));
 
         /* Quaternion still normalized after physics */
-        float qw = engine->states->quat_w[i];
-        float qx = engine->states->quat_x[i];
-        float qy = engine->states->quat_y[i];
-        float qz = engine->states->quat_z[i];
+        float qw = engine->states->rigid_body.quat_w[i];
+        float qx = engine->states->rigid_body.quat_x[i];
+        float qy = engine->states->rigid_body.quat_y[i];
+        float qz = engine->states->rigid_body.quat_z[i];
         float len_sq = qw * qw + qx * qx + qy * qy + qz * qz;
         ASSERT_FLOAT_NEAR(len_sq, 1.0f, 1e-3f);
     }
@@ -285,7 +286,7 @@ TEST(physics_stability_100_steps) {
  * ============================================================================ */
 
 TEST(collision_overlapping_detection) {
-    BatchDroneEngine* engine = create_test_engine(12345);
+    BatchEngine* engine = create_test_engine(12345);
     ASSERT_NOT_NULL(engine);
 
     engine_reset(engine);
@@ -295,25 +296,25 @@ TEST(collision_overlapping_detection) {
     const float shared_y = 5.0f;
     const float shared_z = 5.0f;
 
-    engine->states->pos_x[0] = shared_x;
-    engine->states->pos_y[0] = shared_y;
-    engine->states->pos_z[0] = shared_z;
+    engine->states->rigid_body.pos_x[0] = shared_x;
+    engine->states->rigid_body.pos_y[0] = shared_y;
+    engine->states->rigid_body.pos_z[0] = shared_z;
 
-    engine->states->pos_x[1] = shared_x;
-    engine->states->pos_y[1] = shared_y;
-    engine->states->pos_z[1] = shared_z;
+    engine->states->rigid_body.pos_x[1] = shared_x;
+    engine->states->rigid_body.pos_y[1] = shared_y;
+    engine->states->rigid_body.pos_z[1] = shared_z;
 
     /* Step the engine (which runs collision detection) */
     engine_step(engine);
 
     /* After collision, drones should be pushed apart */
-    float d0_x = engine->states->pos_x[0];
-    float d0_y = engine->states->pos_y[0];
-    float d0_z = engine->states->pos_z[0];
+    float d0_x = engine->states->rigid_body.pos_x[0];
+    float d0_y = engine->states->rigid_body.pos_y[0];
+    float d0_z = engine->states->rigid_body.pos_z[0];
 
-    float d1_x = engine->states->pos_x[1];
-    float d1_y = engine->states->pos_y[1];
-    float d1_z = engine->states->pos_z[1];
+    float d1_x = engine->states->rigid_body.pos_x[1];
+    float d1_y = engine->states->rigid_body.pos_y[1];
+    float d1_z = engine->states->rigid_body.pos_z[1];
 
     /* Calculate distance between drones */
     float dx = d1_x - d0_x;
@@ -339,7 +340,7 @@ TEST(collision_overlapping_detection) {
  * ============================================================================ */
 
 TEST(sensor_output_dimensions) {
-    BatchDroneEngine* engine = create_test_engine(12345);
+    BatchEngine* engine = create_test_engine(12345);
     ASSERT_NOT_NULL(engine);
 
     engine_reset(engine);
@@ -350,12 +351,12 @@ TEST(sensor_output_dimensions) {
 
     /* Action dimension should be 4 (quadcopter) */
     uint32_t action_dim = engine_get_action_dim(engine);
-    ASSERT_EQ(action_dim, ENGINE_ACTION_DIM);
+    ASSERT_EQ(action_dim, engine->action_dim);
     ASSERT_EQ(action_dim, 4);
 
     /* Verify observation buffer size matches dimensions */
-    uint32_t total_drones = engine_get_total_drones(engine);
-    ASSERT_EQ(total_drones, engine->config.total_drones);
+    uint32_t total_agents = engine_get_total_agents(engine);
+    ASSERT_EQ(total_agents, engine->config.total_agents);
 
     /* Step and verify observations are filled */
     engine_step(engine);
@@ -365,7 +366,7 @@ TEST(sensor_output_dimensions) {
 
     /* Observations should be finite (may be zero if no sensors configured) */
     if (obs_dim > 0) {
-        for (uint32_t i = 0; i < total_drones * obs_dim && i < 100; i++) {
+        for (uint32_t i = 0; i < total_agents * obs_dim && i < 100; i++) {
             ASSERT_TRUE(isfinite(obs[i]));
         }
     }
@@ -379,7 +380,7 @@ TEST(sensor_output_dimensions) {
  * ============================================================================ */
 
 TEST(reward_hover_task) {
-    BatchDroneEngine* engine = create_test_engine(12345);
+    BatchEngine* engine = create_test_engine(12345);
     ASSERT_NOT_NULL(engine);
 
     engine_reset(engine);
@@ -389,12 +390,12 @@ TEST(reward_hover_task) {
     engine_set_target(engine, 0, target);
 
     /* Position drone 0 exactly at target (should give high reward) */
-    engine->states->pos_x[0] = target.x;
-    engine->states->pos_y[0] = target.y;
-    engine->states->pos_z[0] = target.z;
-    engine->states->vel_x[0] = 0.0f;
-    engine->states->vel_y[0] = 0.0f;
-    engine->states->vel_z[0] = 0.0f;
+    engine->states->rigid_body.pos_x[0] = target.x;
+    engine->states->rigid_body.pos_y[0] = target.y;
+    engine->states->rigid_body.pos_z[0] = target.z;
+    engine->states->rigid_body.vel_x[0] = 0.0f;
+    engine->states->rigid_body.vel_y[0] = 0.0f;
+    engine->states->rigid_body.vel_z[0] = 0.0f;
 
     /* Step to compute rewards */
     engine_step(engine);
@@ -409,9 +410,9 @@ TEST(reward_hover_task) {
     Vec3 target2 = {0.0f, 0.0f, 5.0f, 0.0f};
     engine_set_target(engine, 1, target2);
 
-    engine->states->pos_x[1] = 50.0f;  /* Far from target */
-    engine->states->pos_y[1] = 50.0f;
-    engine->states->pos_z[1] = 50.0f;
+    engine->states->rigid_body.pos_x[1] = 50.0f;  /* Far from target */
+    engine->states->rigid_body.pos_y[1] = 50.0f;
+    engine->states->rigid_body.pos_z[1] = 50.0f;
 
     engine_step(engine);
 

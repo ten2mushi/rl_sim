@@ -41,12 +41,12 @@ static const char* profile_names[] = {
     "MINIMAL", "LIGHT", "NAVIGATION", "VISION", "FULL", "STRESS"
 };
 
-static EngineConfig profile_config(Profile p, uint32_t total_drones) {
+static EngineConfig profile_config(Profile p, uint32_t total_agents) {
     EngineConfig cfg = engine_config_default();
-    cfg.drones_per_env = 16;
-    cfg.num_envs = total_drones / cfg.drones_per_env;
+    cfg.agents_per_env = 16;
+    cfg.num_envs = total_agents / cfg.agents_per_env;
     if (cfg.num_envs == 0) cfg.num_envs = 1;
-    cfg.total_drones = cfg.num_envs * cfg.drones_per_env;
+    cfg.total_agents = cfg.num_envs * cfg.agents_per_env;
     cfg.num_threads = 0;
     cfg.seed = 42;
     cfg.persistent_arena_size = 512 * 1024 * 1024;  /* 512MB for large scales */
@@ -136,16 +136,16 @@ typedef struct {
     uint32_t obs_dim;
 } PhaseResult;
 
-static PhaseResult bench_pipeline(Profile profile, uint32_t drone_count,
+static PhaseResult bench_pipeline(Profile profile, uint32_t agent_count,
                                   uint32_t warmup, uint32_t iterations) {
     PhaseResult r = {0};
 
-    EngineConfig cfg = profile_config(profile, drone_count);
+    EngineConfig cfg = profile_config(profile, agent_count);
     char error[ENGINE_ERROR_MSG_SIZE];
-    BatchDroneEngine* engine = engine_create(&cfg, error);
+    BatchEngine* engine = engine_create(&cfg, error);
     if (!engine) {
         fprintf(stderr, "  [%s %u drones] Failed: %s\n",
-                profile_names[profile], drone_count, error);
+                profile_names[profile], agent_count, error);
         return r;
     }
 

@@ -42,7 +42,7 @@ static inline double bench_time_ms(void) {
 
 typedef struct BenchStats {
     const char* name;
-    uint32_t    drone_count;
+    uint32_t    agent_count;
     uint32_t    iterations;
     double      avg_ms;
     double      min_ms;
@@ -144,7 +144,7 @@ static inline void bench_print_header(void) {
 
 static inline void bench_print_row(const BenchStats* s) {
     printf(BENCH_ROW_FMT,
-           s->name, s->drone_count, s->iterations,
+           s->name, s->agent_count, s->iterations,
            s->avg_ms, s->min_ms, s->max_ms, s->stddev_ms,
            s->p50_ms, s->p99_ms, s->target_ms,
            s->passed ? "PASS" : "FAIL");
@@ -170,8 +170,8 @@ static inline void bench_print_summary(const BenchStats* results, uint32_t count
  * ============================================================================ */
 
 typedef struct BenchCLI {
-    uint32_t drone_counts[8];
-    uint32_t num_drone_counts;
+    uint32_t agent_counts[8];
+    uint32_t num_agent_counts;
     uint32_t iterations;
     uint32_t warmup;
     bool     verbose;
@@ -180,12 +180,12 @@ typedef struct BenchCLI {
 
 static inline BenchCLI bench_default_cli(void) {
     BenchCLI cli = {0};
-    cli.drone_counts[0] = 256;
-    cli.drone_counts[1] = 512;
-    cli.drone_counts[2] = 1024;
-    cli.drone_counts[3] = 2048;
-    cli.drone_counts[4] = 4096;
-    cli.num_drone_counts = 5;
+    cli.agent_counts[0] = 256;
+    cli.agent_counts[1] = 512;
+    cli.agent_counts[2] = 1024;
+    cli.agent_counts[3] = 2048;
+    cli.agent_counts[4] = 4096;
+    cli.num_agent_counts = 5;
     cli.iterations = 200;
     cli.warmup = 20;
     cli.verbose = false;
@@ -200,13 +200,13 @@ static inline BenchCLI bench_parse_cli(int argc, char** argv) {
         if (strcmp(argv[i], "--drones") == 0 && i + 1 < argc) {
             i++;
             /* Parse comma-separated drone counts */
-            cli.num_drone_counts = 0;
+            cli.num_agent_counts = 0;
             char buf[256];
             strncpy(buf, argv[i], sizeof(buf) - 1);
             buf[sizeof(buf) - 1] = '\0';
             char* tok = strtok(buf, ",");
-            while (tok && cli.num_drone_counts < 8) {
-                cli.drone_counts[cli.num_drone_counts++] = (uint32_t)atoi(tok);
+            while (tok && cli.num_agent_counts < 8) {
+                cli.agent_counts[cli.num_agent_counts++] = (uint32_t)atoi(tok);
                 tok = strtok(NULL, ",");
             }
         } else if (strcmp(argv[i], "--iterations") == 0 && i + 1 < argc) {
@@ -246,7 +246,7 @@ static inline void bench_report_arena(const char* name, const Arena* arena) {
  * Section 8: Scaling Test Helper
  * ============================================================================ */
 
-typedef BenchStats (*BenchScaleFn)(uint32_t drone_count, uint32_t iterations,
+typedef BenchStats (*BenchScaleFn)(uint32_t agent_count, uint32_t iterations,
                                     uint32_t warmup, uint64_t seed);
 
 static inline void bench_scaling_test(const char* name, BenchScaleFn fn,
@@ -254,14 +254,14 @@ static inline void bench_scaling_test(const char* name, BenchScaleFn fn,
     printf("\n=== Scaling Test: %s ===\n", name);
     bench_print_header();
     BenchStats prev = {0};
-    for (uint32_t i = 0; i < cli->num_drone_counts; i++) {
-        BenchStats s = fn(cli->drone_counts[i], cli->iterations, cli->warmup, cli->seed);
-        s.drone_count = cli->drone_counts[i];
+    for (uint32_t i = 0; i < cli->num_agent_counts; i++) {
+        BenchStats s = fn(cli->agent_counts[i], cli->iterations, cli->warmup, cli->seed);
+        s.agent_count = cli->agent_counts[i];
         bench_print_row(&s);
 
         /* Check for super-linear scaling */
         if (i > 0 && prev.avg_ms > 0.0001) {
-            double count_ratio = (double)cli->drone_counts[i] / cli->drone_counts[i - 1];
+            double count_ratio = (double)cli->agent_counts[i] / cli->agent_counts[i - 1];
             double time_ratio = s.avg_ms / prev.avg_ms;
             if (time_ratio > count_ratio * 1.5) {
                 printf("  WARNING: Super-linear scaling detected (%.1fx drones -> %.1fx time)\n",
@@ -323,46 +323,46 @@ static inline bool bench_check_degradation(const char* name, BenchFn fn, void* c
  * Section 10: Drone State Initialization Helper
  * ============================================================================ */
 
-static inline void bench_init_drones_grid(DroneStateSOA* drones, uint32_t count,
+static inline void bench_init_drones_grid(PlatformStateSOA* drones, uint32_t count,
                                            float z_height, uint64_t seed) {
     PCG32 rng;
     pcg32_seed(&rng, seed);
     uint32_t grid_w = (uint32_t)ceilf(sqrtf((float)count));
     for (uint32_t d = 0; d < count; d++) {
-        drone_state_init(drones, d);
-        drones->pos_x[d] = (float)(d % grid_w) * 2.0f;
-        drones->pos_y[d] = (float)(d / grid_w) * 2.0f;
-        drones->pos_z[d] = z_height + pcg32_range(&rng, -0.5f, 0.5f);
+        platform_state_init(drones, d);
+        drones->rigid_body.pos_x[d] = (float)(d % grid_w) * 2.0f;
+        drones->rigid_body.pos_y[d] = (float)(d / grid_w) * 2.0f;
+        drones->rigid_body.pos_z[d] = z_height + pcg32_range(&rng, -0.5f, 0.5f);
     }
-    drones->count = count;
+    drones->rigid_body.count = count;
 }
 
-static inline void bench_init_drones_scattered(DroneStateSOA* drones, uint32_t count,
+static inline void bench_init_drones_scattered(PlatformStateSOA* drones, uint32_t count,
                                                 float range, uint64_t seed) {
     PCG32 rng;
     pcg32_seed(&rng, seed);
     for (uint32_t d = 0; d < count; d++) {
-        drone_state_init(drones, d);
-        drones->pos_x[d] = pcg32_range(&rng, -range, range);
-        drones->pos_y[d] = pcg32_range(&rng, -range, range);
-        drones->pos_z[d] = pcg32_range(&rng, 1.0f, range * 0.2f);
+        platform_state_init(drones, d);
+        drones->rigid_body.pos_x[d] = pcg32_range(&rng, -range, range);
+        drones->rigid_body.pos_y[d] = pcg32_range(&rng, -range, range);
+        drones->rigid_body.pos_z[d] = pcg32_range(&rng, 1.0f, range * 0.2f);
     }
-    drones->count = count;
+    drones->rigid_body.count = count;
 }
 
-static inline void bench_init_drones_clustered(DroneStateSOA* drones, uint32_t count,
+static inline void bench_init_drones_clustered(PlatformStateSOA* drones, uint32_t count,
                                                 Vec3 center, float cluster_size,
                                                 uint64_t seed) {
     PCG32 rng;
     pcg32_seed(&rng, seed);
     float half = cluster_size * 0.5f;
     for (uint32_t d = 0; d < count; d++) {
-        drone_state_init(drones, d);
-        drones->pos_x[d] = center.x + pcg32_range(&rng, -half, half);
-        drones->pos_y[d] = center.y + pcg32_range(&rng, -half, half);
-        drones->pos_z[d] = center.z + pcg32_range(&rng, -half, half);
+        platform_state_init(drones, d);
+        drones->rigid_body.pos_x[d] = center.x + pcg32_range(&rng, -half, half);
+        drones->rigid_body.pos_y[d] = center.y + pcg32_range(&rng, -half, half);
+        drones->rigid_body.pos_z[d] = center.z + pcg32_range(&rng, -half, half);
     }
-    drones->count = count;
+    drones->rigid_body.count = count;
 }
 
 #ifdef __cplusplus

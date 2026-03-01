@@ -289,11 +289,10 @@ const MaterialMetadata *world_get_material(const WorldBrickMap *world,
 void world_pos_to_brick(const WorldBrickMap *world, Vec3 pos, int32_t *bx,
                         int32_t *by, int32_t *bz) {
   Vec3 rel = vec3_sub(pos, world->world_min);
-  float inv_brick = 1.0f / world->brick_size_world;
 
-  *bx = (int32_t)floorf(rel.x * inv_brick);
-  *by = (int32_t)floorf(rel.y * inv_brick);
-  *bz = (int32_t)floorf(rel.z * inv_brick);
+  *bx = (int32_t)floorf(rel.x * world->inv_brick_size);
+  *by = (int32_t)floorf(rel.y * world->inv_brick_size);
+  *bz = (int32_t)floorf(rel.z * world->inv_brick_size);
 }
 
 void world_pos_to_voxel(const WorldBrickMap *world, Vec3 pos, int32_t bx,
@@ -685,123 +684,127 @@ float world_sdf_query(const WorldBrickMap *world, Vec3 pos) {
   return c0 + fz * (c1 - c0);
 }
 
-float world_sdf_query_nearest(const WorldBrickMap *world, Vec3 pos) {
-  if (world == NULL)
-    return 1e6f;
+/**
+ * Resolved voxel location within the brick atlas.
+ *
+ * Returned by world_resolve_nearest_voxel().  Callers inspect atlas_idx
+ * to handle special sentinel values (BRICK_EMPTY_INDEX, BRICK_UNIFORM_*);
+ * for real bricks (atlas_idx >= 0) the sdf/material pointers and voxel_idx
+ * are ready for direct indexing.
+ */
+typedef struct {
+  const int8_t *sdf;     /* SDF page pointer for containing brick */
+  const uint8_t *material; /* Material page pointer for containing brick */
+  uint32_t voxel_idx;    /* Linear voxel index within the brick */
+  int32_t atlas_idx;     /* Atlas index or BRICK_* sentinel */
+} VoxelLoc;
 
-  /* Convert to brick coords using precomputed inverse */
-  Vec3 rel = vec3_sub(pos, world->world_min);
-  int32_t bx = (int32_t)floorf(rel.x * world->inv_brick_size);
-  int32_t by = (int32_t)floorf(rel.y * world->inv_brick_size);
-  int32_t bz = (int32_t)floorf(rel.z * world->inv_brick_size);
+/**
+ * Resolve a world position to its nearest voxel in the brick atlas.
+ *
+ * Performs brick coordinate conversion, bounds check, grid lookup,
+ * voxel coordinate computation + clamping, and demand-paged pointer
+ * resolution in a single inline helper.  Returns atlas_idx so callers
+ * can handle sentinel values (BRICK_EMPTY_INDEX, BRICK_UNIFORM_OUTSIDE,
+ * BRICK_UNIFORM_INSIDE) themselves.
+ */
+static inline VoxelLoc world_resolve_nearest_voxel(const WorldBrickMap *w,
+                                                   Vec3 pos) {
+  VoxelLoc loc = {NULL, NULL, 0, BRICK_EMPTY_INDEX};
+  if (w == NULL)
+    return loc;
 
-  if (FOUNDATION_UNLIKELY(bx < 0 || bx >= (int32_t)world->grid_x || by < 0 ||
-                          by >= (int32_t)world->grid_y || bz < 0 ||
-                          bz >= (int32_t)world->grid_z)) {
-    return world->sdf_scale;
+  Vec3 rel = vec3_sub(pos, w->world_min);
+  int32_t bx = (int32_t)floorf(rel.x * w->inv_brick_size);
+  int32_t by = (int32_t)floorf(rel.y * w->inv_brick_size);
+  int32_t bz = (int32_t)floorf(rel.z * w->inv_brick_size);
+
+  if (bx < 0 || bx >= (int32_t)w->grid_x ||
+      by < 0 || by >= (int32_t)w->grid_y ||
+      bz < 0 || bz >= (int32_t)w->grid_z) {
+    return loc;
   }
 
-  uint32_t grid_idx = (uint32_t)bx + (uint32_t)by * world->stride_y +
-                      (uint32_t)bz * world->stride_z;
-  int32_t atlas_idx = world->brick_indices[grid_idx];
+  uint32_t grid_idx = (uint32_t)bx + (uint32_t)by * w->stride_y +
+                      (uint32_t)bz * w->stride_z;
+  loc.atlas_idx = w->brick_indices[grid_idx];
 
-  /* Handle special indices */
-  if (atlas_idx == BRICK_EMPTY_INDEX || atlas_idx == BRICK_UNIFORM_OUTSIDE) {
-    return world->sdf_scale;
-  }
-  if (atlas_idx == BRICK_UNIFORM_INSIDE) {
-    return -world->sdf_scale;
-  }
+  if (loc.atlas_idx < 0)
+    return loc; /* Sentinel -- callers handle per-type */
 
-  /* Get voxel coordinates */
-  float brick_ox = world->world_min.x + (float)bx * world->brick_size_world;
-  float brick_oy = world->world_min.y + (float)by * world->brick_size_world;
-  float brick_oz = world->world_min.z + (float)bz * world->brick_size_world;
+  /* Voxel coordinates within brick */
+  float brick_ox = w->world_min.x + (float)bx * w->brick_size_world;
+  float brick_oy = w->world_min.y + (float)by * w->brick_size_world;
+  float brick_oz = w->world_min.z + (float)bz * w->brick_size_world;
 
-  int32_t vx = (int32_t)floorf((pos.x - brick_ox) * world->inv_voxel_size);
-  int32_t vy = (int32_t)floorf((pos.y - brick_oy) * world->inv_voxel_size);
-  int32_t vz = (int32_t)floorf((pos.z - brick_oz) * world->inv_voxel_size);
+  int32_t vx = (int32_t)floorf((pos.x - brick_ox) * w->inv_voxel_size);
+  int32_t vy = (int32_t)floorf((pos.y - brick_oy) * w->inv_voxel_size);
+  int32_t vz = (int32_t)floorf((pos.z - brick_oz) * w->inv_voxel_size);
 
-  /* Clamp to valid range */
   vx = vx < 0 ? 0 : (vx > BRICK_MASK ? BRICK_MASK : vx);
   vy = vy < 0 ? 0 : (vy > BRICK_MASK ? BRICK_MASK : vy);
   vz = vz < 0 ? 0 : (vz > BRICK_MASK ? BRICK_MASK : vz);
 
-  uint32_t voxel_idx = (uint32_t)vx + ((uint32_t)vy << BRICK_SHIFT) +
-                       ((uint32_t)vz << (BRICK_SHIFT * 2));
+  loc.voxel_idx = (uint32_t)vx + ((uint32_t)vy << BRICK_SHIFT) +
+                  ((uint32_t)vz << (BRICK_SHIFT * 2));
 
-  /* Get SDF data (demand-paged) */
-  uint32_t page_idx = (uint32_t)atlas_idx / ATLAS_PAGE_BRICKS;
-  uint32_t brick_in_page = (uint32_t)atlas_idx % ATLAS_PAGE_BRICKS;
-  const int8_t *sdf =
-      world->sdf_pages[page_idx] + (size_t)brick_in_page * BRICK_VOXELS;
+  /* Demand-paged SoA pointer resolution */
+  uint32_t page_idx = (uint32_t)loc.atlas_idx / ATLAS_PAGE_BRICKS;
+  uint32_t brick_in_page = (uint32_t)loc.atlas_idx % ATLAS_PAGE_BRICKS;
+  size_t brick_offset = (size_t)brick_in_page * BRICK_VOXELS;
+  loc.sdf = w->sdf_pages[page_idx] + brick_offset;
+  loc.material = w->material_pages[page_idx] + brick_offset;
 
-  return (float)sdf[voxel_idx] * world->sdf_scale_div_127;
+  return loc;
+}
+
+float world_sdf_query_nearest(const WorldBrickMap *world, Vec3 pos) {
+  if (world == NULL)
+    return 1e6f;
+  VoxelLoc loc = world_resolve_nearest_voxel(world, pos);
+  if (loc.atlas_idx == BRICK_EMPTY_INDEX ||
+      loc.atlas_idx == BRICK_UNIFORM_OUTSIDE)
+    return world->sdf_scale;
+  if (loc.atlas_idx == BRICK_UNIFORM_INSIDE)
+    return -world->sdf_scale;
+  return (float)loc.sdf[loc.voxel_idx] * world->sdf_scale_div_127;
 }
 
 uint8_t world_material_query(const WorldBrickMap *world, Vec3 pos) {
   if (world == NULL)
     return 0;
-
-  /* Convert to brick coords using precomputed inverse */
-  Vec3 rel = vec3_sub(pos, world->world_min);
-  int32_t bx = (int32_t)floorf(rel.x * world->inv_brick_size);
-  int32_t by = (int32_t)floorf(rel.y * world->inv_brick_size);
-  int32_t bz = (int32_t)floorf(rel.z * world->inv_brick_size);
-
-  if (FOUNDATION_UNLIKELY(bx < 0 || bx >= (int32_t)world->grid_x || by < 0 ||
-                          by >= (int32_t)world->grid_y || bz < 0 ||
-                          bz >= (int32_t)world->grid_z)) {
+  VoxelLoc loc = world_resolve_nearest_voxel(world, pos);
+  if (loc.atlas_idx < 0)
     return 0;
-  }
-
-  uint32_t grid_idx = (uint32_t)bx + (uint32_t)by * world->stride_y +
-                      (uint32_t)bz * world->stride_z;
-  int32_t atlas_idx = world->brick_indices[grid_idx];
-
-  /* Uniform/empty bricks have no material (air) */
-  if (atlas_idx < 0) {
-    return 0;
-  }
-
-  /* Get voxel coordinates */
-  float brick_ox = world->world_min.x + (float)bx * world->brick_size_world;
-  float brick_oy = world->world_min.y + (float)by * world->brick_size_world;
-  float brick_oz = world->world_min.z + (float)bz * world->brick_size_world;
-
-  int32_t vx = (int32_t)floorf((pos.x - brick_ox) * world->inv_voxel_size);
-  int32_t vy = (int32_t)floorf((pos.y - brick_oy) * world->inv_voxel_size);
-  int32_t vz = (int32_t)floorf((pos.z - brick_oz) * world->inv_voxel_size);
-
-  /* Clamp to valid range */
-  vx = vx < 0 ? 0 : (vx > BRICK_MASK ? BRICK_MASK : vx);
-  vy = vy < 0 ? 0 : (vy > BRICK_MASK ? BRICK_MASK : vy);
-  vz = vz < 0 ? 0 : (vz > BRICK_MASK ? BRICK_MASK : vz);
-
-  uint32_t voxel_idx = (uint32_t)vx + ((uint32_t)vy << BRICK_SHIFT) +
-                       ((uint32_t)vz << (BRICK_SHIFT * 2));
-
-  /* Get material data (demand-paged) */
-  uint32_t page_idx = (uint32_t)atlas_idx / ATLAS_PAGE_BRICKS;
-  uint32_t brick_in_page = (uint32_t)atlas_idx % ATLAS_PAGE_BRICKS;
-  const uint8_t *material =
-      world->material_pages[page_idx] + (size_t)brick_in_page * BRICK_VOXELS;
-
-  return material[voxel_idx];
+  return loc.material[loc.voxel_idx];
 }
 
 Vec3 world_sdf_gradient(const WorldBrickMap *world, Vec3 pos) {
-  float eps = RAYMARCH_NORMAL_EPSILON;
+  float eps = world->voxel_size;
 
-  float dx = world_sdf_query(world, VEC3(pos.x + eps, pos.y, pos.z)) -
-             world_sdf_query(world, VEC3(pos.x - eps, pos.y, pos.z));
-  float dy = world_sdf_query(world, VEC3(pos.x, pos.y + eps, pos.z)) -
-             world_sdf_query(world, VEC3(pos.x, pos.y - eps, pos.z));
-  float dz = world_sdf_query(world, VEC3(pos.x, pos.y, pos.z + eps)) -
-             world_sdf_query(world, VEC3(pos.x, pos.y, pos.z - eps));
+  /* Clamp each SDF probe to ±(2*voxel_size) to prevent brick-boundary
+   * discontinuities (SURFACE→EMPTY returning sdf_scale) from dominating
+   * the gradient direction.  At a surface hit the true SDF nearby is O(eps),
+   * so values >> eps indicate a cross-brick jump, not a real gradient. */
+  float clamp_range = eps * 2.0f;
+
+  float sp_x = clampf(world_sdf_query(world, VEC3(pos.x + eps, pos.y, pos.z)),
+                       -clamp_range, clamp_range);
+  float sn_x = clampf(world_sdf_query(world, VEC3(pos.x - eps, pos.y, pos.z)),
+                       -clamp_range, clamp_range);
+  float sp_y = clampf(world_sdf_query(world, VEC3(pos.x, pos.y + eps, pos.z)),
+                       -clamp_range, clamp_range);
+  float sn_y = clampf(world_sdf_query(world, VEC3(pos.x, pos.y - eps, pos.z)),
+                       -clamp_range, clamp_range);
+  float sp_z = clampf(world_sdf_query(world, VEC3(pos.x, pos.y, pos.z + eps)),
+                       -clamp_range, clamp_range);
+  float sn_z = clampf(world_sdf_query(world, VEC3(pos.x, pos.y, pos.z - eps)),
+                       -clamp_range, clamp_range);
 
   float inv_eps2 = 0.5f / eps;
-  return VEC3(dx * inv_eps2, dy * inv_eps2, dz * inv_eps2);
+  return VEC3((sp_x - sn_x) * inv_eps2,
+              (sp_y - sn_y) * inv_eps2,
+              (sp_z - sn_z) * inv_eps2);
 }
 
 Vec3 world_sdf_normal(const WorldBrickMap *world, Vec3 pos) {
@@ -818,62 +821,59 @@ Vec3 world_sdf_normal(const WorldBrickMap *world, Vec3 pos) {
  * ============================================================================
  */
 
-void world_set_sdf(WorldBrickMap *world, Vec3 pos, float sdf_val) {
-  if (world == NULL)
-    return;
-
+/**
+ * Internal: resolve world position to brick atlas index and linear voxel index.
+ * Allocates a brick if necessary. Returns false if out of bounds or atlas full.
+ */
+static bool world_resolve_voxel(WorldBrickMap *world, Vec3 pos,
+                                int32_t *out_atlas_idx,
+                                uint32_t *out_voxel_idx) {
   int32_t bx, by, bz;
   world_pos_to_brick(world, pos, &bx, &by, &bz);
 
   if (!world_brick_valid(world, bx, by, bz)) {
-    return;
+    return false;
   }
 
   int32_t atlas_idx = world_alloc_brick(world, bx, by, bz);
   if (atlas_idx == BRICK_EMPTY_INDEX) {
-    return;
+    return false;
   }
 
   int32_t vx, vy, vz;
   world_pos_to_voxel(world, pos, bx, by, bz, &vx, &vy, &vz);
 
-  uint32_t idx = voxel_linear_index(vx, vy, vz);
+  *out_atlas_idx = atlas_idx;
+  *out_voxel_idx = voxel_linear_index(vx, vy, vz);
+  return true;
+}
 
-  /* Get SDF data (demand-paged) */
-  uint32_t page_idx = (uint32_t)atlas_idx / ATLAS_PAGE_BRICKS;
-  uint32_t brick_in_page = (uint32_t)atlas_idx % ATLAS_PAGE_BRICKS;
-  int8_t *sdf =
-      world->sdf_pages[page_idx] + (size_t)brick_in_page * BRICK_VOXELS;
-  sdf[idx] = sdf_quantize(sdf_val, world->inv_sdf_scale);
+void world_set_sdf(WorldBrickMap *world, Vec3 pos, float sdf_val) {
+  if (world == NULL)
+    return;
+
+  int32_t atlas_idx;
+  uint32_t voxel_idx;
+  if (!world_resolve_voxel(world, pos, &atlas_idx, &voxel_idx))
+    return;
+
+  int8_t *sdf = world_brick_sdf(world, atlas_idx);
+  if (sdf != NULL)
+    sdf[voxel_idx] = sdf_quantize(sdf_val, world->inv_sdf_scale);
 }
 
 void world_set_material(WorldBrickMap *world, Vec3 pos, uint8_t mat) {
   if (world == NULL)
     return;
 
-  int32_t bx, by, bz;
-  world_pos_to_brick(world, pos, &bx, &by, &bz);
-
-  if (!world_brick_valid(world, bx, by, bz)) {
+  int32_t atlas_idx;
+  uint32_t voxel_idx;
+  if (!world_resolve_voxel(world, pos, &atlas_idx, &voxel_idx))
     return;
-  }
 
-  int32_t atlas_idx = world_alloc_brick(world, bx, by, bz);
-  if (atlas_idx == BRICK_EMPTY_INDEX) {
-    return;
-  }
-
-  int32_t vx, vy, vz;
-  world_pos_to_voxel(world, pos, bx, by, bz, &vx, &vy, &vz);
-
-  uint32_t idx = voxel_linear_index(vx, vy, vz);
-
-  /* Get material data (demand-paged) */
-  uint32_t page_idx = (uint32_t)atlas_idx / ATLAS_PAGE_BRICKS;
-  uint32_t brick_in_page = (uint32_t)atlas_idx % ATLAS_PAGE_BRICKS;
-  uint8_t *material =
-      world->material_pages[page_idx] + (size_t)brick_in_page * BRICK_VOXELS;
-  material[idx] = mat;
+  uint8_t *material = world_brick_material(world, atlas_idx);
+  if (material != NULL)
+    material[voxel_idx] = mat;
 }
 
 void world_set_voxel(WorldBrickMap *world, Vec3 pos, float sdf_val,
@@ -881,43 +881,84 @@ void world_set_voxel(WorldBrickMap *world, Vec3 pos, float sdf_val,
   if (world == NULL)
     return;
 
-  int32_t bx, by, bz;
-  world_pos_to_brick(world, pos, &bx, &by, &bz);
-
-  if (!world_brick_valid(world, bx, by, bz)) {
+  int32_t atlas_idx;
+  uint32_t voxel_idx;
+  if (!world_resolve_voxel(world, pos, &atlas_idx, &voxel_idx))
     return;
-  }
 
-  int32_t atlas_idx = world_alloc_brick(world, bx, by, bz);
-  if (atlas_idx == BRICK_EMPTY_INDEX) {
-    return;
-  }
-
-  int32_t vx, vy, vz;
-  world_pos_to_voxel(world, pos, bx, by, bz, &vx, &vy, &vz);
-
-  uint32_t idx = voxel_linear_index(vx, vy, vz);
-
-  /* Get SDF and material data (demand-paged) */
-  uint32_t page_idx = (uint32_t)atlas_idx / ATLAS_PAGE_BRICKS;
-  uint32_t brick_in_page = (uint32_t)atlas_idx % ATLAS_PAGE_BRICKS;
-  size_t brick_offset = (size_t)brick_in_page * BRICK_VOXELS;
-  world->sdf_pages[page_idx][brick_offset + idx] =
-      sdf_quantize(sdf_val, world->inv_sdf_scale);
-  world->material_pages[page_idx][brick_offset + idx] = mat;
+  int8_t *sdf = world_brick_sdf(world, atlas_idx);
+  uint8_t *material = world_brick_material(world, atlas_idx);
+  if (sdf != NULL)
+    sdf[voxel_idx] = sdf_quantize(sdf_val, world->inv_sdf_scale);
+  if (material != NULL)
+    material[voxel_idx] = mat;
 }
 
 /* ============================================================================
  * Section 7: Primitive Generation Functions (SoA + Stride Optimized)
+ *
+ * All primitives share the same brick iteration, allocation, voxel loop,
+ * SDF quantization, CSG union, and material assignment logic. The only
+ * difference is the SDF function itself.  world_set_primitive() factors
+ * out that shared body; each public function is a thin wrapper that
+ * packages its SDF parameters and computes the affected half-extents.
  * ============================================================================
  */
 
-void world_set_box(WorldBrickMap *world, Vec3 center, Vec3 half_size,
-                   uint8_t mat) {
-  if (world == NULL)
-    return;
+/* SDF callback: evaluate signed distance at (px, py, pz) given opaque params */
+typedef float (*SdfFunc)(float px, float py, float pz, const void *params);
 
-  /* Precompute constants */
+/* --- Per-primitive SDF callback wrappers and parameter structs ------------ */
+
+typedef struct {
+  Vec3 center;
+  Vec3 half_size;
+} BoxSdfParams;
+
+static float box_sdf_cb(float px, float py, float pz, const void *params) {
+  const BoxSdfParams *p = (const BoxSdfParams *)params;
+  return sdf_box(VEC3(px, py, pz), p->center, p->half_size);
+}
+
+typedef struct {
+  Vec3 center;
+  float radius;
+} SphereSdfParams;
+
+static float sphere_sdf_cb(float px, float py, float pz, const void *params) {
+  const SphereSdfParams *p = (const SphereSdfParams *)params;
+  return sdf_sphere(VEC3(px, py, pz), p->center, p->radius);
+}
+
+typedef struct {
+  Vec3 center;
+  float radius;
+  float half_height;
+} CylinderSdfParams;
+
+static float cylinder_sdf_cb(float px, float py, float pz,
+                              const void *params) {
+  const CylinderSdfParams *p = (const CylinderSdfParams *)params;
+  return sdf_cylinder(VEC3(px, py, pz), p->center, p->radius,
+                      p->half_height);
+}
+
+/* --- Shared primitive stamping ------------------------------------------- */
+
+/**
+ * Stamp an SDF primitive into the world using CSG union.
+ *
+ * @param world        World brick map (must not be NULL)
+ * @param center       Primitive center in world space
+ * @param half_extents Bounding half-extents of the affected region
+ *                     (primitive size + 1 brick padding for SDF falloff)
+ * @param sdf          SDF callback that evaluates the signed distance
+ * @param sdf_params   Opaque parameter block forwarded to @p sdf
+ * @param mat          Material ID for solid voxels
+ */
+static void world_set_primitive(WorldBrickMap *world, Vec3 center,
+                                Vec3 half_extents, SdfFunc sdf,
+                                const void *sdf_params, uint8_t mat) {
   const float brick_size = world->brick_size_world;
   const float voxel_size = world->voxel_size;
   const float inv_sdf_scale = world->inv_sdf_scale;
@@ -925,15 +966,9 @@ void world_set_box(WorldBrickMap *world, Vec3 center, Vec3 half_size,
   /* Brick half-diagonal for conservative distance check */
   const float brick_half_diag = brick_size * 0.866f; /* sqrt(3)/2 */
 
-  /* Compute affected region (expand by 1 brick for SDF falloff) */
-  Vec3 min_pos = vec3_sub(vec3_sub(center, half_size),
-                          VEC3(brick_size, brick_size, brick_size));
-  Vec3 max_pos = vec3_add(vec3_add(center, half_size),
-                          VEC3(brick_size, brick_size, brick_size));
-
-  /* Clamp to world bounds */
-  min_pos = vec3_max(min_pos, world->world_min);
-  max_pos = vec3_min(max_pos, world->world_max);
+  /* Compute affected region and clamp to world bounds */
+  Vec3 min_pos = vec3_max(vec3_sub(center, half_extents), world->world_min);
+  Vec3 max_pos = vec3_min(vec3_add(center, half_extents), world->world_max);
 
   /* Get brick range */
   int32_t bx0, by0, bz0, bx1, by1, bz1;
@@ -952,32 +987,26 @@ void world_set_box(WorldBrickMap *world, Vec3 center, Vec3 half_size,
     for (int32_t by = by0; by <= by1; by++) {
       for (int32_t bx = bx0; bx <= bx1; bx++) {
         /* Compute brick center for distance check */
-        Vec3 brick_center =
-            VEC3(world->world_min.x + ((float)bx + 0.5f) * brick_size,
-                 world->world_min.y + ((float)by + 0.5f) * brick_size,
-                 world->world_min.z + ((float)bz + 0.5f) * brick_size);
+        float brick_cx = world->world_min.x + ((float)bx + 0.5f) * brick_size;
+        float brick_cy = world->world_min.y + ((float)by + 0.5f) * brick_size;
+        float brick_cz = world->world_min.z + ((float)bz + 0.5f) * brick_size;
 
-        /* Compute box SDF at brick center */
-        float dist_to_surface = sdf_box(brick_center, center, half_size);
+        /* SDF at brick center via callback */
+        float dist_to_surface = sdf(brick_cx, brick_cy, brick_cz, sdf_params);
 
-        /* Check if brick is entirely outside (beyond SDF scale + safety margin)
-         */
+        /* Uniform-brick optimization: skip far outside */
         if (dist_to_surface > sdf_scale + brick_half_diag) {
-          /* Brick is far outside - skip (already uniform outside by default) */
           continue;
         }
 
-        /* Check if brick is entirely inside (beyond SDF scale + safety margin)
-         */
+        /* Uniform-brick optimization: mark far inside */
         if (dist_to_surface < -(sdf_scale + brick_half_diag)) {
-          /* Mark as uniform inside without allocating */
           uint32_t brick_idx = brick_linear_index(world, bx, by, bz);
           int32_t current = world->brick_indices[brick_idx];
           if (current == BRICK_EMPTY_INDEX) {
             world->brick_indices[brick_idx] = BRICK_UNIFORM_INSIDE;
             world->uniform_inside_count++;
           } else if (current == BRICK_UNIFORM_OUTSIDE) {
-            /* Transition from uniform outside to uniform inside */
             world->uniform_outside_count--;
             world->brick_indices[brick_idx] = BRICK_UNIFORM_INSIDE;
             world->uniform_inside_count++;
@@ -995,7 +1024,7 @@ void world_set_box(WorldBrickMap *world, Vec3 center, Vec3 half_size,
         uint32_t page_idx = (uint32_t)atlas_idx / ATLAS_PAGE_BRICKS;
         uint32_t brick_in_page = (uint32_t)atlas_idx % ATLAS_PAGE_BRICKS;
         size_t brick_offset = (size_t)brick_in_page * BRICK_VOXELS;
-        int8_t *sdf = world->sdf_pages[page_idx] + brick_offset;
+        int8_t *sdf_data = world->sdf_pages[page_idx] + brick_offset;
         uint8_t *material = world->material_pages[page_idx] + brick_offset;
 
         /* Compute brick origin */
@@ -1016,12 +1045,12 @@ void world_set_box(WorldBrickMap *world, Vec3 center, Vec3 half_size,
               const uint32_t idx = yz_stride + (uint32_t)vx;
               const float px = brick_ox + ((float)vx + 0.5f) * voxel_size;
 
-              float sdf_val = sdf_box(VEC3(px, py, pz), center, half_size);
+              float sdf_val = sdf(px, py, pz, sdf_params);
               int8_t new_q = sdf_quantize(sdf_val, inv_sdf_scale);
 
               /* CSG union: min(existing, new) */
-              if (new_q < sdf[idx]) {
-                sdf[idx] = new_q;
+              if (new_q < sdf_data[idx]) {
+                sdf_data[idx] = new_q;
               }
 
               /* Set material where inside or on surface band.
@@ -1039,204 +1068,37 @@ void world_set_box(WorldBrickMap *world, Vec3 center, Vec3 half_size,
   }
 }
 
+/* --- Public thin wrappers ------------------------------------------------ */
+
+void world_set_box(WorldBrickMap *world, Vec3 center, Vec3 half_size,
+                   uint8_t mat) {
+  if (world == NULL)
+    return;
+  BoxSdfParams params = {center, half_size};
+  Vec3 extents = vec3_add(half_size, VEC3(world->brick_size_world,
+                                          world->brick_size_world,
+                                          world->brick_size_world));
+  world_set_primitive(world, center, extents, box_sdf_cb, &params, mat);
+}
+
 void world_set_sphere(WorldBrickMap *world, Vec3 center, float radius,
                       uint8_t mat) {
   if (world == NULL || radius <= 0.0f)
     return;
-
-  /* Precompute constants */
-  const float brick_size = world->brick_size_world;
-  const float voxel_size = world->voxel_size;
-  const float inv_sdf_scale = world->inv_sdf_scale;
-  const float sdf_scale = world->sdf_scale;
-  /* Brick half-diagonal for conservative distance check */
-  const float brick_half_diag = brick_size * 0.866f; /* sqrt(3)/2 */
-
-  /* Compute affected region */
-  Vec3 min_pos = vec3_sub(center, VEC3(radius + brick_size, radius + brick_size,
-                                       radius + brick_size));
-  Vec3 max_pos = vec3_add(center, VEC3(radius + brick_size, radius + brick_size,
-                                       radius + brick_size));
-
-  min_pos = vec3_max(min_pos, world->world_min);
-  max_pos = vec3_min(max_pos, world->world_max);
-
-  int32_t bx0, by0, bz0, bx1, by1, bz1;
-  world_pos_to_brick(world, min_pos, &bx0, &by0, &bz0);
-  world_pos_to_brick(world, max_pos, &bx1, &by1, &bz1);
-
-  bx0 = max_i32(bx0, 0);
-  by0 = max_i32(by0, 0);
-  bz0 = max_i32(bz0, 0);
-  bx1 = min_i32(bx1, (int32_t)world->grid_x - 1);
-  by1 = min_i32(by1, (int32_t)world->grid_y - 1);
-  bz1 = min_i32(bz1, (int32_t)world->grid_z - 1);
-
-  for (int32_t bz = bz0; bz <= bz1; bz++) {
-    for (int32_t by = by0; by <= by1; by++) {
-      for (int32_t bx = bx0; bx <= bx1; bx++) {
-        /* Compute brick center for distance check */
-        float brick_cx = world->world_min.x + ((float)bx + 0.5f) * brick_size;
-        float brick_cy = world->world_min.y + ((float)by + 0.5f) * brick_size;
-        float brick_cz = world->world_min.z + ((float)bz + 0.5f) * brick_size;
-
-        /* Distance from brick center to sphere surface */
-        float dx = brick_cx - center.x;
-        float dy = brick_cy - center.y;
-        float dz = brick_cz - center.z;
-        float dist_to_center = sqrtf(dx * dx + dy * dy + dz * dz);
-        float dist_to_surface = dist_to_center - radius;
-
-        /* Check if brick is entirely outside (beyond SDF scale + safety margin)
-         */
-        if (dist_to_surface > sdf_scale + brick_half_diag) {
-          /* Brick is far outside - skip (already uniform outside by default) */
-          continue;
-        }
-
-        /* Check if brick is entirely inside (beyond SDF scale + safety margin)
-         */
-        if (dist_to_surface < -(sdf_scale + brick_half_diag)) {
-          /* Mark as uniform inside without allocating */
-          uint32_t brick_idx = brick_linear_index(world, bx, by, bz);
-          int32_t current = world->brick_indices[brick_idx];
-          if (current == BRICK_EMPTY_INDEX) {
-            world->brick_indices[brick_idx] = BRICK_UNIFORM_INSIDE;
-            world->uniform_inside_count++;
-          } else if (current == BRICK_UNIFORM_OUTSIDE) {
-            /* Transition from uniform outside to uniform inside */
-            world->uniform_outside_count--;
-            world->brick_indices[brick_idx] = BRICK_UNIFORM_INSIDE;
-            world->uniform_inside_count++;
-          }
-          /* If already UNIFORM_INSIDE or allocated, leave as is */
-          continue;
-        }
-
-        /* Brick is near surface - needs full allocation */
-        int32_t atlas_idx = world_alloc_brick(world, bx, by, bz);
-        if (atlas_idx == BRICK_EMPTY_INDEX)
-          continue;
-
-        /* Get SoA pointers for this brick (demand-paged) */
-        uint32_t page_idx = (uint32_t)atlas_idx / ATLAS_PAGE_BRICKS;
-        uint32_t brick_in_page = (uint32_t)atlas_idx % ATLAS_PAGE_BRICKS;
-        size_t brick_offset = (size_t)brick_in_page * BRICK_VOXELS;
-        int8_t *sdf = world->sdf_pages[page_idx] + brick_offset;
-        uint8_t *material = world->material_pages[page_idx] + brick_offset;
-
-        /* Compute brick origin */
-        float brick_ox = world->world_min.x + (float)bx * brick_size;
-        float brick_oy = world->world_min.y + (float)by * brick_size;
-        float brick_oz = world->world_min.z + (float)bz * brick_size;
-
-        /* Iterate over voxels with precomputed strides */
-        for (int32_t vz = 0; vz < BRICK_SIZE; vz++) {
-          const uint32_t z_stride = (uint32_t)vz << (BRICK_SHIFT * 2);
-          const float pz = brick_oz + ((float)vz + 0.5f) * voxel_size;
-
-          for (int32_t vy = 0; vy < BRICK_SIZE; vy++) {
-            const uint32_t yz_stride = z_stride + ((uint32_t)vy << BRICK_SHIFT);
-            const float py = brick_oy + ((float)vy + 0.5f) * voxel_size;
-
-            for (int32_t vx = 0; vx < BRICK_SIZE; vx++) {
-              const uint32_t idx = yz_stride + (uint32_t)vx;
-              const float px = brick_ox + ((float)vx + 0.5f) * voxel_size;
-
-              float sdf_val = sdf_sphere(VEC3(px, py, pz), center, radius);
-              int8_t new_q = sdf_quantize(sdf_val, inv_sdf_scale);
-
-              if (new_q < sdf[idx]) {
-                sdf[idx] = new_q;
-              }
-
-              if (sdf_val < voxel_size && mat > 0) {
-                material[idx] = mat;
-              }
-            }
-          }
-        }
-      }
-    }
-  }
+  SphereSdfParams params = {center, radius};
+  float r_ext = radius + world->brick_size_world;
+  Vec3 extents = VEC3(r_ext, r_ext, r_ext);
+  world_set_primitive(world, center, extents, sphere_sdf_cb, &params, mat);
 }
 
 void world_set_cylinder(WorldBrickMap *world, Vec3 center, float radius,
                         float half_height, uint8_t mat) {
   if (world == NULL || radius <= 0.0f || half_height <= 0.0f)
     return;
-
-  /* Precompute constants */
-  const float brick_size = world->brick_size_world;
-  const float voxel_size = world->voxel_size;
-  const float inv_sdf_scale = world->inv_sdf_scale;
-
-  Vec3 extent =
-      VEC3(radius + brick_size, radius + brick_size, half_height + brick_size);
-  Vec3 min_pos = vec3_sub(center, extent);
-  Vec3 max_pos = vec3_add(center, extent);
-
-  min_pos = vec3_max(min_pos, world->world_min);
-  max_pos = vec3_min(max_pos, world->world_max);
-
-  int32_t bx0, by0, bz0, bx1, by1, bz1;
-  world_pos_to_brick(world, min_pos, &bx0, &by0, &bz0);
-  world_pos_to_brick(world, max_pos, &bx1, &by1, &bz1);
-
-  bx0 = max_i32(bx0, 0);
-  by0 = max_i32(by0, 0);
-  bz0 = max_i32(bz0, 0);
-  bx1 = min_i32(bx1, (int32_t)world->grid_x - 1);
-  by1 = min_i32(by1, (int32_t)world->grid_y - 1);
-  bz1 = min_i32(bz1, (int32_t)world->grid_z - 1);
-
-  for (int32_t bz = bz0; bz <= bz1; bz++) {
-    for (int32_t by = by0; by <= by1; by++) {
-      for (int32_t bx = bx0; bx <= bx1; bx++) {
-        int32_t atlas_idx = world_alloc_brick(world, bx, by, bz);
-        if (atlas_idx == BRICK_EMPTY_INDEX)
-          continue;
-
-        /* Get SoA pointers for this brick (demand-paged) */
-        uint32_t page_idx = (uint32_t)atlas_idx / ATLAS_PAGE_BRICKS;
-        uint32_t brick_in_page = (uint32_t)atlas_idx % ATLAS_PAGE_BRICKS;
-        size_t brick_offset = (size_t)brick_in_page * BRICK_VOXELS;
-        int8_t *sdf = world->sdf_pages[page_idx] + brick_offset;
-        uint8_t *material = world->material_pages[page_idx] + brick_offset;
-
-        float brick_ox = world->world_min.x + (float)bx * brick_size;
-        float brick_oy = world->world_min.y + (float)by * brick_size;
-        float brick_oz = world->world_min.z + (float)bz * brick_size;
-
-        for (int32_t vz = 0; vz < BRICK_SIZE; vz++) {
-          const uint32_t z_stride = (uint32_t)vz << (BRICK_SHIFT * 2);
-          const float pz = brick_oz + ((float)vz + 0.5f) * voxel_size;
-
-          for (int32_t vy = 0; vy < BRICK_SIZE; vy++) {
-            const uint32_t yz_stride = z_stride + ((uint32_t)vy << BRICK_SHIFT);
-            const float py = brick_oy + ((float)vy + 0.5f) * voxel_size;
-
-            for (int32_t vx = 0; vx < BRICK_SIZE; vx++) {
-              const uint32_t idx = yz_stride + (uint32_t)vx;
-              const float px = brick_ox + ((float)vx + 0.5f) * voxel_size;
-
-              float sdf_val =
-                  sdf_cylinder(VEC3(px, py, pz), center, radius, half_height);
-              int8_t new_q = sdf_quantize(sdf_val, inv_sdf_scale);
-
-              if (new_q < sdf[idx]) {
-                sdf[idx] = new_q;
-              }
-
-              if (sdf_val < voxel_size && mat > 0) {
-                material[idx] = mat;
-              }
-            }
-          }
-        }
-      }
-    }
-  }
+  CylinderSdfParams params = {center, radius, half_height};
+  float bs = world->brick_size_world;
+  Vec3 extents = VEC3(radius + bs, radius + bs, half_height + bs);
+  world_set_primitive(world, center, extents, cylinder_sdf_cb, &params, mat);
 }
 
 /* ============================================================================

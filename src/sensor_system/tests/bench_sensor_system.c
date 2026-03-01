@@ -13,6 +13,8 @@
 
 #include "sensor_system.h"
 #include "sensor_implementations.h"
+#include "drone_state.h"
+#include "platform_quadcopter.h"
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
@@ -57,11 +59,11 @@ static uint32_t bench_get_output_shape(const Sensor* sensor, uint32_t* shape) {
 static void bench_batch_sample(Sensor* sensor, const SensorContext* ctx, float* output_buffer) {
     (void)sensor;
     /* Minimal work - just fill with zeros */
-    memset(output_buffer, 0, ctx->drone_count * 6 * sizeof(float));
+    memset(output_buffer, 0, ctx->agent_count * 6 * sizeof(float));
 }
 
-static void bench_reset(Sensor* sensor, uint32_t drone_index) {
-    (void)sensor; (void)drone_index;
+static void bench_reset(Sensor* sensor, uint32_t agent_index) {
+    (void)sensor; (void)agent_index;
 }
 
 static void bench_destroy(Sensor* sensor) {
@@ -84,8 +86,8 @@ static const SensorVTable BENCH_VTABLE = {
  * Benchmarks
  * ============================================================================ */
 
-static void bench_system_overhead(uint32_t num_drones, uint32_t num_sensors) {
-    printf("Benchmarking %u drones, %u sensors:\n", num_drones, num_sensors);
+static void bench_system_overhead(uint32_t num_agents, uint32_t num_sensors) {
+    printf("Benchmarking %u drones, %u sensors:\n", num_agents, num_sensors);
 
     Arena* arena = arena_create(16 * 1024 * 1024);
     if (arena == NULL) {
@@ -93,7 +95,7 @@ static void bench_system_overhead(uint32_t num_drones, uint32_t num_sensors) {
         return;
     }
 
-    SensorSystem* sys = sensor_system_create(arena, num_drones, num_sensors, 128);
+    SensorSystem* sys = sensor_system_create(arena, num_agents, num_sensors, 128);
     if (sys == NULL) {
         printf("  Failed to create sensor system\n");
         arena_destroy(arena);
@@ -110,7 +112,7 @@ static void bench_system_overhead(uint32_t num_drones, uint32_t num_sensors) {
     }
 
     /* Attach sensors to drones (varying attachments) */
-    for (uint32_t d = 0; d < num_drones; d++) {
+    for (uint32_t d = 0; d < num_agents; d++) {
         /* Attach 1-4 sensors per drone */
         uint32_t attach_count = 1 + (d % 4);
         for (uint32_t a = 0; a < attach_count && a < num_sensors; a++) {
@@ -119,15 +121,15 @@ static void bench_system_overhead(uint32_t num_drones, uint32_t num_sensors) {
     }
 
     /* Create drone state */
-    DroneStateSOA* drones = drone_state_create(arena, num_drones);
-    for (uint32_t d = 0; d < num_drones; d++) {
-        drone_state_init(drones, d);
+    PlatformStateSOA* drones = platform_state_create(arena, num_agents, QUAD_STATE_EXT_COUNT);
+    for (uint32_t d = 0; d < num_agents; d++) {
+        platform_state_init(drones, d);
     }
-    drones->count = num_drones;
+    drones->rigid_body.count = num_agents;
 
     /* Warmup */
     for (int i = 0; i < 10; i++) {
-        sensor_system_sample_all(sys, drones, NULL, NULL, num_drones);
+        sensor_system_sample_all(sys, drones, NULL, NULL, num_agents);
     }
 
     /* Benchmark */
@@ -137,7 +139,7 @@ static void bench_system_overhead(uint32_t num_drones, uint32_t num_sensors) {
 
     for (int i = 0; i < BENCH_ITERATIONS; i++) {
         double start = get_time_ms();
-        sensor_system_sample_all(sys, drones, NULL, NULL, num_drones);
+        sensor_system_sample_all(sys, drones, NULL, NULL, num_agents);
         double end = get_time_ms();
 
         double elapsed = end - start;
@@ -150,9 +152,9 @@ static void bench_system_overhead(uint32_t num_drones, uint32_t num_sensors) {
 
     printf("  Average: %.3f ms\n", avg_time);
     printf("  Min: %.3f ms, Max: %.3f ms\n", min_time, max_time);
-    printf("  Per-drone overhead: %.3f us\n", avg_time * 1000.0 / num_drones);
+    printf("  Per-drone overhead: %.3f us\n", avg_time * 1000.0 / num_agents);
 
-    if (num_drones == 1024 && num_sensors >= 4) {
+    if (num_agents == 1024 && num_sensors >= 4) {
         if (avg_time < 0.5) {
             printf("  [PASS] Under 500us target\n");
         } else {

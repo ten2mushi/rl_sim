@@ -138,6 +138,7 @@ target_link_libraries(environment_manager
         foundation
         drone_state
         physics
+        platform
         world_brick_map
         collision_system
         sensor_system
@@ -229,6 +230,7 @@ if(ENVIRONMENT_MANAGER_BUILD_TESTS)
         tests/test_determinism_deep.c
         tests/test_memory_deep.c
         tests/test_lidar_world_integration.c
+        tests/test_camera_ground_truth.c
         tests/test_multi_engine.c
         tests/test_puffer_env.c
     )

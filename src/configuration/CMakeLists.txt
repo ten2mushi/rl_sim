@@ -42,6 +42,12 @@ if(NOT TARGET drone_state)
                      ${CMAKE_CURRENT_BINARY_DIR}/drone_state EXCLUDE_FROM_ALL)
 endif()
 
+# Platform dependency (for platform_quadcopter.h extension indices)
+if(NOT TARGET platform)
+    add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/../platform
+                     ${CMAKE_CURRENT_BINARY_DIR}/platform EXCLUDE_FROM_ALL)
+endif()
+
 # tomlc99 library - use local copy in external/
 set(TOMLC99_DIR ${CMAKE_CURRENT_SOURCE_DIR}/external)
 
@@ -116,6 +122,7 @@ target_link_libraries(configuration
         foundation
         drone_state
     PRIVATE
+        platform
         tomlc99
         yxml
 )
@@ -188,7 +195,7 @@ if(CONFIGURATION_BUILD_TESTS)
 
     # Main test executable
     add_executable(test_configuration tests/test_configuration.c)
-    target_link_libraries(test_configuration PRIVATE configuration)
+    target_link_libraries(test_configuration PRIVATE configuration platform)
 
     # Enable debug assertions for tests
     target_compile_definitions(test_configuration PRIVATE FOUNDATION_DEBUG=1)
@@ -203,17 +210,26 @@ if(CONFIGURATION_BUILD_TESTS)
 
     # URDF parser test executable
     add_executable(test_urdf tests/test_urdf.c)
-    target_link_libraries(test_urdf PRIVATE configuration)
+    target_link_libraries(test_urdf PRIVATE configuration platform)
     target_compile_definitions(test_urdf PRIVATE FOUNDATION_DEBUG=1)
     add_test(NAME test_urdf COMMAND test_urdf)
     set_tests_properties(test_urdf PROPERTIES
         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
     )
 
+    # Deep validation tests (Yoneda philosophy)
+    add_executable(test_config_validation_deep tests/test_config_validation_deep.c)
+    target_link_libraries(test_config_validation_deep PRIVATE configuration platform)
+    target_compile_definitions(test_config_validation_deep PRIVATE FOUNDATION_DEBUG=1)
+    add_test(NAME test_config_validation_deep COMMAND test_config_validation_deep)
+    set_tests_properties(test_config_validation_deep PROPERTIES
+        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+    )
+
     # Custom target to run tests with output
     add_custom_target(test_configuration_run
         COMMAND ${CMAKE_CTEST_COMMAND} --output-on-failure
-        DEPENDS test_configuration test_urdf
+        DEPENDS test_configuration test_urdf test_config_validation_deep
         COMMENT "Running configuration unit tests"
     )
 endif()
@@ -224,7 +240,7 @@ endif()
 
 if(CONFIGURATION_BUILD_BENCHMARKS)
     add_executable(bench_configuration tests/bench_configuration.c)
-    target_link_libraries(bench_configuration PRIVATE configuration)
+    target_link_libraries(bench_configuration PRIVATE configuration platform)
 
     # Optimize benchmarks
     if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang|AppleClang")
@@ -248,7 +264,6 @@ endif()
 include(GNUInstallDirs)
 
 install(TARGETS configuration tomlc99 yxml
-    EXPORT configurationTargets
     ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
     LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
 )
@@ -260,12 +275,6 @@ install(FILES ${CONFIGURATION_HEADERS}
 # Install toml.h header for tomlc99
 install(FILES ${TOMLC99_DIR}/toml.h
     DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
-)
-
-install(EXPORT configurationTargets
-    FILE configurationTargets.cmake
-    NAMESPACE configuration::
-    DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/configuration
 )
 
 # Install test data files

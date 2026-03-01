@@ -385,8 +385,11 @@ PCG32* pcg32_thread_local(void);
  * ============================================================================ */
 
 /* Floating-point utilities */
+FOUNDATION_INLINE float minf(float a, float b) { return fminf(a, b); }
+FOUNDATION_INLINE float maxf(float a, float b) { return fmaxf(a, b); }
+
 FOUNDATION_INLINE float clampf(float x, float min_val, float max_val) {
-    return x < min_val ? min_val : (x > max_val ? max_val : x);
+    return fminf(fmaxf(x, min_val), max_val);
 }
 
 FOUNDATION_INLINE float lerpf(float a, float b, float t) {
@@ -398,12 +401,8 @@ FOUNDATION_INLINE float smoothstep(float edge0, float edge1, float x) {
     return t * t * (3.0f - 2.0f * t);
 }
 
-FOUNDATION_INLINE float signf(float x) {
-    return x > 0.0f ? 1.0f : (x < 0.0f ? -1.0f : 0.0f);
-}
-
 FOUNDATION_INLINE float absf(float x) {
-    return x < 0.0f ? -x : x;
+    return fabsf(x);
 }
 
 /* Integer utilities */
@@ -503,10 +502,6 @@ FOUNDATION_INLINE Vec3 vec3_mul(Vec3 a, Vec3 b) {
     return VEC3(a.x * b.x, a.y * b.y, a.z * b.z);
 }
 
-FOUNDATION_INLINE Vec3 vec3_div(Vec3 a, Vec3 b) {
-    return VEC3(a.x / b.x, a.y / b.y, a.z / b.z);
-}
-
 FOUNDATION_INLINE Vec3 vec3_neg(Vec3 v) {
     return VEC3(-v.x, -v.y, -v.z);
 }
@@ -579,12 +574,6 @@ FOUNDATION_INLINE Vec3 vec3_max(Vec3 a, Vec3 b) {
         a.y > b.y ? a.y : b.y,
         a.z > b.z ? a.z : b.z
     );
-}
-
-/* Reflection */
-FOUNDATION_INLINE Vec3 vec3_reflect(Vec3 v, Vec3 n) {
-    float d = 2.0f * vec3_dot(v, n);
-    return vec3_sub(v, vec3_scale(n, d));
 }
 
 /* ============================================================================

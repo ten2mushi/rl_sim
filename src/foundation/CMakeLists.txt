@@ -169,7 +169,6 @@ endif()
 include(GNUInstallDirs)
 
 install(TARGETS foundation
-    EXPORT foundationTargets
     ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
     LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
 )
@@ -178,11 +177,6 @@ install(FILES ${FOUNDATION_HEADERS}
     DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/foundation
 )
 
-install(EXPORT foundationTargets
-    FILE foundationTargets.cmake
-    NAMESPACE foundation::
-    DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/foundation
-)
 
 # ============================================================================
 # Summary

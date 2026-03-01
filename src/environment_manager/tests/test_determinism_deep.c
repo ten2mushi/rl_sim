@@ -44,6 +44,7 @@
  */
 
 #include "environment_manager.h"
+#include "platform_quadcopter.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -67,11 +68,11 @@
 /**
  * Create a test engine with specified seed and configuration.
  */
-static BatchDroneEngine* create_test_engine(uint64_t seed, uint32_t num_envs,
-                                             uint32_t drones_per_env) {
+static BatchEngine* create_test_engine(uint64_t seed, uint32_t num_envs,
+                                             uint32_t agents_per_env) {
     EngineConfig cfg = engine_config_default();
     cfg.num_envs = num_envs;
-    cfg.drones_per_env = drones_per_env;
+    cfg.agents_per_env = agents_per_env;
     cfg.seed = seed;
     cfg.persistent_arena_size = 128 * 1024 * 1024;
     cfg.frame_arena_size = 32 * 1024 * 1024;
@@ -85,17 +86,17 @@ static BatchDroneEngine* create_test_engine(uint64_t seed, uint32_t num_envs,
 /**
  * Create a standard test engine (4 envs x 4 drones).
  */
-static BatchDroneEngine* create_standard_engine(uint64_t seed) {
+static BatchEngine* create_standard_engine(uint64_t seed) {
     return create_test_engine(seed, 4, 4);
 }
 
 /**
  * Create an engine with short episode length for truncation tests.
  */
-static BatchDroneEngine* create_short_episode_engine(uint64_t seed, uint32_t max_steps) {
+static BatchEngine* create_short_episode_engine(uint64_t seed, uint32_t max_steps) {
     EngineConfig cfg = engine_config_default();
     cfg.num_envs = 2;
-    cfg.drones_per_env = 2;
+    cfg.agents_per_env = 2;
     cfg.seed = seed;
     cfg.persistent_arena_size = 64 * 1024 * 1024;
     cfg.frame_arena_size = 16 * 1024 * 1024;
@@ -109,9 +110,9 @@ static BatchDroneEngine* create_short_episode_engine(uint64_t seed, uint32_t max
 /**
  * Set fixed actions for all drones.
  */
-static void set_fixed_actions(BatchDroneEngine* engine, float value) {
+static void set_fixed_actions(BatchEngine* engine, float value) {
     float* actions = engine_get_actions(engine);
-    uint32_t total = engine->config.total_drones * ENGINE_ACTION_DIM;
+    uint32_t total = engine->config.total_agents * engine->action_dim;
     for (uint32_t i = 0; i < total; i++) {
         actions[i] = value;
     }
@@ -120,11 +121,11 @@ static void set_fixed_actions(BatchDroneEngine* engine, float value) {
 /**
  * Set patterned actions (different per motor, per drone).
  */
-static void set_patterned_actions(BatchDroneEngine* engine, int pattern) {
+static void set_patterned_actions(BatchEngine* engine, int pattern) {
     float* actions = engine_get_actions(engine);
-    uint32_t total_drones = engine->config.total_drones;
-    for (uint32_t d = 0; d < total_drones; d++) {
-        for (uint32_t m = 0; m < ENGINE_ACTION_DIM; m++) {
+    uint32_t total_agents = engine->config.total_agents;
+    for (uint32_t d = 0; d < total_agents; d++) {
+        for (uint32_t m = 0; m < engine->action_dim; m++) {
             float val;
             switch (pattern) {
                 case 0:  /* Zero actions */
@@ -137,13 +138,13 @@ static void set_patterned_actions(BatchDroneEngine* engine, int pattern) {
                     val = ((d + m) % 2 == 0) ? 0.0f : 1.0f;
                     break;
                 case 3:  /* Gradient */
-                    val = (float)(d * ENGINE_ACTION_DIM + m) /
-                          (float)(total_drones * ENGINE_ACTION_DIM);
+                    val = (float)(d * engine->action_dim + m) /
+                          (float)(total_agents * engine->action_dim);
                     break;
                 default:
                     val = 0.5f;
             }
-            actions[d * ENGINE_ACTION_DIM + m] = val;
+            actions[d * engine->action_dim + m] = val;
         }
     }
 }
@@ -151,9 +152,9 @@ static void set_patterned_actions(BatchDroneEngine* engine, int pattern) {
 /**
  * Set sinusoidal actions based on step number.
  */
-static void set_sinusoidal_actions(BatchDroneEngine* engine, int step) {
+static void set_sinusoidal_actions(BatchEngine* engine, int step) {
     float* actions = engine_get_actions(engine);
-    uint32_t total = engine->config.total_drones * ENGINE_ACTION_DIM;
+    uint32_t total = engine->config.total_agents * engine->action_dim;
     for (uint32_t i = 0; i < total; i++) {
         float val = sinf((float)(step * total + i) * 0.01f) * 0.5f + 0.5f;
         actions[i] = val;
@@ -164,44 +165,44 @@ static void set_sinusoidal_actions(BatchDroneEngine* engine, int step) {
  * Compare two engine states for bit-exact equality.
  * Returns 0 if identical, line number if different.
  */
-static int compare_engine_states(BatchDroneEngine* e1, BatchDroneEngine* e2) {
-    uint32_t total = e1->config.total_drones;
+static int compare_engine_states(BatchEngine* e1, BatchEngine* e2) {
+    uint32_t total = e1->config.total_agents;
 
     /* Compare positions */
     for (uint32_t i = 0; i < total; i++) {
-        if (e1->states->pos_x[i] != e2->states->pos_x[i]) return __LINE__;
-        if (e1->states->pos_y[i] != e2->states->pos_y[i]) return __LINE__;
-        if (e1->states->pos_z[i] != e2->states->pos_z[i]) return __LINE__;
+        if (e1->states->rigid_body.pos_x[i] != e2->states->rigid_body.pos_x[i]) return __LINE__;
+        if (e1->states->rigid_body.pos_y[i] != e2->states->rigid_body.pos_y[i]) return __LINE__;
+        if (e1->states->rigid_body.pos_z[i] != e2->states->rigid_body.pos_z[i]) return __LINE__;
     }
 
     /* Compare velocities */
     for (uint32_t i = 0; i < total; i++) {
-        if (e1->states->vel_x[i] != e2->states->vel_x[i]) return __LINE__;
-        if (e1->states->vel_y[i] != e2->states->vel_y[i]) return __LINE__;
-        if (e1->states->vel_z[i] != e2->states->vel_z[i]) return __LINE__;
+        if (e1->states->rigid_body.vel_x[i] != e2->states->rigid_body.vel_x[i]) return __LINE__;
+        if (e1->states->rigid_body.vel_y[i] != e2->states->rigid_body.vel_y[i]) return __LINE__;
+        if (e1->states->rigid_body.vel_z[i] != e2->states->rigid_body.vel_z[i]) return __LINE__;
     }
 
     /* Compare quaternions */
     for (uint32_t i = 0; i < total; i++) {
-        if (e1->states->quat_w[i] != e2->states->quat_w[i]) return __LINE__;
-        if (e1->states->quat_x[i] != e2->states->quat_x[i]) return __LINE__;
-        if (e1->states->quat_y[i] != e2->states->quat_y[i]) return __LINE__;
-        if (e1->states->quat_z[i] != e2->states->quat_z[i]) return __LINE__;
+        if (e1->states->rigid_body.quat_w[i] != e2->states->rigid_body.quat_w[i]) return __LINE__;
+        if (e1->states->rigid_body.quat_x[i] != e2->states->rigid_body.quat_x[i]) return __LINE__;
+        if (e1->states->rigid_body.quat_y[i] != e2->states->rigid_body.quat_y[i]) return __LINE__;
+        if (e1->states->rigid_body.quat_z[i] != e2->states->rigid_body.quat_z[i]) return __LINE__;
     }
 
     /* Compare angular velocities */
     for (uint32_t i = 0; i < total; i++) {
-        if (e1->states->omega_x[i] != e2->states->omega_x[i]) return __LINE__;
-        if (e1->states->omega_y[i] != e2->states->omega_y[i]) return __LINE__;
-        if (e1->states->omega_z[i] != e2->states->omega_z[i]) return __LINE__;
+        if (e1->states->rigid_body.omega_x[i] != e2->states->rigid_body.omega_x[i]) return __LINE__;
+        if (e1->states->rigid_body.omega_y[i] != e2->states->rigid_body.omega_y[i]) return __LINE__;
+        if (e1->states->rigid_body.omega_z[i] != e2->states->rigid_body.omega_z[i]) return __LINE__;
     }
 
     /* Compare RPMs */
     for (uint32_t i = 0; i < total; i++) {
-        if (e1->states->rpm_0[i] != e2->states->rpm_0[i]) return __LINE__;
-        if (e1->states->rpm_1[i] != e2->states->rpm_1[i]) return __LINE__;
-        if (e1->states->rpm_2[i] != e2->states->rpm_2[i]) return __LINE__;
-        if (e1->states->rpm_3[i] != e2->states->rpm_3[i]) return __LINE__;
+        if (e1->states->extension[QUAD_EXT_RPM_0][i] != e2->states->extension[QUAD_EXT_RPM_0][i]) return __LINE__;
+        if (e1->states->extension[QUAD_EXT_RPM_1][i] != e2->states->extension[QUAD_EXT_RPM_1][i]) return __LINE__;
+        if (e1->states->extension[QUAD_EXT_RPM_2][i] != e2->states->extension[QUAD_EXT_RPM_2][i]) return __LINE__;
+        if (e1->states->extension[QUAD_EXT_RPM_3][i] != e2->states->extension[QUAD_EXT_RPM_3][i]) return __LINE__;
     }
 
     return 0;
@@ -232,18 +233,18 @@ typedef struct SavedState {
     float* observations;
     uint8_t* dones;
     uint8_t* truncations;
-    uint32_t total_drones;
+    uint32_t total_agents;
     uint32_t obs_dim;
 } SavedState;
 
-static SavedState* save_engine_state(BatchDroneEngine* engine) {
-    uint32_t n = engine->config.total_drones;
+static SavedState* save_engine_state(BatchEngine* engine) {
+    uint32_t n = engine->config.total_agents;
     uint32_t obs_dim = engine->obs_dim;
 
     SavedState* state = (SavedState*)malloc(sizeof(SavedState));
     if (!state) return NULL;
 
-    state->total_drones = n;
+    state->total_agents = n;
     state->obs_dim = obs_dim;
 
     state->pos_x = (float*)malloc(n * sizeof(float));
@@ -268,23 +269,23 @@ static SavedState* save_engine_state(BatchDroneEngine* engine) {
     state->dones = (uint8_t*)malloc(n * sizeof(uint8_t));
     state->truncations = (uint8_t*)malloc(n * sizeof(uint8_t));
 
-    memcpy(state->pos_x, engine->states->pos_x, n * sizeof(float));
-    memcpy(state->pos_y, engine->states->pos_y, n * sizeof(float));
-    memcpy(state->pos_z, engine->states->pos_z, n * sizeof(float));
-    memcpy(state->vel_x, engine->states->vel_x, n * sizeof(float));
-    memcpy(state->vel_y, engine->states->vel_y, n * sizeof(float));
-    memcpy(state->vel_z, engine->states->vel_z, n * sizeof(float));
-    memcpy(state->quat_w, engine->states->quat_w, n * sizeof(float));
-    memcpy(state->quat_x, engine->states->quat_x, n * sizeof(float));
-    memcpy(state->quat_y, engine->states->quat_y, n * sizeof(float));
-    memcpy(state->quat_z, engine->states->quat_z, n * sizeof(float));
-    memcpy(state->omega_x, engine->states->omega_x, n * sizeof(float));
-    memcpy(state->omega_y, engine->states->omega_y, n * sizeof(float));
-    memcpy(state->omega_z, engine->states->omega_z, n * sizeof(float));
-    memcpy(state->rpm_0, engine->states->rpm_0, n * sizeof(float));
-    memcpy(state->rpm_1, engine->states->rpm_1, n * sizeof(float));
-    memcpy(state->rpm_2, engine->states->rpm_2, n * sizeof(float));
-    memcpy(state->rpm_3, engine->states->rpm_3, n * sizeof(float));
+    memcpy(state->pos_x, engine->states->rigid_body.pos_x, n * sizeof(float));
+    memcpy(state->pos_y, engine->states->rigid_body.pos_y, n * sizeof(float));
+    memcpy(state->pos_z, engine->states->rigid_body.pos_z, n * sizeof(float));
+    memcpy(state->vel_x, engine->states->rigid_body.vel_x, n * sizeof(float));
+    memcpy(state->vel_y, engine->states->rigid_body.vel_y, n * sizeof(float));
+    memcpy(state->vel_z, engine->states->rigid_body.vel_z, n * sizeof(float));
+    memcpy(state->quat_w, engine->states->rigid_body.quat_w, n * sizeof(float));
+    memcpy(state->quat_x, engine->states->rigid_body.quat_x, n * sizeof(float));
+    memcpy(state->quat_y, engine->states->rigid_body.quat_y, n * sizeof(float));
+    memcpy(state->quat_z, engine->states->rigid_body.quat_z, n * sizeof(float));
+    memcpy(state->omega_x, engine->states->rigid_body.omega_x, n * sizeof(float));
+    memcpy(state->omega_y, engine->states->rigid_body.omega_y, n * sizeof(float));
+    memcpy(state->omega_z, engine->states->rigid_body.omega_z, n * sizeof(float));
+    memcpy(state->rpm_0, engine->states->extension[QUAD_EXT_RPM_0], n * sizeof(float));
+    memcpy(state->rpm_1, engine->states->extension[QUAD_EXT_RPM_1], n * sizeof(float));
+    memcpy(state->rpm_2, engine->states->extension[QUAD_EXT_RPM_2], n * sizeof(float));
+    memcpy(state->rpm_3, engine->states->extension[QUAD_EXT_RPM_3], n * sizeof(float));
     memcpy(state->rewards, engine->rewards_buffer, n * sizeof(float));
     memcpy(state->observations, engine->observations, n * obs_dim * sizeof(float));
     memcpy(state->dones, engine->dones, n * sizeof(uint8_t));
@@ -333,8 +334,8 @@ TEST(position_determinism_multiple_runs) {
     const uint64_t SEED = 42;
     const int STEPS = 100;
 
-    BatchDroneEngine* e1 = create_standard_engine(SEED);
-    BatchDroneEngine* e2 = create_standard_engine(SEED);
+    BatchEngine* e1 = create_standard_engine(SEED);
+    BatchEngine* e2 = create_standard_engine(SEED);
     ASSERT_NOT_NULL(e1);
     ASSERT_NOT_NULL(e2);
 
@@ -349,11 +350,11 @@ TEST(position_determinism_multiple_runs) {
         engine_step(e2);
 
         /* Bit-exact comparison at every step */
-        uint32_t n = e1->config.total_drones;
+        uint32_t n = e1->config.total_agents;
         for (uint32_t i = 0; i < n; i++) {
-            ASSERT_FLOAT_EXACT(e1->states->pos_x[i], e2->states->pos_x[i]);
-            ASSERT_FLOAT_EXACT(e1->states->pos_y[i], e2->states->pos_y[i]);
-            ASSERT_FLOAT_EXACT(e1->states->pos_z[i], e2->states->pos_z[i]);
+            ASSERT_FLOAT_EXACT(e1->states->rigid_body.pos_x[i], e2->states->rigid_body.pos_x[i]);
+            ASSERT_FLOAT_EXACT(e1->states->rigid_body.pos_y[i], e2->states->rigid_body.pos_y[i]);
+            ASSERT_FLOAT_EXACT(e1->states->rigid_body.pos_z[i], e2->states->rigid_body.pos_z[i]);
         }
     }
 
@@ -369,8 +370,8 @@ TEST(velocity_determinism_multiple_runs) {
     const uint64_t SEED = 123;
     const int STEPS = 100;
 
-    BatchDroneEngine* e1 = create_standard_engine(SEED);
-    BatchDroneEngine* e2 = create_standard_engine(SEED);
+    BatchEngine* e1 = create_standard_engine(SEED);
+    BatchEngine* e2 = create_standard_engine(SEED);
     ASSERT_NOT_NULL(e1);
     ASSERT_NOT_NULL(e2);
 
@@ -384,11 +385,11 @@ TEST(velocity_determinism_multiple_runs) {
         engine_step(e2);
     }
 
-    uint32_t n = e1->config.total_drones;
+    uint32_t n = e1->config.total_agents;
     for (uint32_t i = 0; i < n; i++) {
-        ASSERT_FLOAT_EXACT(e1->states->vel_x[i], e2->states->vel_x[i]);
-        ASSERT_FLOAT_EXACT(e1->states->vel_y[i], e2->states->vel_y[i]);
-        ASSERT_FLOAT_EXACT(e1->states->vel_z[i], e2->states->vel_z[i]);
+        ASSERT_FLOAT_EXACT(e1->states->rigid_body.vel_x[i], e2->states->rigid_body.vel_x[i]);
+        ASSERT_FLOAT_EXACT(e1->states->rigid_body.vel_y[i], e2->states->rigid_body.vel_y[i]);
+        ASSERT_FLOAT_EXACT(e1->states->rigid_body.vel_z[i], e2->states->rigid_body.vel_z[i]);
     }
 
     engine_destroy(e1);
@@ -405,8 +406,8 @@ TEST(quaternion_determinism) {
     const uint64_t SEED = 456;
     const int STEPS = 100;
 
-    BatchDroneEngine* e1 = create_standard_engine(SEED);
-    BatchDroneEngine* e2 = create_standard_engine(SEED);
+    BatchEngine* e1 = create_standard_engine(SEED);
+    BatchEngine* e2 = create_standard_engine(SEED);
     ASSERT_NOT_NULL(e1);
     ASSERT_NOT_NULL(e2);
 
@@ -417,7 +418,7 @@ TEST(quaternion_determinism) {
     for (int step = 0; step < STEPS; step++) {
         float* a1 = engine_get_actions(e1);
         float* a2 = engine_get_actions(e2);
-        uint32_t total = e1->config.total_drones;
+        uint32_t total = e1->config.total_agents;
         for (uint32_t d = 0; d < total; d++) {
             /* Asymmetric to cause rotation */
             a1[d * 4 + 0] = 0.3f;
@@ -434,12 +435,12 @@ TEST(quaternion_determinism) {
         engine_step(e2);
     }
 
-    uint32_t n = e1->config.total_drones;
+    uint32_t n = e1->config.total_agents;
     for (uint32_t i = 0; i < n; i++) {
-        ASSERT_FLOAT_EXACT(e1->states->quat_w[i], e2->states->quat_w[i]);
-        ASSERT_FLOAT_EXACT(e1->states->quat_x[i], e2->states->quat_x[i]);
-        ASSERT_FLOAT_EXACT(e1->states->quat_y[i], e2->states->quat_y[i]);
-        ASSERT_FLOAT_EXACT(e1->states->quat_z[i], e2->states->quat_z[i]);
+        ASSERT_FLOAT_EXACT(e1->states->rigid_body.quat_w[i], e2->states->rigid_body.quat_w[i]);
+        ASSERT_FLOAT_EXACT(e1->states->rigid_body.quat_x[i], e2->states->rigid_body.quat_x[i]);
+        ASSERT_FLOAT_EXACT(e1->states->rigid_body.quat_y[i], e2->states->rigid_body.quat_y[i]);
+        ASSERT_FLOAT_EXACT(e1->states->rigid_body.quat_z[i], e2->states->rigid_body.quat_z[i]);
     }
 
     engine_destroy(e1);
@@ -454,8 +455,8 @@ TEST(angular_velocity_determinism) {
     const uint64_t SEED = 789;
     const int STEPS = 100;
 
-    BatchDroneEngine* e1 = create_standard_engine(SEED);
-    BatchDroneEngine* e2 = create_standard_engine(SEED);
+    BatchEngine* e1 = create_standard_engine(SEED);
+    BatchEngine* e2 = create_standard_engine(SEED);
     ASSERT_NOT_NULL(e1);
     ASSERT_NOT_NULL(e2);
 
@@ -469,11 +470,11 @@ TEST(angular_velocity_determinism) {
         engine_step(e2);
     }
 
-    uint32_t n = e1->config.total_drones;
+    uint32_t n = e1->config.total_agents;
     for (uint32_t i = 0; i < n; i++) {
-        ASSERT_FLOAT_EXACT(e1->states->omega_x[i], e2->states->omega_x[i]);
-        ASSERT_FLOAT_EXACT(e1->states->omega_y[i], e2->states->omega_y[i]);
-        ASSERT_FLOAT_EXACT(e1->states->omega_z[i], e2->states->omega_z[i]);
+        ASSERT_FLOAT_EXACT(e1->states->rigid_body.omega_x[i], e2->states->rigid_body.omega_x[i]);
+        ASSERT_FLOAT_EXACT(e1->states->rigid_body.omega_y[i], e2->states->rigid_body.omega_y[i]);
+        ASSERT_FLOAT_EXACT(e1->states->rigid_body.omega_z[i], e2->states->rigid_body.omega_z[i]);
     }
 
     engine_destroy(e1);
@@ -488,8 +489,8 @@ TEST(rpm_determinism) {
     const uint64_t SEED = 1001;
     const int STEPS = 100;
 
-    BatchDroneEngine* e1 = create_standard_engine(SEED);
-    BatchDroneEngine* e2 = create_standard_engine(SEED);
+    BatchEngine* e1 = create_standard_engine(SEED);
+    BatchEngine* e2 = create_standard_engine(SEED);
     ASSERT_NOT_NULL(e1);
     ASSERT_NOT_NULL(e2);
 
@@ -504,12 +505,12 @@ TEST(rpm_determinism) {
         engine_step(e2);
     }
 
-    uint32_t n = e1->config.total_drones;
+    uint32_t n = e1->config.total_agents;
     for (uint32_t i = 0; i < n; i++) {
-        ASSERT_FLOAT_EXACT(e1->states->rpm_0[i], e2->states->rpm_0[i]);
-        ASSERT_FLOAT_EXACT(e1->states->rpm_1[i], e2->states->rpm_1[i]);
-        ASSERT_FLOAT_EXACT(e1->states->rpm_2[i], e2->states->rpm_2[i]);
-        ASSERT_FLOAT_EXACT(e1->states->rpm_3[i], e2->states->rpm_3[i]);
+        ASSERT_FLOAT_EXACT(e1->states->extension[QUAD_EXT_RPM_0][i], e2->states->extension[QUAD_EXT_RPM_0][i]);
+        ASSERT_FLOAT_EXACT(e1->states->extension[QUAD_EXT_RPM_1][i], e2->states->extension[QUAD_EXT_RPM_1][i]);
+        ASSERT_FLOAT_EXACT(e1->states->extension[QUAD_EXT_RPM_2][i], e2->states->extension[QUAD_EXT_RPM_2][i]);
+        ASSERT_FLOAT_EXACT(e1->states->extension[QUAD_EXT_RPM_3][i], e2->states->extension[QUAD_EXT_RPM_3][i]);
     }
 
     engine_destroy(e1);
@@ -526,8 +527,8 @@ TEST(observation_determinism) {
     const uint64_t SEED = 2002;
     const int STEPS = 50;
 
-    BatchDroneEngine* e1 = create_standard_engine(SEED);
-    BatchDroneEngine* e2 = create_standard_engine(SEED);
+    BatchEngine* e1 = create_standard_engine(SEED);
+    BatchEngine* e2 = create_standard_engine(SEED);
     ASSERT_NOT_NULL(e1);
     ASSERT_NOT_NULL(e2);
 
@@ -544,7 +545,7 @@ TEST(observation_determinism) {
 
     float* o1 = engine_get_observations(e1);
     float* o2 = engine_get_observations(e2);
-    uint32_t obs_total = e1->config.total_drones * engine_get_obs_dim(e1);
+    uint32_t obs_total = e1->config.total_agents * engine_get_obs_dim(e1);
 
     for (uint32_t i = 0; i < obs_total; i++) {
         ASSERT_FLOAT_EXACT(o1[i], o2[i]);
@@ -562,8 +563,8 @@ TEST(reward_determinism) {
     const uint64_t SEED = 3003;
     const int STEPS = 50;
 
-    BatchDroneEngine* e1 = create_standard_engine(SEED);
-    BatchDroneEngine* e2 = create_standard_engine(SEED);
+    BatchEngine* e1 = create_standard_engine(SEED);
+    BatchEngine* e2 = create_standard_engine(SEED);
     ASSERT_NOT_NULL(e1);
     ASSERT_NOT_NULL(e2);
 
@@ -579,7 +580,7 @@ TEST(reward_determinism) {
 
         float* r1 = engine_get_rewards(e1);
         float* r2 = engine_get_rewards(e2);
-        uint32_t n = e1->config.total_drones;
+        uint32_t n = e1->config.total_agents;
         for (uint32_t i = 0; i < n; i++) {
             ASSERT_FLOAT_EXACT(r1[i], r2[i]);
         }
@@ -597,8 +598,8 @@ TEST(done_truncation_determinism) {
     const uint64_t SEED = 4004;
 
     /* Use short episodes to trigger truncation */
-    BatchDroneEngine* e1 = create_short_episode_engine(SEED, 20);
-    BatchDroneEngine* e2 = create_short_episode_engine(SEED, 20);
+    BatchEngine* e1 = create_short_episode_engine(SEED, 20);
+    BatchEngine* e2 = create_short_episode_engine(SEED, 20);
     ASSERT_NOT_NULL(e1);
     ASSERT_NOT_NULL(e2);
 
@@ -616,7 +617,7 @@ TEST(done_truncation_determinism) {
         uint8_t* d2 = engine_get_dones(e2);
         uint8_t* t1 = engine_get_truncations(e1);
         uint8_t* t2 = engine_get_truncations(e2);
-        uint32_t n = e1->config.total_drones;
+        uint32_t n = e1->config.total_agents;
 
         for (uint32_t i = 0; i < n; i++) {
             ASSERT_EQ(d1[i], d2[i]);
@@ -639,8 +640,8 @@ TEST(done_truncation_determinism) {
  * SPECIFICATION: Changing seed MUST produce different spawn positions.
  */
 TEST(rng_seed_propagation) {
-    BatchDroneEngine* e1 = create_standard_engine(42);
-    BatchDroneEngine* e2 = create_standard_engine(43);  /* Different seed */
+    BatchEngine* e1 = create_standard_engine(42);
+    BatchEngine* e2 = create_standard_engine(43);  /* Different seed */
     ASSERT_NOT_NULL(e1);
     ASSERT_NOT_NULL(e2);
 
@@ -649,11 +650,11 @@ TEST(rng_seed_propagation) {
 
     /* With domain_randomization > 0, spawn positions should differ */
     bool positions_differ = false;
-    uint32_t n = e1->config.total_drones;
+    uint32_t n = e1->config.total_agents;
     for (uint32_t i = 0; i < n; i++) {
-        if (e1->states->pos_x[i] != e2->states->pos_x[i] ||
-            e1->states->pos_y[i] != e2->states->pos_y[i] ||
-            e1->states->pos_z[i] != e2->states->pos_z[i]) {
+        if (e1->states->rigid_body.pos_x[i] != e2->states->rigid_body.pos_x[i] ||
+            e1->states->rigid_body.pos_y[i] != e2->states->rigid_body.pos_y[i] ||
+            e1->states->rigid_body.pos_z[i] != e2->states->rigid_body.pos_z[i]) {
             positions_differ = true;
             break;
         }
@@ -677,8 +678,8 @@ TEST(rng_state_after_n_steps) {
     const int STEPS_BEFORE = 50;
     const int STEPS_AFTER = 50;
 
-    BatchDroneEngine* e1 = create_standard_engine(SEED);
-    BatchDroneEngine* e2 = create_standard_engine(SEED);
+    BatchEngine* e1 = create_standard_engine(SEED);
+    BatchEngine* e2 = create_standard_engine(SEED);
     ASSERT_NOT_NULL(e1);
     ASSERT_NOT_NULL(e2);
 
@@ -721,8 +722,8 @@ TEST(rng_state_after_n_steps) {
 TEST(rng_isolation_between_envs) {
     const uint64_t SEED = 6006;
 
-    BatchDroneEngine* e1 = create_test_engine(SEED, 4, 2);
-    BatchDroneEngine* e2 = create_test_engine(SEED, 4, 2);
+    BatchEngine* e1 = create_test_engine(SEED, 4, 2);
+    BatchEngine* e2 = create_test_engine(SEED, 4, 2);
     ASSERT_NOT_NULL(e1);
     ASSERT_NOT_NULL(e2);
 
@@ -766,8 +767,8 @@ TEST(rng_consumption_order) {
     const uint64_t SEED = 7007;
 
     /* Create engines with different drone counts */
-    BatchDroneEngine* e1a = create_test_engine(SEED, 2, 4);
-    BatchDroneEngine* e1b = create_test_engine(SEED, 2, 4);
+    BatchEngine* e1a = create_test_engine(SEED, 2, 4);
+    BatchEngine* e1b = create_test_engine(SEED, 2, 4);
     ASSERT_NOT_NULL(e1a);
     ASSERT_NOT_NULL(e1b);
 
@@ -796,8 +797,8 @@ TEST(rng_consumption_order) {
 TEST(spawn_position_determinism) {
     const uint64_t SEED = 8008;
 
-    BatchDroneEngine* e1 = create_standard_engine(SEED);
-    BatchDroneEngine* e2 = create_standard_engine(SEED);
+    BatchEngine* e1 = create_standard_engine(SEED);
+    BatchEngine* e2 = create_standard_engine(SEED);
     ASSERT_NOT_NULL(e1);
     ASSERT_NOT_NULL(e2);
 
@@ -805,11 +806,11 @@ TEST(spawn_position_determinism) {
     engine_reset(e1);
     engine_reset(e2);
 
-    uint32_t n = e1->config.total_drones;
+    uint32_t n = e1->config.total_agents;
     for (uint32_t i = 0; i < n; i++) {
-        ASSERT_FLOAT_EXACT(e1->states->pos_x[i], e2->states->pos_x[i]);
-        ASSERT_FLOAT_EXACT(e1->states->pos_y[i], e2->states->pos_y[i]);
-        ASSERT_FLOAT_EXACT(e1->states->pos_z[i], e2->states->pos_z[i]);
+        ASSERT_FLOAT_EXACT(e1->states->rigid_body.pos_x[i], e2->states->rigid_body.pos_x[i]);
+        ASSERT_FLOAT_EXACT(e1->states->rigid_body.pos_y[i], e2->states->rigid_body.pos_y[i]);
+        ASSERT_FLOAT_EXACT(e1->states->rigid_body.pos_z[i], e2->states->rigid_body.pos_z[i]);
     }
 
     engine_destroy(e1);
@@ -825,8 +826,8 @@ TEST(spawn_position_determinism) {
 TEST(target_position_determinism) {
     const uint64_t SEED = 9009;
 
-    BatchDroneEngine* e1 = create_standard_engine(SEED);
-    BatchDroneEngine* e2 = create_standard_engine(SEED);
+    BatchEngine* e1 = create_standard_engine(SEED);
+    BatchEngine* e2 = create_standard_engine(SEED);
     ASSERT_NOT_NULL(e1);
     ASSERT_NOT_NULL(e2);
 
@@ -845,7 +846,7 @@ TEST(target_position_determinism) {
     /* If targets differ, rewards would differ */
     float* r1 = engine_get_rewards(e1);
     float* r2 = engine_get_rewards(e2);
-    uint32_t n = e1->config.total_drones;
+    uint32_t n = e1->config.total_agents;
     for (uint32_t i = 0; i < n; i++) {
         ASSERT_FLOAT_EXACT(r1[i], r2[i]);
     }
@@ -861,8 +862,8 @@ TEST(target_position_determinism) {
  * SPECIFICATION: Different seeds MUST produce different simulation outcomes.
  */
 TEST(different_seeds_different_trajectories) {
-    BatchDroneEngine* e1 = create_standard_engine(11111);
-    BatchDroneEngine* e2 = create_standard_engine(22222);
+    BatchEngine* e1 = create_standard_engine(11111);
+    BatchEngine* e2 = create_standard_engine(22222);
     ASSERT_NOT_NULL(e1);
     ASSERT_NOT_NULL(e2);
 
@@ -879,11 +880,11 @@ TEST(different_seeds_different_trajectories) {
 
     /* At least one position should differ */
     bool differs = false;
-    uint32_t n = e1->config.total_drones;
+    uint32_t n = e1->config.total_agents;
     for (uint32_t i = 0; i < n; i++) {
-        if (e1->states->pos_x[i] != e2->states->pos_x[i] ||
-            e1->states->pos_y[i] != e2->states->pos_y[i] ||
-            e1->states->pos_z[i] != e2->states->pos_z[i]) {
+        if (e1->states->rigid_body.pos_x[i] != e2->states->rigid_body.pos_x[i] ||
+            e1->states->rigid_body.pos_y[i] != e2->states->rigid_body.pos_y[i] ||
+            e1->states->rigid_body.pos_z[i] != e2->states->rigid_body.pos_z[i]) {
             differs = true;
             break;
         }
@@ -910,7 +911,7 @@ TEST(full_reset_determinism) {
     const uint64_t SEED = 10101;
     const int STEPS = 50;
 
-    BatchDroneEngine* engine = create_standard_engine(SEED);
+    BatchEngine* engine = create_standard_engine(SEED);
     ASSERT_NOT_NULL(engine);
 
     /* First run */
@@ -930,14 +931,14 @@ TEST(full_reset_determinism) {
     }
 
     /* Compare */
-    uint32_t n = engine->config.total_drones;
+    uint32_t n = engine->config.total_agents;
     for (uint32_t i = 0; i < n; i++) {
-        ASSERT_FLOAT_EXACT(state1->pos_x[i], engine->states->pos_x[i]);
-        ASSERT_FLOAT_EXACT(state1->pos_y[i], engine->states->pos_y[i]);
-        ASSERT_FLOAT_EXACT(state1->pos_z[i], engine->states->pos_z[i]);
-        ASSERT_FLOAT_EXACT(state1->vel_x[i], engine->states->vel_x[i]);
-        ASSERT_FLOAT_EXACT(state1->vel_y[i], engine->states->vel_y[i]);
-        ASSERT_FLOAT_EXACT(state1->vel_z[i], engine->states->vel_z[i]);
+        ASSERT_FLOAT_EXACT(state1->pos_x[i], engine->states->rigid_body.pos_x[i]);
+        ASSERT_FLOAT_EXACT(state1->pos_y[i], engine->states->rigid_body.pos_y[i]);
+        ASSERT_FLOAT_EXACT(state1->pos_z[i], engine->states->rigid_body.pos_z[i]);
+        ASSERT_FLOAT_EXACT(state1->vel_x[i], engine->states->rigid_body.vel_x[i]);
+        ASSERT_FLOAT_EXACT(state1->vel_y[i], engine->states->rigid_body.vel_y[i]);
+        ASSERT_FLOAT_EXACT(state1->vel_z[i], engine->states->rigid_body.vel_z[i]);
     }
 
     free_saved_state(state1);
@@ -951,8 +952,8 @@ TEST(full_reset_determinism) {
 TEST(partial_reset_determinism) {
     const uint64_t SEED = 12121;
 
-    BatchDroneEngine* e1 = create_test_engine(SEED, 4, 2);
-    BatchDroneEngine* e2 = create_test_engine(SEED, 4, 2);
+    BatchEngine* e1 = create_test_engine(SEED, 4, 2);
+    BatchEngine* e2 = create_test_engine(SEED, 4, 2);
     ASSERT_NOT_NULL(e1);
     ASSERT_NOT_NULL(e2);
 
@@ -987,13 +988,13 @@ TEST(partial_reset_determinism) {
 }
 
 /**
- * Test 3.3: Single drone reset determinism (engine_reset_drone)
+ * Test 3.3: Single drone reset determinism (engine_reset_agent)
  */
 TEST(single_drone_reset_determinism) {
     const uint64_t SEED = 13131;
 
-    BatchDroneEngine* e1 = create_standard_engine(SEED);
-    BatchDroneEngine* e2 = create_standard_engine(SEED);
+    BatchEngine* e1 = create_standard_engine(SEED);
+    BatchEngine* e2 = create_standard_engine(SEED);
     ASSERT_NOT_NULL(e1);
     ASSERT_NOT_NULL(e2);
 
@@ -1011,8 +1012,8 @@ TEST(single_drone_reset_determinism) {
     /* Reset drone 5 in both */
     Vec3 pos = VEC3(10.0f, 5.0f, 10.0f);
     Quat orient = QUAT_IDENTITY;
-    engine_reset_drone(e1, 5, pos, orient);
-    engine_reset_drone(e2, 5, pos, orient);
+    engine_reset_agent(e1, 5, pos, orient);
+    engine_reset_agent(e2, 5, pos, orient);
 
     for (int i = 0; i < 20; i++) {
         engine_step(e1);
@@ -1033,8 +1034,8 @@ TEST(auto_reset_determinism) {
     const uint64_t SEED = 14141;
 
     /* Short episodes to trigger auto-resets */
-    BatchDroneEngine* e1 = create_short_episode_engine(SEED, 15);
-    BatchDroneEngine* e2 = create_short_episode_engine(SEED, 15);
+    BatchEngine* e1 = create_short_episode_engine(SEED, 15);
+    BatchEngine* e2 = create_short_episode_engine(SEED, 15);
     ASSERT_NOT_NULL(e1);
     ASSERT_NOT_NULL(e2);
 
@@ -1064,7 +1065,7 @@ TEST(auto_reset_determinism) {
 TEST(multiple_sequential_resets) {
     const uint64_t SEED = 15151;
 
-    BatchDroneEngine* engine = create_standard_engine(SEED);
+    BatchEngine* engine = create_standard_engine(SEED);
     ASSERT_NOT_NULL(engine);
 
     /* Reset multiple times and verify spawn positions are identical each time */
@@ -1075,11 +1076,11 @@ TEST(multiple_sequential_resets) {
     for (int trial = 0; trial < 5; trial++) {
         engine_reset(engine);
 
-        uint32_t n = engine->config.total_drones;
+        uint32_t n = engine->config.total_agents;
         for (uint32_t i = 0; i < n; i++) {
-            ASSERT_FLOAT_EXACT(first->pos_x[i], engine->states->pos_x[i]);
-            ASSERT_FLOAT_EXACT(first->pos_y[i], engine->states->pos_y[i]);
-            ASSERT_FLOAT_EXACT(first->pos_z[i], engine->states->pos_z[i]);
+            ASSERT_FLOAT_EXACT(first->pos_x[i], engine->states->rigid_body.pos_x[i]);
+            ASSERT_FLOAT_EXACT(first->pos_y[i], engine->states->rigid_body.pos_y[i]);
+            ASSERT_FLOAT_EXACT(first->pos_z[i], engine->states->rigid_body.pos_z[i]);
         }
     }
 
@@ -1097,8 +1098,8 @@ TEST(multiple_sequential_resets) {
 TEST(reset_after_varying_lengths) {
     const uint64_t SEED = 16161;
 
-    BatchDroneEngine* e1 = create_standard_engine(SEED);
-    BatchDroneEngine* e2 = create_standard_engine(SEED);
+    BatchEngine* e1 = create_standard_engine(SEED);
+    BatchEngine* e2 = create_standard_engine(SEED);
     ASSERT_NOT_NULL(e1);
     ASSERT_NOT_NULL(e2);
 
@@ -1119,11 +1120,11 @@ TEST(reset_after_varying_lengths) {
     engine_reset(e2);
 
     /* After reset, states should be identical */
-    uint32_t n = e1->config.total_drones;
+    uint32_t n = e1->config.total_agents;
     for (uint32_t i = 0; i < n; i++) {
-        ASSERT_FLOAT_EXACT(e1->states->pos_x[i], e2->states->pos_x[i]);
-        ASSERT_FLOAT_EXACT(e1->states->pos_y[i], e2->states->pos_y[i]);
-        ASSERT_FLOAT_EXACT(e1->states->pos_z[i], e2->states->pos_z[i]);
+        ASSERT_FLOAT_EXACT(e1->states->rigid_body.pos_x[i], e2->states->rigid_body.pos_x[i]);
+        ASSERT_FLOAT_EXACT(e1->states->rigid_body.pos_y[i], e2->states->rigid_body.pos_y[i]);
+        ASSERT_FLOAT_EXACT(e1->states->rigid_body.pos_z[i], e2->states->rigid_body.pos_z[i]);
     }
 
     engine_destroy(e1);
@@ -1137,8 +1138,8 @@ TEST(reset_after_varying_lengths) {
 TEST(reset_clears_episode_tracking) {
     const uint64_t SEED = 17171;
 
-    BatchDroneEngine* e1 = create_standard_engine(SEED);
-    BatchDroneEngine* e2 = create_standard_engine(SEED);
+    BatchEngine* e1 = create_standard_engine(SEED);
+    BatchEngine* e2 = create_standard_engine(SEED);
     ASSERT_NOT_NULL(e1);
     ASSERT_NOT_NULL(e2);
 
@@ -1157,7 +1158,7 @@ TEST(reset_clears_episode_tracking) {
     engine_reset(e2);
 
     /* Episode tracking should be cleared identically */
-    uint32_t n = e1->config.total_drones;
+    uint32_t n = e1->config.total_agents;
     for (uint32_t i = 0; i < n; i++) {
         ASSERT_EQ(e1->episode_lengths[i], e2->episode_lengths[i]);
         ASSERT_FLOAT_EXACT(e1->episode_returns[i], e2->episode_returns[i]);
@@ -1181,8 +1182,8 @@ TEST(multi_episode_trajectories) {
     const uint64_t SEED = 20202;
     const int STEPS_PER_EPISODE = 50;
 
-    BatchDroneEngine* e1 = create_standard_engine(SEED);
-    BatchDroneEngine* e2 = create_standard_engine(SEED);
+    BatchEngine* e1 = create_standard_engine(SEED);
+    BatchEngine* e2 = create_standard_engine(SEED);
     ASSERT_NOT_NULL(e1);
     ASSERT_NOT_NULL(e2);
 
@@ -1216,8 +1217,8 @@ TEST(multi_episode_trajectories) {
 TEST(episode_completion_order) {
     const uint64_t SEED = 21212;
 
-    BatchDroneEngine* e1 = create_short_episode_engine(SEED, 25);
-    BatchDroneEngine* e2 = create_short_episode_engine(SEED, 25);
+    BatchEngine* e1 = create_short_episode_engine(SEED, 25);
+    BatchEngine* e2 = create_short_episode_engine(SEED, 25);
     ASSERT_NOT_NULL(e1);
     ASSERT_NOT_NULL(e2);
 
@@ -1233,7 +1234,7 @@ TEST(episode_completion_order) {
         engine_step(e2);
 
         /* Completion flags should match exactly */
-        uint32_t n = e1->config.total_drones;
+        uint32_t n = e1->config.total_agents;
         for (uint32_t i = 0; i < n; i++) {
             ASSERT_EQ(e1->dones[i], e2->dones[i]);
             ASSERT_EQ(e1->truncations[i], e2->truncations[i]);
@@ -1255,8 +1256,8 @@ TEST(truncation_timing_determinism) {
     const uint64_t SEED = 22222;
     const uint32_t MAX_STEPS = 30;
 
-    BatchDroneEngine* e1 = create_short_episode_engine(SEED, MAX_STEPS);
-    BatchDroneEngine* e2 = create_short_episode_engine(SEED, MAX_STEPS);
+    BatchEngine* e1 = create_short_episode_engine(SEED, MAX_STEPS);
+    BatchEngine* e2 = create_short_episode_engine(SEED, MAX_STEPS);
     ASSERT_NOT_NULL(e1);
     ASSERT_NOT_NULL(e2);
 
@@ -1273,7 +1274,7 @@ TEST(truncation_timing_determinism) {
         engine_step(e1);
         engine_step(e2);
 
-        uint32_t n = e1->config.total_drones;
+        uint32_t n = e1->config.total_agents;
         for (uint32_t i = 0; i < n; i++) {
             if (e1->truncations[i]) {
                 trunc_count_1++;
@@ -1303,8 +1304,8 @@ TEST(truncation_timing_determinism) {
 TEST(collision_termination_determinism) {
     const uint64_t SEED = 23232;
 
-    BatchDroneEngine* e1 = create_standard_engine(SEED);
-    BatchDroneEngine* e2 = create_standard_engine(SEED);
+    BatchEngine* e1 = create_standard_engine(SEED);
+    BatchEngine* e2 = create_standard_engine(SEED);
     ASSERT_NOT_NULL(e1);
     ASSERT_NOT_NULL(e2);
 
@@ -1325,7 +1326,7 @@ TEST(collision_termination_determinism) {
         engine_step(e2);
 
         /* Collision terminations should match */
-        uint32_t n = e1->config.total_drones;
+        uint32_t n = e1->config.total_agents;
         for (uint32_t i = 0; i < n; i++) {
             ASSERT_EQ(e1->term_collision[i], e2->term_collision[i]);
         }
@@ -1347,8 +1348,8 @@ TEST(determinism_zero_actions) {
     const uint64_t SEED = 30303;
     const int STEPS = 100;
 
-    BatchDroneEngine* e1 = create_standard_engine(SEED);
-    BatchDroneEngine* e2 = create_standard_engine(SEED);
+    BatchEngine* e1 = create_standard_engine(SEED);
+    BatchEngine* e2 = create_standard_engine(SEED);
     ASSERT_NOT_NULL(e1);
     ASSERT_NOT_NULL(e2);
 
@@ -1377,8 +1378,8 @@ TEST(determinism_max_actions) {
     const uint64_t SEED = 31313;
     const int STEPS = 100;
 
-    BatchDroneEngine* e1 = create_standard_engine(SEED);
-    BatchDroneEngine* e2 = create_standard_engine(SEED);
+    BatchEngine* e1 = create_standard_engine(SEED);
+    BatchEngine* e2 = create_standard_engine(SEED);
     ASSERT_NOT_NULL(e1);
     ASSERT_NOT_NULL(e2);
 
@@ -1407,8 +1408,8 @@ TEST(determinism_alternating_patterns) {
     const uint64_t SEED = 32323;
     const int STEPS = 100;
 
-    BatchDroneEngine* e1 = create_standard_engine(SEED);
-    BatchDroneEngine* e2 = create_standard_engine(SEED);
+    BatchEngine* e1 = create_standard_engine(SEED);
+    BatchEngine* e2 = create_standard_engine(SEED);
     ASSERT_NOT_NULL(e1);
     ASSERT_NOT_NULL(e2);
 
@@ -1438,8 +1439,8 @@ TEST(determinism_alternating_patterns) {
 TEST(determinism_at_boundaries) {
     const uint64_t SEED = 33333;
 
-    BatchDroneEngine* e1 = create_standard_engine(SEED);
-    BatchDroneEngine* e2 = create_standard_engine(SEED);
+    BatchEngine* e1 = create_standard_engine(SEED);
+    BatchEngine* e2 = create_standard_engine(SEED);
     ASSERT_NOT_NULL(e1);
     ASSERT_NOT_NULL(e2);
 
@@ -1447,10 +1448,10 @@ TEST(determinism_at_boundaries) {
     engine_reset(e2);
 
     /* Place drone near boundary */
-    e1->states->pos_x[0] = e1->config.world_max.x - 1.0f;
-    e1->states->pos_z[0] = e1->config.world_max.z - 1.0f;
-    e2->states->pos_x[0] = e2->config.world_max.x - 1.0f;
-    e2->states->pos_z[0] = e2->config.world_max.z - 1.0f;
+    e1->states->rigid_body.pos_x[0] = e1->config.world_max.x - 1.0f;
+    e1->states->rigid_body.pos_z[0] = e1->config.world_max.z - 1.0f;
+    e2->states->rigid_body.pos_x[0] = e2->config.world_max.x - 1.0f;
+    e2->states->rigid_body.pos_z[0] = e2->config.world_max.z - 1.0f;
 
     set_fixed_actions(e1, 0.8f);
     set_fixed_actions(e2, 0.8f);
@@ -1475,8 +1476,8 @@ TEST(determinism_at_boundaries) {
 TEST(determinism_many_collisions) {
     const uint64_t SEED = 34343;
 
-    BatchDroneEngine* e1 = create_standard_engine(SEED);
-    BatchDroneEngine* e2 = create_standard_engine(SEED);
+    BatchEngine* e1 = create_standard_engine(SEED);
+    BatchEngine* e2 = create_standard_engine(SEED);
     ASSERT_NOT_NULL(e1);
     ASSERT_NOT_NULL(e2);
 
@@ -1518,8 +1519,8 @@ TEST(long_trajectory_determinism) {
     const uint64_t SEED = 35353;
     const int STEPS = 10000;
 
-    BatchDroneEngine* e1 = create_standard_engine(SEED);
-    BatchDroneEngine* e2 = create_standard_engine(SEED);
+    BatchEngine* e1 = create_standard_engine(SEED);
+    BatchEngine* e2 = create_standard_engine(SEED);
     ASSERT_NOT_NULL(e1);
     ASSERT_NOT_NULL(e2);
 
@@ -1556,8 +1557,8 @@ TEST(long_trajectory_determinism) {
 TEST(physics_collision_determinism) {
     const uint64_t SEED = 40404;
 
-    BatchDroneEngine* e1 = create_standard_engine(SEED);
-    BatchDroneEngine* e2 = create_standard_engine(SEED);
+    BatchEngine* e1 = create_standard_engine(SEED);
+    BatchEngine* e2 = create_standard_engine(SEED);
     ASSERT_NOT_NULL(e1);
     ASSERT_NOT_NULL(e2);
 
@@ -1592,8 +1593,8 @@ TEST(physics_collision_determinism) {
 TEST(physics_sensors_determinism) {
     const uint64_t SEED = 41414;
 
-    BatchDroneEngine* e1 = create_standard_engine(SEED);
-    BatchDroneEngine* e2 = create_standard_engine(SEED);
+    BatchEngine* e1 = create_standard_engine(SEED);
+    BatchEngine* e2 = create_standard_engine(SEED);
     ASSERT_NOT_NULL(e1);
     ASSERT_NOT_NULL(e2);
 
@@ -1613,7 +1614,7 @@ TEST(physics_sensors_determinism) {
     /* Compare observations */
     float* o1 = engine_get_observations(e1);
     float* o2 = engine_get_observations(e2);
-    uint32_t obs_total = e1->config.total_drones * engine_get_obs_dim(e1);
+    uint32_t obs_total = e1->config.total_agents * engine_get_obs_dim(e1);
 
     for (uint32_t i = 0; i < obs_total; i++) {
         ASSERT_FLOAT_EXACT(o1[i], o2[i]);
@@ -1633,8 +1634,8 @@ TEST(physics_sensors_determinism) {
 TEST(full_pipeline_determinism) {
     const uint64_t SEED = 42424;
 
-    BatchDroneEngine* e1 = create_short_episode_engine(SEED, 30);
-    BatchDroneEngine* e2 = create_short_episode_engine(SEED, 30);
+    BatchEngine* e1 = create_short_episode_engine(SEED, 30);
+    BatchEngine* e2 = create_short_episode_engine(SEED, 30);
     ASSERT_NOT_NULL(e1);
     ASSERT_NOT_NULL(e2);
 
@@ -1662,7 +1663,7 @@ TEST(full_pipeline_determinism) {
             float* r2 = engine_get_rewards(e2);
             float* o1 = engine_get_observations(e1);
             float* o2 = engine_get_observations(e2);
-            uint32_t n = e1->config.total_drones;
+            uint32_t n = e1->config.total_agents;
             uint32_t obs_total = n * engine_get_obs_dim(e1);
 
             for (uint32_t i = 0; i < n; i++) {
@@ -1687,8 +1688,8 @@ TEST(full_pipeline_determinism) {
 TEST(sensor_raycasting_determinism) {
     const uint64_t SEED = 43434;
 
-    BatchDroneEngine* e1 = create_standard_engine(SEED);
-    BatchDroneEngine* e2 = create_standard_engine(SEED);
+    BatchEngine* e1 = create_standard_engine(SEED);
+    BatchEngine* e2 = create_standard_engine(SEED);
     ASSERT_NOT_NULL(e1);
     ASSERT_NOT_NULL(e2);
 
@@ -1712,7 +1713,7 @@ TEST(sensor_raycasting_determinism) {
     /* Compare observations which include sensor data */
     float* o1 = engine_get_observations(e1);
     float* o2 = engine_get_observations(e2);
-    uint32_t obs_total = e1->config.total_drones * engine_get_obs_dim(e1);
+    uint32_t obs_total = e1->config.total_agents * engine_get_obs_dim(e1);
 
     for (uint32_t i = 0; i < obs_total; i++) {
         ASSERT_FLOAT_EXACT(o1[i], o2[i]);
@@ -1741,7 +1742,7 @@ TEST(thread_independence_via_multiple_runs) {
     float first_run_final_pos[16 * 3];  /* Max 16 drones, x/y/z */
 
     for (int trial = 0; trial < NUM_TRIALS; trial++) {
-        BatchDroneEngine* engine = create_standard_engine(SEED);
+        BatchEngine* engine = create_standard_engine(SEED);
         ASSERT_NOT_NULL(engine);
 
         engine_reset(engine);
@@ -1751,18 +1752,18 @@ TEST(thread_independence_via_multiple_runs) {
             engine_step(engine);
         }
 
-        uint32_t n = engine->config.total_drones;
+        uint32_t n = engine->config.total_agents;
         if (trial == 0) {
             for (uint32_t i = 0; i < n; i++) {
-                first_run_final_pos[i * 3 + 0] = engine->states->pos_x[i];
-                first_run_final_pos[i * 3 + 1] = engine->states->pos_y[i];
-                first_run_final_pos[i * 3 + 2] = engine->states->pos_z[i];
+                first_run_final_pos[i * 3 + 0] = engine->states->rigid_body.pos_x[i];
+                first_run_final_pos[i * 3 + 1] = engine->states->rigid_body.pos_y[i];
+                first_run_final_pos[i * 3 + 2] = engine->states->rigid_body.pos_z[i];
             }
         } else {
             for (uint32_t i = 0; i < n; i++) {
-                ASSERT_FLOAT_EXACT(first_run_final_pos[i * 3 + 0], engine->states->pos_x[i]);
-                ASSERT_FLOAT_EXACT(first_run_final_pos[i * 3 + 1], engine->states->pos_y[i]);
-                ASSERT_FLOAT_EXACT(first_run_final_pos[i * 3 + 2], engine->states->pos_z[i]);
+                ASSERT_FLOAT_EXACT(first_run_final_pos[i * 3 + 0], engine->states->rigid_body.pos_x[i]);
+                ASSERT_FLOAT_EXACT(first_run_final_pos[i * 3 + 1], engine->states->rigid_body.pos_y[i]);
+                ASSERT_FLOAT_EXACT(first_run_final_pos[i * 3 + 2], engine->states->rigid_body.pos_z[i]);
             }
         }
 

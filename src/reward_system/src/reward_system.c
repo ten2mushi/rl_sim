@@ -23,7 +23,7 @@ static const char* TASK_TYPE_NAMES[TASK_TYPE_COUNT] = {
 };
 
 const char* task_type_name(TaskType type) {
-    if (type < 0 || type >= TASK_TYPE_COUNT) {
+    if ((unsigned)type >= TASK_TYPE_COUNT) {
         return "UNKNOWN";
     }
     return TASK_TYPE_NAMES[type];
@@ -107,8 +107,8 @@ RewardConfig reward_config_default(TaskType task) {
  * Section 3: Memory Size Calculation
  * ============================================================================ */
 
-size_t reward_memory_size(uint32_t max_drones, uint32_t max_gates) {
-    if (max_drones == 0) return 0;
+size_t reward_memory_size(uint32_t max_agents, uint32_t max_gates) {
+    if (max_agents == 0) return 0;
 
     size_t size = 0;
 
@@ -116,23 +116,23 @@ size_t reward_memory_size(uint32_t max_drones, uint32_t max_gates) {
     size += sizeof(RewardSystem);
 
     /* TargetSOA: 7 aligned float arrays */
-    size_t aligned_float_array = align_up_size(max_drones * sizeof(float), 32);
+    size_t aligned_float_array = align_up_size(max_agents * sizeof(float), 32);
     size += sizeof(TargetSOA);
     size += 7 * aligned_float_array;
 
     /* Previous state tracking */
     size += aligned_float_array;           /* prev_distance */
-    size += align_up_size(max_drones * 4 * sizeof(float), 32);  /* prev_actions */
+    size += align_up_size(max_agents * 4 * sizeof(float), 32);  /* prev_actions */
 
     /* Episode tracking */
     size += aligned_float_array;           /* episode_return */
-    size += align_up_size(max_drones * sizeof(uint32_t), 32);   /* episode_length */
-    size += align_up_size(max_drones * sizeof(uint32_t), 32);   /* gates_passed */
+    size += align_up_size(max_agents * sizeof(uint32_t), 32);   /* episode_length */
+    size += align_up_size(max_agents * sizeof(uint32_t), 32);   /* gates_passed */
     size += aligned_float_array;           /* best_distance */
 
     /* TerminationFlags: 6 uint8_t arrays */
     size += sizeof(TerminationFlags);
-    size_t aligned_u8_array = align_up_size(max_drones * sizeof(uint8_t), 32);
+    size_t aligned_u8_array = align_up_size(max_agents * sizeof(uint8_t), 32);
     size += 6 * aligned_u8_array;
 
     /* GateSOA (if racing) */
@@ -140,8 +140,8 @@ size_t reward_memory_size(uint32_t max_drones, uint32_t max_gates) {
         size += sizeof(GateSOA);
         size_t gate_float_array = align_up_size(max_gates * sizeof(float), 32);
         size += 7 * gate_float_array;  /* center_xyz, normal_xyz, radius */
-        size += align_up_size(max_drones * max_gates * sizeof(uint8_t), 32);  /* passed */
-        size += align_up_size(max_drones * sizeof(uint32_t), 32);  /* current_gate */
+        size += align_up_size(max_agents * max_gates * sizeof(uint8_t), 32);  /* passed */
+        size += align_up_size(max_agents * sizeof(uint32_t), 32);  /* current_gate */
     }
 
     return size;
@@ -152,8 +152,8 @@ size_t reward_memory_size(uint32_t max_drones, uint32_t max_gates) {
  * ============================================================================ */
 
 RewardSystem* reward_create(Arena* arena, const RewardConfig* config,
-                            uint32_t max_drones, uint32_t max_gates) {
-    if (!arena || max_drones == 0) return NULL;
+                            uint32_t max_agents, uint32_t max_gates) {
+    if (!arena || max_agents == 0) return NULL;
 
     /* Allocate main structure */
     RewardSystem* sys = arena_alloc_type(arena, RewardSystem);
@@ -161,7 +161,7 @@ RewardSystem* reward_create(Arena* arena, const RewardConfig* config,
 
     memset(sys, 0, sizeof(RewardSystem));
     sys->arena = arena;
-    sys->max_drones = max_drones;
+    sys->max_agents = max_agents;
     sys->max_gates = max_gates;
 
     /* Set configuration */
@@ -175,9 +175,9 @@ RewardSystem* reward_create(Arena* arena, const RewardConfig* config,
     sys->targets = arena_alloc_type(arena, TargetSOA);
     if (!sys->targets) return NULL;
     memset(sys->targets, 0, sizeof(TargetSOA));
-    sys->targets->capacity = max_drones;
+    sys->targets->capacity = max_agents;
 
-    size_t aligned_size = align_up_size(max_drones * sizeof(float), 32);
+    size_t aligned_size = align_up_size(max_agents * sizeof(float), 32);
     sys->targets->target_x = arena_alloc_aligned(arena, aligned_size, 32);
     sys->targets->target_y = arena_alloc_aligned(arena, aligned_size, 32);
     sys->targets->target_z = arena_alloc_aligned(arena, aligned_size, 32);
@@ -198,28 +198,28 @@ RewardSystem* reward_create(Arena* arena, const RewardConfig* config,
     memset(sys->targets->target_vx, 0, aligned_size);
     memset(sys->targets->target_vy, 0, aligned_size);
     memset(sys->targets->target_vz, 0, aligned_size);
-    for (uint32_t i = 0; i < max_drones; i++) {
+    for (uint32_t i = 0; i < max_agents; i++) {
         sys->targets->target_radius[i] = 0.5f;  /* Default radius */
     }
 
     /* Allocate previous state tracking */
     sys->prev_distance = arena_alloc_aligned(arena, aligned_size, 32);
     sys->prev_actions = arena_alloc_aligned(arena,
-        align_up_size(max_drones * 4 * sizeof(float), 32), 32);
+        align_up_size(max_agents * 4 * sizeof(float), 32), 32);
     if (!sys->prev_distance || !sys->prev_actions) return NULL;
 
     /* Initialize to max float to indicate "no previous" */
-    for (uint32_t i = 0; i < max_drones; i++) {
+    for (uint32_t i = 0; i < max_agents; i++) {
         sys->prev_distance[i] = FLT_MAX;
     }
-    memset(sys->prev_actions, 0, max_drones * 4 * sizeof(float));
+    memset(sys->prev_actions, 0, max_agents * 4 * sizeof(float));
 
     /* Allocate episode tracking */
     sys->episode_return = arena_alloc_aligned(arena, aligned_size, 32);
     sys->episode_length = arena_alloc_aligned(arena,
-        align_up_size(max_drones * sizeof(uint32_t), 32), 32);
+        align_up_size(max_agents * sizeof(uint32_t), 32), 32);
     sys->gates_passed = arena_alloc_aligned(arena,
-        align_up_size(max_drones * sizeof(uint32_t), 32), 32);
+        align_up_size(max_agents * sizeof(uint32_t), 32), 32);
     sys->best_distance = arena_alloc_aligned(arena, aligned_size, 32);
 
     if (!sys->episode_return || !sys->episode_length ||
@@ -228,9 +228,9 @@ RewardSystem* reward_create(Arena* arena, const RewardConfig* config,
     }
 
     memset(sys->episode_return, 0, aligned_size);
-    memset(sys->episode_length, 0, max_drones * sizeof(uint32_t));
-    memset(sys->gates_passed, 0, max_drones * sizeof(uint32_t));
-    for (uint32_t i = 0; i < max_drones; i++) {
+    memset(sys->episode_length, 0, max_agents * sizeof(uint32_t));
+    memset(sys->gates_passed, 0, max_agents * sizeof(uint32_t));
+    for (uint32_t i = 0; i < max_agents; i++) {
         sys->best_distance[i] = FLT_MAX;
     }
 
@@ -238,9 +238,9 @@ RewardSystem* reward_create(Arena* arena, const RewardConfig* config,
     sys->termination = arena_alloc_type(arena, TerminationFlags);
     if (!sys->termination) return NULL;
     memset(sys->termination, 0, sizeof(TerminationFlags));
-    sys->termination->capacity = max_drones;
+    sys->termination->capacity = max_agents;
 
-    size_t u8_aligned = align_up_size(max_drones * sizeof(uint8_t), 32);
+    size_t u8_aligned = align_up_size(max_agents * sizeof(uint8_t), 32);
     sys->termination->done = arena_alloc_aligned(arena, u8_aligned, 32);
     sys->termination->truncated = arena_alloc_aligned(arena, u8_aligned, 32);
     sys->termination->success = arena_alloc_aligned(arena, u8_aligned, 32);
@@ -267,7 +267,7 @@ RewardSystem* reward_create(Arena* arena, const RewardConfig* config,
         if (!sys->gates) return NULL;
         memset(sys->gates, 0, sizeof(GateSOA));
         sys->gates->num_gates = 0;
-        sys->gates->max_drones = max_drones;
+        sys->gates->max_agents = max_agents;
 
         size_t gate_aligned = align_up_size(max_gates * sizeof(float), 32);
         sys->gates->center_x = arena_alloc_aligned(arena, gate_aligned, 32);
@@ -278,10 +278,10 @@ RewardSystem* reward_create(Arena* arena, const RewardConfig* config,
         sys->gates->normal_z = arena_alloc_aligned(arena, gate_aligned, 32);
         sys->gates->radius = arena_alloc_aligned(arena, gate_aligned, 32);
 
-        size_t passed_size = align_up_size(max_drones * max_gates * sizeof(uint8_t), 32);
+        size_t passed_size = align_up_size(max_agents * max_gates * sizeof(uint8_t), 32);
         sys->gates->passed = arena_alloc_aligned(arena, passed_size, 32);
         sys->gates->current_gate = arena_alloc_aligned(arena,
-            align_up_size(max_drones * sizeof(uint32_t), 32), 32);
+            align_up_size(max_agents * sizeof(uint32_t), 32), 32);
 
         if (!sys->gates->center_x || !sys->gates->center_y ||
             !sys->gates->center_z || !sys->gates->passed ||
@@ -297,7 +297,7 @@ RewardSystem* reward_create(Arena* arena, const RewardConfig* config,
         memset(sys->gates->normal_z, 0, gate_aligned);
         memset(sys->gates->radius, 0, gate_aligned);
         memset(sys->gates->passed, 0, passed_size);
-        memset(sys->gates->current_gate, 0, max_drones * sizeof(uint32_t));
+        memset(sys->gates->current_gate, 0, max_agents * sizeof(uint32_t));
     }
 
     return sys;
@@ -308,35 +308,35 @@ void reward_destroy(RewardSystem* sys) {
     (void)sys;
 }
 
-void reward_reset(RewardSystem* sys, uint32_t drone_idx) {
-    if (!sys || drone_idx >= sys->max_drones) return;
+void reward_reset(RewardSystem* sys, uint32_t agent_idx) {
+    if (!sys || agent_idx >= sys->max_agents) return;
 
     /* Reset episode tracking */
-    sys->episode_return[drone_idx] = 0.0f;
-    sys->episode_length[drone_idx] = 0;
-    sys->gates_passed[drone_idx] = 0;
-    sys->best_distance[drone_idx] = FLT_MAX;
+    sys->episode_return[agent_idx] = 0.0f;
+    sys->episode_length[agent_idx] = 0;
+    sys->gates_passed[agent_idx] = 0;
+    sys->best_distance[agent_idx] = FLT_MAX;
 
     /* Reset previous state */
-    sys->prev_distance[drone_idx] = FLT_MAX;
+    sys->prev_distance[agent_idx] = FLT_MAX;
     for (int i = 0; i < 4; i++) {
-        sys->prev_actions[drone_idx * 4 + i] = 0.0f;
+        sys->prev_actions[agent_idx * 4 + i] = 0.0f;
     }
 
     /* Reset termination flags */
-    sys->termination->done[drone_idx] = 0;
-    sys->termination->truncated[drone_idx] = 0;
-    sys->termination->success[drone_idx] = 0;
-    sys->termination->collision[drone_idx] = 0;
-    sys->termination->out_of_bounds[drone_idx] = 0;
-    sys->termination->timeout[drone_idx] = 0;
+    sys->termination->done[agent_idx] = 0;
+    sys->termination->truncated[agent_idx] = 0;
+    sys->termination->success[agent_idx] = 0;
+    sys->termination->collision[agent_idx] = 0;
+    sys->termination->out_of_bounds[agent_idx] = 0;
+    sys->termination->timeout[agent_idx] = 0;
 
     /* Reset gate progress */
     if (sys->gates && sys->gates->num_gates > 0) {
         for (uint32_t g = 0; g < sys->gates->num_gates; g++) {
-            sys->gates->passed[drone_idx * sys->max_gates + g] = 0;
+            sys->gates->passed[agent_idx * sys->max_gates + g] = 0;
         }
-        sys->gates->current_gate[drone_idx] = 0;
+        sys->gates->current_gate[agent_idx] = 0;
     }
 }
 
@@ -352,24 +352,24 @@ void reward_reset_batch(RewardSystem* sys, const uint32_t* indices, uint32_t cou
  * Section 5: Target Management Functions
  * ============================================================================ */
 
-void reward_set_target(RewardSystem* sys, uint32_t drone_idx,
+void reward_set_target(RewardSystem* sys, uint32_t agent_idx,
                        Vec3 position, Vec3 velocity, float radius) {
-    if (!sys || !sys->targets || drone_idx >= sys->max_drones) return;
+    if (!sys || !sys->targets || agent_idx >= sys->max_agents) return;
 
-    sys->targets->target_x[drone_idx] = position.x;
-    sys->targets->target_y[drone_idx] = position.y;
-    sys->targets->target_z[drone_idx] = position.z;
-    sys->targets->target_vx[drone_idx] = velocity.x;
-    sys->targets->target_vy[drone_idx] = velocity.y;
-    sys->targets->target_vz[drone_idx] = velocity.z;
-    sys->targets->target_radius[drone_idx] = radius;
+    sys->targets->target_x[agent_idx] = position.x;
+    sys->targets->target_y[agent_idx] = position.y;
+    sys->targets->target_z[agent_idx] = position.z;
+    sys->targets->target_vx[agent_idx] = velocity.x;
+    sys->targets->target_vy[agent_idx] = velocity.y;
+    sys->targets->target_vz[agent_idx] = velocity.z;
+    sys->targets->target_radius[agent_idx] = radius;
 }
 
 void reward_set_targets_random(RewardSystem* sys, uint32_t count,
                                Vec3 bounds_min, Vec3 bounds_max, PCG32* rng) {
     if (!sys || !sys->targets || !rng) return;
 
-    uint32_t n = count < sys->max_drones ? count : sys->max_drones;
+    uint32_t n = count < sys->max_agents ? count : sys->max_agents;
     for (uint32_t i = 0; i < n; i++) {
         Vec3 pos = pcg32_vec3_range(rng, bounds_min, bounds_max);
         sys->targets->target_x[i] = pos.x;
@@ -381,11 +381,13 @@ void reward_set_targets_random(RewardSystem* sys, uint32_t count,
     }
 }
 
-void reward_update_targets(RewardSystem* sys, float dt) {
+void reward_update_targets(RewardSystem* sys, float dt, uint32_t count) {
     if (!sys || !sys->targets) return;
 
+    uint32_t n = count < sys->max_agents ? count : sys->max_agents;
+
     /* Update moving targets (simple linear motion) */
-    for (uint32_t i = 0; i < sys->max_drones; i++) {
+    for (uint32_t i = 0; i < n; i++) {
         sys->targets->target_x[i] += sys->targets->target_vx[i] * dt;
         sys->targets->target_y[i] += sys->targets->target_vy[i] * dt;
         sys->targets->target_z[i] += sys->targets->target_vz[i] * dt;
@@ -410,7 +412,7 @@ void reward_set_gates(RewardSystem* sys, const Vec3* centers,
     }
 
     /* Reset all drones' gate progress */
-    for (uint32_t d = 0; d < sys->max_drones; d++) {
+    for (uint32_t d = 0; d < sys->max_agents; d++) {
         for (uint32_t g = 0; g < num_gates; g++) {
             sys->gates->passed[d * sys->max_gates + g] = 0;
         }
@@ -418,14 +420,14 @@ void reward_set_gates(RewardSystem* sys, const Vec3* centers,
     }
 }
 
-void reward_reset_gates(RewardSystem* sys, uint32_t drone_idx) {
-    if (!sys || !sys->gates || drone_idx >= sys->max_drones) return;
+void reward_reset_gates(RewardSystem* sys, uint32_t agent_idx) {
+    if (!sys || !sys->gates || agent_idx >= sys->max_agents) return;
 
     for (uint32_t g = 0; g < sys->gates->num_gates; g++) {
-        sys->gates->passed[drone_idx * sys->max_gates + g] = 0;
+        sys->gates->passed[agent_idx * sys->max_gates + g] = 0;
     }
-    sys->gates->current_gate[drone_idx] = 0;
-    sys->gates_passed[drone_idx] = 0;
+    sys->gates->current_gate[agent_idx] = 0;
+    sys->gates_passed[agent_idx] = 0;
 }
 
 /* ============================================================================
@@ -433,38 +435,38 @@ void reward_reset_gates(RewardSystem* sys, uint32_t drone_idx) {
  * ============================================================================ */
 
 float reward_distance_to_target(const RewardSystem* sys,
-                                const DroneStateSOA* states,
-                                uint32_t drone_idx) {
-    if (!sys || !states || drone_idx >= sys->max_drones) return FLT_MAX;
+                                const RigidBodyStateSOA* states,
+                                uint32_t agent_idx) {
+    if (!sys || !states || agent_idx >= sys->max_agents) return FLT_MAX;
 
-    float dx = states->pos_x[drone_idx] - sys->targets->target_x[drone_idx];
-    float dy = states->pos_y[drone_idx] - sys->targets->target_y[drone_idx];
-    float dz = states->pos_z[drone_idx] - sys->targets->target_z[drone_idx];
+    float dx = states->pos_x[agent_idx] - sys->targets->target_x[agent_idx];
+    float dy = states->pos_y[agent_idx] - sys->targets->target_y[agent_idx];
+    float dz = states->pos_z[agent_idx] - sys->targets->target_z[agent_idx];
 
     return sqrtf(dx * dx + dy * dy + dz * dz);
 }
 
 bool reward_reached_target(const RewardSystem* sys,
-                           const DroneStateSOA* states,
-                           uint32_t drone_idx) {
-    if (!sys || !states || drone_idx >= sys->max_drones) return false;
+                           const RigidBodyStateSOA* states,
+                           uint32_t agent_idx) {
+    if (!sys || !states || agent_idx >= sys->max_agents) return false;
 
-    float dist = reward_distance_to_target(sys, states, drone_idx);
-    return dist <= sys->targets->target_radius[drone_idx];
+    float dist = reward_distance_to_target(sys, states, agent_idx);
+    return dist <= sys->targets->target_radius[agent_idx];
 }
 
 bool reward_check_gate_crossing(const RewardSystem* sys,
-                                const DroneStateSOA* states,
-                                uint32_t drone_idx, uint32_t gate_idx,
+                                const RigidBodyStateSOA* states,
+                                uint32_t agent_idx, uint32_t gate_idx,
                                 Vec3 prev_pos) {
     if (!sys || !sys->gates || !states) return false;
-    if (drone_idx >= sys->max_drones || gate_idx >= sys->gates->num_gates) return false;
+    if (agent_idx >= sys->max_agents || gate_idx >= sys->gates->num_gates) return false;
 
     /* Get current position */
     Vec3 curr_pos = VEC3(
-        states->pos_x[drone_idx],
-        states->pos_y[drone_idx],
-        states->pos_z[drone_idx]
+        states->pos_x[agent_idx],
+        states->pos_y[agent_idx],
+        states->pos_z[agent_idx]
     );
 
     /* Get gate center and normal */
@@ -506,27 +508,27 @@ bool reward_check_gate_crossing(const RewardSystem* sys,
     return true;
 }
 
-EpisodeStats reward_get_episode_stats(const RewardSystem* sys, uint32_t drone_idx) {
+EpisodeStats reward_get_episode_stats(const RewardSystem* sys, uint32_t agent_idx) {
     EpisodeStats stats = {0};
-    if (!sys || drone_idx >= sys->max_drones) return stats;
+    if (!sys || agent_idx >= sys->max_agents) return stats;
 
-    stats.episode_return = sys->episode_return[drone_idx];
-    stats.best_distance = sys->best_distance[drone_idx];
-    stats.episode_length = sys->episode_length[drone_idx];
-    stats.gates_passed = sys->gates_passed[drone_idx];
-    stats.success = sys->termination->success[drone_idx] != 0;
+    stats.episode_return = sys->episode_return[agent_idx];
+    stats.best_distance = sys->best_distance[agent_idx];
+    stats.episode_length = sys->episode_length[agent_idx];
+    stats.gates_passed = sys->gates_passed[agent_idx];
+    stats.success = sys->termination->success[agent_idx] != 0;
 
     return stats;
 }
 
-bool reward_is_done(const RewardSystem* sys, uint32_t drone_idx) {
-    if (!sys || drone_idx >= sys->max_drones) return false;
-    return sys->termination->done[drone_idx] != 0;
+bool reward_is_done(const RewardSystem* sys, uint32_t agent_idx) {
+    if (!sys || agent_idx >= sys->max_agents) return false;
+    return sys->termination->done[agent_idx] != 0;
 }
 
-bool reward_is_success(const RewardSystem* sys, uint32_t drone_idx) {
-    if (!sys || drone_idx >= sys->max_drones) return false;
-    return sys->termination->success[drone_idx] != 0;
+bool reward_is_success(const RewardSystem* sys, uint32_t agent_idx) {
+    if (!sys || agent_idx >= sys->max_agents) return false;
+    return sys->termination->success[agent_idx] != 0;
 }
 
 /* ============================================================================
@@ -562,97 +564,64 @@ FOUNDATION_INLINE float compute_jerk_penalty(const float* actions, const float* 
 }
 
 /* ============================================================================
- * Section 8: Reward Computation - Hover Task
+ * Section 8: Collision Penalty Helpers
  * ============================================================================ */
 
-void reward_compute_hover(RewardSystem* sys, const DroneStateSOA* states,
-                          const DroneParamsSOA* params, const float* actions,
+static inline bool drone_has_world_collision(const CollisionResults* c, uint32_t i) {
+    return c != NULL && c->world_flags != NULL && c->world_flags[i];
+}
+
+static inline bool drone_has_pair_collision(const CollisionResults* c, uint32_t i) {
+    if (c == NULL) return false;
+    for (uint32_t p = 0; p < c->pair_count; p++) {
+        if (c->pairs[p * 2] == i || c->pairs[p * 2 + 1] == i) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/* ============================================================================
+ * Collision penalty helper (shared by all reward functions)
+ * ============================================================================ */
+
+static FOUNDATION_INLINE float compute_collision_penalty(
+    const CollisionResults* collisions, const RewardConfig* cfg,
+    uint32_t i, float drone_multiplier)
+{
+    float penalty = 0.0f;
+    if (drone_has_world_collision(collisions, i))
+        penalty += cfg->collision_penalty + cfg->world_collision_penalty;
+    if (drone_has_pair_collision(collisions, i))
+        penalty += cfg->collision_penalty + cfg->drone_collision_penalty * drone_multiplier;
+    return penalty;
+}
+
+/* ============================================================================
+ * Per-drone reward epilogue (clip, store, accumulate, increment)
+ * ============================================================================ */
+
+static inline void reward_finalize(RewardSystem* sys, float* rewards, uint32_t i, float reward) {
+    const RewardConfig* cfg = &sys->config;
+    reward = clampf(reward, cfg->reward_min, cfg->reward_max);
+    rewards[i] = reward;
+    sys->episode_return[i] += reward;
+    sys->episode_length[i]++;
+}
+
+/* ============================================================================
+ * Section 9: Reward Computation - Hover Task
+ * ============================================================================ */
+
+void reward_compute_hover(RewardSystem* sys, const RigidBodyStateSOA* states,
+                          const RigidBodyParamsSOA* params, const float* actions,
                           const CollisionResults* collisions,
                           float* rewards, uint32_t count) {
     if (!sys || !states || !rewards) return;
 
     const RewardConfig* cfg = &sys->config;
 
-    SIMD_LOOP_START(count);
-
-#if defined(FOUNDATION_SIMD_AVX2)
-    /* AVX2 SIMD path: process 8 drones at a time */
-    simd_float distance_scale = simd_set1_ps(cfg->distance_scale);
-    simd_float alive_bonus = simd_set1_ps(cfg->alive_bonus);
-    simd_float uprightness_scale = simd_set1_ps(cfg->uprightness_scale);
-    simd_float energy_scale = simd_set1_ps(cfg->energy_scale);
-    simd_float jerk_scale = simd_set1_ps(cfg->jerk_scale);
-    simd_float reward_min = simd_set1_ps(cfg->reward_min);
-    simd_float reward_max = simd_set1_ps(cfg->reward_max);
-    simd_float reach_radius = simd_set1_ps(cfg->reach_radius);
-    simd_float reach_bonus = simd_set1_ps(cfg->reach_bonus);
-    simd_float delta_scale = simd_set1_ps(cfg->delta_distance_scale);
-    simd_float two = simd_set1_ps(2.0f);
-    simd_float one = simd_set1_ps(1.0f);
-
-    for (uint32_t i = 0; i < _simd_count; i += FOUNDATION_SIMD_WIDTH) {
-        /* Load positions */
-        simd_float px = simd_load_ps(&states->pos_x[i]);
-        simd_float py = simd_load_ps(&states->pos_y[i]);
-        simd_float pz = simd_load_ps(&states->pos_z[i]);
-
-        /* Load targets */
-        simd_float tx = simd_load_ps(&sys->targets->target_x[i]);
-        simd_float ty = simd_load_ps(&sys->targets->target_y[i]);
-        simd_float tz = simd_load_ps(&sys->targets->target_z[i]);
-
-        /* Compute distance */
-        simd_float dx = simd_sub_ps(tx, px);
-        simd_float dy = simd_sub_ps(ty, py);
-        simd_float dz = simd_sub_ps(tz, pz);
-        simd_float dist_sq = simd_fmadd_ps(dx, dx, simd_fmadd_ps(dy, dy, simd_mul_ps(dz, dz)));
-        simd_float dist = simd_sqrt_ps(dist_sq);
-
-        /* Distance reward (negative) */
-        simd_float reward = simd_sub_ps(simd_setzero_ps(), simd_mul_ps(distance_scale, dist));
-
-        /* Add alive bonus */
-        reward = simd_add_ps(reward, alive_bonus);
-
-        /* Uprightness reward */
-        simd_float qw = simd_load_ps(&states->quat_w[i]);
-        simd_float qx = simd_load_ps(&states->quat_x[i]);
-        simd_float qy = simd_load_ps(&states->quat_y[i]);
-        simd_float qz = simd_load_ps(&states->quat_z[i]);
-        simd_float qxqx = simd_mul_ps(qx, qx);
-        simd_float qyqy = simd_mul_ps(qy, qy);
-        simd_float up_z = simd_sub_ps(one, simd_mul_ps(two, simd_add_ps(qxqx, qyqy)));
-        reward = simd_fmadd_ps(uprightness_scale, up_z, reward);
-
-        /* Reach bonus */
-        simd_float reached_mask = simd_cmp_le_ps(dist, reach_radius);
-        simd_float bonus = simd_and_ps(reached_mask, reach_bonus);
-        reward = simd_add_ps(reward, bonus);
-
-        /* Load previous distance for delta reward */
-        simd_float prev_dist = simd_load_ps(&sys->prev_distance[i]);
-        simd_float delta = simd_sub_ps(prev_dist, dist);
-        simd_float delta_reward = simd_mul_ps(delta_scale, delta);
-        /* Only apply if prev_dist was valid (not FLT_MAX) */
-        simd_float flt_max_vec = simd_set1_ps(FLT_MAX * 0.5f);
-        simd_float valid_mask = simd_cmp_lt_ps(prev_dist, flt_max_vec);
-        delta_reward = simd_and_ps(valid_mask, delta_reward);
-        reward = simd_add_ps(reward, delta_reward);
-
-        /* Clip reward */
-        reward = simd_max_ps(reward, reward_min);
-        reward = simd_min_ps(reward, reward_max);
-
-        /* Store reward */
-        simd_store_ps(&rewards[i], reward);
-
-        /* Update previous distance */
-        simd_store_ps(&sys->prev_distance[i], dist);
-    }
-#endif
-
-    /* Scalar path for remainder and non-AVX2 platforms */
-    SIMD_LOOP_REMAINDER(i, count) {
+    for (uint32_t i = 0; i < count; i++) {
         float reward = cfg->alive_bonus;
 
         /* Distance penalty */
@@ -687,18 +656,7 @@ void reward_compute_hover(RewardSystem* sys, const DroneStateSOA* states,
         }
 
         /* Collision penalties */
-        if (collisions) {
-            if (collisions->world_flags && collisions->world_flags[i]) {
-                reward -= cfg->collision_penalty + cfg->world_collision_penalty;
-            }
-            /* Check drone-drone collisions */
-            for (uint32_t p = 0; p < collisions->pair_count; p++) {
-                if (collisions->pairs[p * 2] == i || collisions->pairs[p * 2 + 1] == i) {
-                    reward -= cfg->collision_penalty + cfg->drone_collision_penalty;
-                    break;
-                }
-            }
-        }
+        reward -= compute_collision_penalty(collisions, cfg, i, 1.0f);
 
         /* Update tracking */
         if (dist < sys->best_distance[i]) {
@@ -706,18 +664,7 @@ void reward_compute_hover(RewardSystem* sys, const DroneStateSOA* states,
         }
         sys->prev_distance[i] = dist;
 
-        /* Clip and store */
-        reward = clampf(reward, cfg->reward_min, cfg->reward_max);
-        rewards[i] = reward;
-
-        /* Accumulate episode return */
-        sys->episode_return[i] += reward;
-        sys->episode_length[i]++;
-    }
-
-    /* Update previous actions */
-    if (actions && sys->prev_actions) {
-        memcpy(sys->prev_actions, actions, count * 4 * sizeof(float));
+        reward_finalize(sys, rewards, i, reward);
     }
 }
 
@@ -725,8 +672,8 @@ void reward_compute_hover(RewardSystem* sys, const DroneStateSOA* states,
  * Section 9: Reward Computation - Race Task
  * ============================================================================ */
 
-void reward_compute_race(RewardSystem* sys, const DroneStateSOA* states,
-                         const DroneParamsSOA* params, const float* actions,
+void reward_compute_race(RewardSystem* sys, const RigidBodyStateSOA* states,
+                         const RigidBodyParamsSOA* params, const float* actions,
                          const CollisionResults* collisions,
                          float* rewards, uint32_t count) {
     if (!sys || !states || !rewards || !sys->gates) return;
@@ -806,29 +753,9 @@ void reward_compute_race(RewardSystem* sys, const DroneStateSOA* states,
         }
 
         /* Collision penalties */
-        if (collisions) {
-            if (collisions->world_flags && collisions->world_flags[i]) {
-                reward -= cfg->collision_penalty + cfg->world_collision_penalty;
-            }
-            for (uint32_t p = 0; p < collisions->pair_count; p++) {
-                if (collisions->pairs[p * 2] == i || collisions->pairs[p * 2 + 1] == i) {
-                    reward -= cfg->collision_penalty + cfg->drone_collision_penalty;
-                    break;
-                }
-            }
-        }
+        reward -= compute_collision_penalty(collisions, cfg, i, 1.0f);
 
-        /* Clip and store */
-        reward = clampf(reward, cfg->reward_min, cfg->reward_max);
-        rewards[i] = reward;
-
-        sys->episode_return[i] += reward;
-        sys->episode_length[i]++;
-    }
-
-    /* Update previous actions */
-    if (actions && sys->prev_actions) {
-        memcpy(sys->prev_actions, actions, count * 4 * sizeof(float));
+        reward_finalize(sys, rewards, i, reward);
     }
 }
 
@@ -836,8 +763,8 @@ void reward_compute_race(RewardSystem* sys, const DroneStateSOA* states,
  * Section 10: Reward Computation - Track Task
  * ============================================================================ */
 
-void reward_compute_track(RewardSystem* sys, const DroneStateSOA* states,
-                          const DroneParamsSOA* params, const float* actions,
+void reward_compute_track(RewardSystem* sys, const RigidBodyStateSOA* states,
+                          const RigidBodyParamsSOA* params, const float* actions,
                           const CollisionResults* collisions,
                           float* rewards, uint32_t count) {
     if (!sys || !states || !rewards) return;
@@ -877,20 +804,9 @@ void reward_compute_track(RewardSystem* sys, const DroneStateSOA* states,
         }
 
         /* Collision penalties */
-        if (collisions && collisions->world_flags && collisions->world_flags[i]) {
-            reward -= cfg->collision_penalty + cfg->world_collision_penalty;
-        }
+        reward -= compute_collision_penalty(collisions, cfg, i, 1.0f);
 
-        /* Clip and store */
-        reward = clampf(reward, cfg->reward_min, cfg->reward_max);
-        rewards[i] = reward;
-
-        sys->episode_return[i] += reward;
-        sys->episode_length[i]++;
-    }
-
-    if (actions && sys->prev_actions) {
-        memcpy(sys->prev_actions, actions, count * 4 * sizeof(float));
+        reward_finalize(sys, rewards, i, reward);
     }
 }
 
@@ -898,8 +814,8 @@ void reward_compute_track(RewardSystem* sys, const DroneStateSOA* states,
  * Section 11: Reward Computation - Land Task
  * ============================================================================ */
 
-void reward_compute_land(RewardSystem* sys, const DroneStateSOA* states,
-                         const DroneParamsSOA* params, const float* actions,
+void reward_compute_land(RewardSystem* sys, const RigidBodyStateSOA* states,
+                         const RigidBodyParamsSOA* params, const float* actions,
                          const CollisionResults* collisions,
                          float* rewards, uint32_t count) {
     if (!sys || !states || !rewards) return;
@@ -942,6 +858,17 @@ void reward_compute_land(RewardSystem* sys, const DroneStateSOA* states,
             reward -= 1.0f * (0.9f - up_z);
         }
 
+        /* Collision penalties */
+        reward -= compute_collision_penalty(collisions, cfg, i, 1.0f);
+
+        /* Energy penalty */
+        if (actions) {
+            reward -= cfg->energy_scale * compute_energy_penalty(actions, i);
+            if (sys->prev_actions) {
+                reward -= cfg->jerk_scale * compute_jerk_penalty(actions, sys->prev_actions, i);
+            }
+        }
+
         /* Delta distance */
         if (sys->prev_distance[i] < FLT_MAX * 0.5f) {
             float delta = sys->prev_distance[i] - dist;
@@ -949,16 +876,7 @@ void reward_compute_land(RewardSystem* sys, const DroneStateSOA* states,
         }
         sys->prev_distance[i] = dist;
 
-        /* Clip and store */
-        reward = clampf(reward, cfg->reward_min, cfg->reward_max);
-        rewards[i] = reward;
-
-        sys->episode_return[i] += reward;
-        sys->episode_length[i]++;
-    }
-
-    if (actions && sys->prev_actions) {
-        memcpy(sys->prev_actions, actions, count * 4 * sizeof(float));
+        reward_finalize(sys, rewards, i, reward);
     }
 }
 
@@ -966,8 +884,8 @@ void reward_compute_land(RewardSystem* sys, const DroneStateSOA* states,
  * Section 12: Reward Computation - Formation Task
  * ============================================================================ */
 
-void reward_compute_formation(RewardSystem* sys, const DroneStateSOA* states,
-                              const DroneParamsSOA* params, const float* actions,
+void reward_compute_formation(RewardSystem* sys, const RigidBodyStateSOA* states,
+                              const RigidBodyParamsSOA* params, const float* actions,
                               const CollisionResults* collisions,
                               float* rewards, uint32_t count) {
     if (!sys || !states || !rewards || count == 0) return;
@@ -1011,30 +929,10 @@ void reward_compute_formation(RewardSystem* sys, const DroneStateSOA* states,
             states->quat_y[i], states->quat_z[i]);
         reward += cfg->uprightness_scale * up_z;
 
-        /* Collision penalties - extra penalty for formation */
-        if (collisions) {
-            if (collisions->world_flags && collisions->world_flags[i]) {
-                reward -= cfg->collision_penalty + cfg->world_collision_penalty;
-            }
-            for (uint32_t p = 0; p < collisions->pair_count; p++) {
-                if (collisions->pairs[p * 2] == i || collisions->pairs[p * 2 + 1] == i) {
-                    /* Extra penalty in formation - should maintain separation */
-                    reward -= cfg->collision_penalty + cfg->drone_collision_penalty * 2.0f;
-                    break;
-                }
-            }
-        }
+        /* Collision penalties - extra drone penalty for formation (maintain separation) */
+        reward -= compute_collision_penalty(collisions, cfg, i, 2.0f);
 
-        /* Clip and store */
-        reward = clampf(reward, cfg->reward_min, cfg->reward_max);
-        rewards[i] = reward;
-
-        sys->episode_return[i] += reward;
-        sys->episode_length[i]++;
-    }
-
-    if (actions && sys->prev_actions) {
-        memcpy(sys->prev_actions, actions, count * 4 * sizeof(float));
+        reward_finalize(sys, rewards, i, reward);
     }
 }
 
@@ -1042,8 +940,8 @@ void reward_compute_formation(RewardSystem* sys, const DroneStateSOA* states,
  * Section 13: Main Reward Dispatch Function
  * ============================================================================ */
 
-void reward_compute(RewardSystem* sys, const DroneStateSOA* states,
-                    const DroneParamsSOA* params, const float* actions,
+void reward_compute(RewardSystem* sys, const RigidBodyStateSOA* states,
+                    const RigidBodyParamsSOA* params, const float* actions,
                     const CollisionResults* collisions,
                     float* rewards, uint32_t count) {
     if (!sys || !states || !rewards || count == 0) return;
@@ -1076,13 +974,18 @@ void reward_compute(RewardSystem* sys, const DroneStateSOA* states,
             reward_compute_hover(sys, states, params, actions, collisions, rewards, count);
             break;
     }
+
+    /* Update previous actions (common to all task types) */
+    if (actions && sys->prev_actions) {
+        memcpy(sys->prev_actions, actions, count * 4 * sizeof(float));
+    }
 }
 
 /* ============================================================================
  * Section 14: Termination Computation
  * ============================================================================ */
 
-void reward_compute_terminations(RewardSystem* sys, const DroneStateSOA* states,
+void reward_compute_terminations(RewardSystem* sys, const RigidBodyStateSOA* states,
                                  const CollisionResults* collisions,
                                  Vec3 bounds_min, Vec3 bounds_max,
                                  uint32_t max_steps, TerminationFlags* flags,
@@ -1097,21 +1000,13 @@ void reward_compute_terminations(RewardSystem* sys, const DroneStateSOA* states,
         uint8_t truncated = 0;
 
         /* Check collisions */
-        if (collisions) {
-            /* World collision */
-            if (collisions->world_flags && collisions->world_flags[i]) {
-                collision_flag = 1;
-                done = 1;
-            }
-
-            /* Drone-drone collision (terminates both drones) */
-            for (uint32_t p = 0; p < collisions->pair_count; p++) {
-                if (collisions->pairs[p * 2] == i || collisions->pairs[p * 2 + 1] == i) {
-                    collision_flag = 1;
-                    done = 1;
-                    break;
-                }
-            }
+        if (drone_has_world_collision(collisions, i)) {
+            collision_flag = 1;
+            done = 1;
+        }
+        if (drone_has_pair_collision(collisions, i)) {
+            collision_flag = 1;
+            done = 1;
         }
 
         /* Check out of bounds */

@@ -24,7 +24,7 @@
  *
  * Dependencies:
  * - foundation: Vec3, Arena, SIMD macros, atomics
- * - drone_state: DroneStateSOA, DroneParamsSOA
+ * - drone_state: PlatformStateSOA, PlatformParamsSOA
  * - world_brick_map: world_sdf_query_batch, world_sdf_gradient
  */
 
@@ -32,7 +32,7 @@
 #define COLLISION_SYSTEM_H
 
 #include "foundation.h"
-#include "drone_state.h"
+#include "rigid_body_state.h"
 #include "world_brick_map.h"
 
 #ifdef __cplusplus
@@ -69,8 +69,8 @@ extern "C" {
  * This allows handling arbitrary collision density without pre-allocation.
  */
 typedef struct SpatialHashEntry {
-    /** Index into DroneStateSOA arrays */
-    uint32_t drone_index;
+    /** Index into PlatformStateSOA arrays */
+    uint32_t agent_index;
 
     /** Next entry in chain (SPATIAL_HASH_END = end of list) */
     uint32_t next;
@@ -162,10 +162,10 @@ typedef struct CollisionSystem {
     Arena* scratch_arena;
 
     /** Collision sphere radius per drone (uniform for all drones) */
-    float drone_radius;
+    float collision_radius;
 
-    /** Precomputed drone_radius squared for distance comparisons */
-    float drone_radius_sq;
+    /** Precomputed collision_radius squared for distance comparisons */
+    float collision_radius_sq;
 
     /** SDF threshold for world collision detection (positive = margin) */
     float world_collision_margin;
@@ -181,19 +181,19 @@ typedef struct CollisionSystem {
     uint32_t max_pairs;
 
     /** Per-drone world collision flags.
-     *  Array size: max_drones */
+     *  Array size: max_agents */
     uint8_t* drone_world_collision;
 
     /** Per-drone SDF penetration depth (negative = inside world geometry).
-     *  Array size: max_drones */
+     *  Array size: max_agents */
     float* penetration_depth;
 
     /** Per-drone collision surface normal (unit vector).
-     *  Array size: max_drones */
+     *  Array size: max_agents */
     Vec3* collision_normals;
 
     /** Maximum number of drones this system can handle */
-    uint32_t max_drones;
+    uint32_t max_agents;
 } CollisionSystem;
 
 /* ============================================================================
@@ -213,13 +213,13 @@ typedef struct CollisionResults {
     /** Number of collision pairs detected */
     uint32_t pair_count;
 
-    /** Per-drone world collision flags: [drone_count], 1 = colliding */
+    /** Per-drone world collision flags: [agent_count], 1 = colliding */
     const uint8_t* world_flags;
 
-    /** Per-drone SDF penetration depth: [drone_count], negative = inside */
+    /** Per-drone SDF penetration depth: [agent_count], negative = inside */
     const float* penetration;
 
-    /** Per-drone surface normal at collision point: [drone_count] */
+    /** Per-drone surface normal at collision point: [agent_count] */
     const Vec3* normals;
 } CollisionResults;
 
@@ -234,7 +234,7 @@ typedef struct CollisionResults {
  * Hash table is 32-byte aligned for SIMD operations.
  *
  * @param arena      Memory arena for allocation
- * @param max_entries Maximum number of drone entries (typically = max_drones)
+ * @param max_entries Maximum number of drone entries (typically = max_agents)
  * @param cell_size  Spatial cell size in world units (meters)
  * @return Pointer to SpatialHashGrid, or NULL on failure
  */
@@ -266,10 +266,10 @@ void spatial_hash_clear(SpatialHashGrid* grid);
  * O(1) operation.
  *
  * @param grid        Grid to insert into
- * @param drone_index Index of drone in DroneStateSOA
+ * @param agent_index Index of drone in PlatformStateSOA
  * @param x, y, z     World position of drone
  */
-void spatial_hash_insert(SpatialHashGrid* grid, uint32_t drone_index,
+void spatial_hash_insert(SpatialHashGrid* grid, uint32_t agent_index,
                          float x, float y, float z);
 
 /**
@@ -310,13 +310,13 @@ void spatial_hash_query_neighborhood(const SpatialHashGrid* grid,
  * All allocations are 32-byte aligned for SIMD operations.
  *
  * @param arena       Memory arena for allocation
- * @param max_drones  Maximum number of drones to handle
- * @param drone_radius Collision sphere radius per drone (meters)
- * @param cell_size   Spatial hash cell size (should be >= 2 * drone_radius)
+ * @param max_agents  Maximum number of drones to handle
+ * @param collision_radius Collision sphere radius per drone (meters)
+ * @param cell_size   Spatial hash cell size (should be >= 2 * collision_radius)
  * @return Pointer to CollisionSystem, or NULL on failure
  */
-CollisionSystem* collision_create(Arena* arena, uint32_t max_drones,
-                                  float drone_radius, float cell_size);
+CollisionSystem* collision_create(Arena* arena, uint32_t max_agents,
+                                  float collision_radius, float cell_size);
 
 /**
  * Destroy a collision system.
@@ -352,7 +352,7 @@ void collision_reset(CollisionSystem* sys);
  * @param count  Number of drones to process
  */
 void collision_build_spatial_hash(CollisionSystem* sys,
-                                  const DroneStateSOA* states,
+                                  const RigidBodyStateSOA* states,
                                   uint32_t count);
 
 /**
@@ -367,7 +367,7 @@ void collision_build_spatial_hash(CollisionSystem* sys,
  * @param count  Number of drones
  */
 void collision_detect_drone_drone(CollisionSystem* sys,
-                                  const DroneStateSOA* states,
+                                  const RigidBodyStateSOA* states,
                                   uint32_t count);
 
 /**
@@ -383,7 +383,7 @@ void collision_detect_drone_drone(CollisionSystem* sys,
  * @param count  Number of drones
  */
 void collision_detect_drone_world(CollisionSystem* sys,
-                                  const DroneStateSOA* states,
+                                  const RigidBodyStateSOA* states,
                                   const WorldBrickMap* world,
                                   uint32_t count);
 
@@ -399,7 +399,7 @@ void collision_detect_drone_world(CollisionSystem* sys,
  * @param count  Number of drones
  */
 void collision_detect_all(CollisionSystem* sys,
-                          const DroneStateSOA* states,
+                          const RigidBodyStateSOA* states,
                           const WorldBrickMap* world,
                           uint32_t count);
 
@@ -419,22 +419,22 @@ CollisionResults collision_get_results(const CollisionSystem* sys);
  * Check if a specific drone is colliding with the world.
  *
  * @param sys       Collision system
- * @param drone_idx Drone index to check
+ * @param agent_idx Drone index to check
  * @return true if drone is colliding with world geometry
  */
-bool collision_drone_world_check(const CollisionSystem* sys, uint32_t drone_idx);
+bool collision_drone_world_check(const CollisionSystem* sys, uint32_t agent_idx);
 
 /**
  * Find the other drone in a collision pair involving the given drone.
  *
- * Searches collision pairs for any pair containing drone_idx.
+ * Searches collision pairs for any pair containing agent_idx.
  * Returns UINT32_MAX if no collision found.
  *
  * @param sys       Collision system
- * @param drone_idx Drone index to search for
+ * @param agent_idx Drone index to search for
  * @return Index of other drone in collision, or UINT32_MAX if none
  */
-uint32_t collision_get_pair(const CollisionSystem* sys, uint32_t drone_idx);
+uint32_t collision_get_pair(const CollisionSystem* sys, uint32_t agent_idx);
 
 /* ============================================================================
  * Section 11: Collision Response Functions
@@ -453,8 +453,8 @@ uint32_t collision_get_pair(const CollisionSystem* sys, uint32_t drone_idx);
  * @param count           Number of drones
  */
 void collision_apply_response(CollisionSystem* sys,
-                              DroneStateSOA* states,
-                              const DroneParamsSOA* params,
+                              RigidBodyStateSOA* states,
+                              const RigidBodyParamsSOA* params,
                               float restitution,
                               float separation_force,
                               uint32_t count);
@@ -474,7 +474,7 @@ void collision_apply_response(CollisionSystem* sys,
  * @param count        Number of drones
  */
 void collision_apply_world_response(CollisionSystem* sys,
-                                    DroneStateSOA* states,
+                                    RigidBodyStateSOA* states,
                                     float restitution,
                                     float pushout_speed,
                                     uint32_t count);
@@ -494,8 +494,8 @@ void collision_apply_world_response(CollisionSystem* sys,
  * @param count       Number of drones
  */
 void collision_apply_drone_response(CollisionSystem* sys,
-                                    DroneStateSOA* states,
-                                    const DroneParamsSOA* params,
+                                    RigidBodyStateSOA* states,
+                                    const RigidBodyParamsSOA* params,
                                     float restitution,
                                     uint32_t count);
 
@@ -518,7 +518,7 @@ void collision_apply_drone_response(CollisionSystem* sys,
  * @param out_count     Output: actual number found (may be < k)
  */
 void collision_find_k_nearest(const CollisionSystem* sys,
-                              const DroneStateSOA* states,
+                              const RigidBodyStateSOA* states,
                               Vec3 position,
                               uint32_t k,
                               uint32_t* out_indices,
@@ -529,18 +529,18 @@ void collision_find_k_nearest(const CollisionSystem* sys,
  * Find K nearest neighbors for all drones (batch operation).
  *
  * For each drone, finds k nearest other drones.
- * Output arrays: out_indices[drone_count * k], out_distances[drone_count * k]
+ * Output arrays: out_indices[agent_count * k], out_distances[agent_count * k]
  *
  * @param sys           Collision system (must have built spatial hash)
  * @param states        Drone state arrays
- * @param drone_count   Number of drones
+ * @param agent_count   Number of drones
  * @param k             Number of neighbors per drone
- * @param out_indices   Output: [drone_count * k] neighbor indices
- * @param out_distances Output: [drone_count * k] squared distances
+ * @param out_indices   Output: [agent_count * k] neighbor indices
+ * @param out_distances Output: [agent_count * k] squared distances
  */
 void collision_find_k_nearest_batch(const CollisionSystem* sys,
-                                    const DroneStateSOA* states,
-                                    uint32_t drone_count,
+                                    const RigidBodyStateSOA* states,
+                                    uint32_t agent_count,
                                     uint32_t k,
                                     uint32_t* out_indices,
                                     float* out_distances);
@@ -596,7 +596,7 @@ FOUNDATION_INLINE uint32_t spatial_hash_compute_cell(int32_t cx, int32_t cy, int
  * @param radius_sum_sq (radius_a + radius_b)^2 for threshold
  * @return true if drones are colliding
  */
-bool collision_check_pair(const DroneStateSOA* states,
+bool collision_check_pair(const RigidBodyStateSOA* states,
                           uint32_t idx_a, uint32_t idx_b,
                           float radius_sum_sq);
 
@@ -610,17 +610,17 @@ bool collision_check_pair(const DroneStateSOA* states,
  * @param idx_b  Second drone index (normal points toward this drone)
  * @return Unit normal vector
  */
-Vec3 collision_compute_normal(const DroneStateSOA* states,
+Vec3 collision_compute_normal(const RigidBodyStateSOA* states,
                               uint32_t idx_a, uint32_t idx_b);
 
 /**
  * Calculate required memory for a collision system.
  *
- * @param max_drones Maximum drone count
+ * @param max_agents Maximum drone count
  * @param max_pairs  Maximum collision pairs
  * @return Total bytes required
  */
-size_t collision_memory_size(uint32_t max_drones, uint32_t max_pairs);
+size_t collision_memory_size(uint32_t max_agents, uint32_t max_pairs);
 
 /**
  * Calculate required memory for a spatial hash grid.

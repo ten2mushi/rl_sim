@@ -238,9 +238,9 @@ TEST(sdf_atlas) {
  * Test: Drone Poses Upload/Readback
  * ============================================================================ */
 
-TEST(drone_poses) {
+TEST(agent_poses) {
     #if !GPU_AVAILABLE
-    GpuDronePoses poses = gpu_drone_poses_create(NULL, 32);
+    GpuDronePoses poses = gpu_agent_poses_create(NULL, 32);
     ASSERT_MSG(poses.pos_x == NULL, "Poses should be empty with NONE backend");
     return 0;
     #endif
@@ -248,15 +248,15 @@ TEST(drone_poses) {
     GpuDevice* device = gpu_device_create();
     ASSERT_MSG(device != NULL, "Need device");
 
-    uint32_t num_drones = 64;
+    uint32_t num_agents = 64;
 
     /* Create test drone state */
     Arena* arena = arena_create(16 * 1024 * 1024);
-    DroneStateSOA* drones = drone_state_create(arena, num_drones);
+    RigidBodyStateSOA* drones = rigid_body_state_create(arena, num_agents);
     ASSERT_MSG(drones != NULL, "Drone state creation");
 
     /* Fill with test data */
-    for (uint32_t i = 0; i < num_drones; i++) {
+    for (uint32_t i = 0; i < num_agents; i++) {
         drones->pos_x[i] = (float)i * 0.1f;
         drones->pos_y[i] = (float)i * 0.2f;
         drones->pos_z[i] = (float)i * 0.3f;
@@ -267,20 +267,20 @@ TEST(drone_poses) {
     }
 
     /* Upload to GPU */
-    GpuDronePoses poses = gpu_drone_poses_create(device, num_drones);
+    GpuDronePoses poses = gpu_agent_poses_create(device, num_agents);
     ASSERT_MSG(poses.pos_x != NULL, "Pose buffers should be created");
-    ASSERT_MSG(poses.max_drones == num_drones, "Max drones mismatch");
+    ASSERT_MSG(poses.max_agents == num_agents, "Max drones mismatch");
 
-    GpuResult r = gpu_drone_poses_upload(&poses, drones, num_drones);
+    GpuResult r = gpu_agent_poses_upload(&poses, drones, num_agents);
     ASSERT_MSG(r == GPU_SUCCESS, "Pose upload should succeed");
 
     /* Readback and verify */
     float readback[64];
-    r = gpu_buffer_readback(poses.pos_x, readback, num_drones * sizeof(float), 0);
+    r = gpu_buffer_readback(poses.pos_x, readback, num_agents * sizeof(float), 0);
     ASSERT_MSG(r == GPU_SUCCESS, "Pos_x readback");
 
     bool match = true;
-    for (uint32_t i = 0; i < num_drones; i++) {
+    for (uint32_t i = 0; i < num_agents; i++) {
         if (fabsf(readback[i] - drones->pos_x[i]) > 1e-6f) {
             match = false;
             break;
@@ -288,7 +288,7 @@ TEST(drone_poses) {
     }
     ASSERT_MSG(match, "Pose pos_x data should match");
 
-    gpu_drone_poses_destroy(&poses);
+    gpu_agent_poses_destroy(&poses);
     arena_destroy(arena);
     gpu_device_destroy(device);
     return 0;
@@ -378,7 +378,7 @@ int main(void) {
     RUN_TEST(device_create);
     RUN_TEST(buffer_operations);
     RUN_TEST(sdf_atlas);
-    RUN_TEST(drone_poses);
+    RUN_TEST(agent_poses);
     RUN_TEST(ray_table);
 
     TEST_SUITE_END();

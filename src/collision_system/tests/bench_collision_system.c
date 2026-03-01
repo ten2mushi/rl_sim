@@ -96,31 +96,31 @@ static double estimate_cpu_ghz(void) {
  * Test Data Setup
  * ============================================================================ */
 
-static DroneStateSOA* create_bench_states(Arena* arena, uint32_t count) {
-    DroneStateSOA* states = drone_state_create(arena, count);
+static RigidBodyStateSOA* create_bench_states(Arena* arena, uint32_t count) {
+    RigidBodyStateSOA* states = rigid_body_state_create(arena, count);
     if (states == NULL) return NULL;
 
     for (uint32_t i = 0; i < count; i++) {
-        drone_state_init(states, i);
+        states->quat_w[i] = 1.0f;
     }
     states->count = count;
 
     return states;
 }
 
-static DroneParamsSOA* create_bench_params(Arena* arena, uint32_t count) {
-    DroneParamsSOA* params = drone_params_create(arena, count);
+static RigidBodyParamsSOA* create_bench_params(Arena* arena, uint32_t count) {
+    RigidBodyParamsSOA* params = rigid_body_params_create(arena, count);
     if (params == NULL) return NULL;
 
     for (uint32_t i = 0; i < count; i++) {
-        drone_params_init(params, i);
+        rigid_body_params_init(params, i);
     }
     params->count = count;
 
     return params;
 }
 
-static void setup_scattered_positions(DroneStateSOA* states, uint32_t count) {
+static void setup_scattered_positions(RigidBodyStateSOA* states, uint32_t count) {
     /* Drones spread across a 100m x 100m x 10m volume */
     for (uint32_t i = 0; i < count; i++) {
         states->pos_x[i] = (float)(i % 32) * 3.125f;      /* 0-100m */
@@ -129,7 +129,7 @@ static void setup_scattered_positions(DroneStateSOA* states, uint32_t count) {
     }
 }
 
-static void setup_clustered_positions(DroneStateSOA* states, uint32_t count) {
+static void setup_clustered_positions(RigidBodyStateSOA* states, uint32_t count) {
     /* Drones clustered in a small area - worst case for collisions */
     for (uint32_t i = 0; i < count; i++) {
         states->pos_x[i] = (float)(i % 32) * 0.05f;       /* Dense cluster */
@@ -138,8 +138,8 @@ static void setup_clustered_positions(DroneStateSOA* states, uint32_t count) {
     }
 }
 
-static void setup_moderate_collision_positions(DroneStateSOA* states, uint32_t count,
-                                                float drone_radius) {
+static void setup_moderate_collision_positions(RigidBodyStateSOA* states, uint32_t count,
+                                                float collision_radius) {
     /* Setup where ~10% of drones have collisions */
     uint32_t collision_count = count / 10;
 
@@ -156,7 +156,7 @@ static void setup_moderate_collision_positions(DroneStateSOA* states, uint32_t c
                 states->pos_y[i] = base_y;
                 states->pos_z[i] = base_z;
             } else {
-                states->pos_x[i] = base_x + drone_radius * 1.5f;
+                states->pos_x[i] = base_x + collision_radius * 1.5f;
                 states->pos_y[i] = base_y;
                 states->pos_z[i] = base_z;
             }
@@ -208,7 +208,7 @@ static void bench_hash_build(double cpu_ghz) {
 
     Arena* arena = arena_create(16 * 1024 * 1024);
     CollisionSystem* sys = collision_create(arena, DRONE_COUNT, 0.1f, 1.0f);
-    DroneStateSOA* states = create_bench_states(arena, DRONE_COUNT);
+    RigidBodyStateSOA* states = create_bench_states(arena, DRONE_COUNT);
     setup_scattered_positions(states, DRONE_COUNT);
 
     /* Warmup */
@@ -240,7 +240,7 @@ static void bench_detect_dd_sparse(double cpu_ghz) {
 
     Arena* arena = arena_create(16 * 1024 * 1024);
     CollisionSystem* sys = collision_create(arena, DRONE_COUNT, 0.1f, 1.0f);
-    DroneStateSOA* states = create_bench_states(arena, DRONE_COUNT);
+    RigidBodyStateSOA* states = create_bench_states(arena, DRONE_COUNT);
     setup_scattered_positions(states, DRONE_COUNT);
 
     /* Warmup */
@@ -277,7 +277,7 @@ static void bench_detect_dd_clustered(double cpu_ghz) {
 
     Arena* arena = arena_create(16 * 1024 * 1024);
     CollisionSystem* sys = collision_create(arena, DRONE_COUNT, 0.1f, 1.0f);
-    DroneStateSOA* states = create_bench_states(arena, DRONE_COUNT);
+    RigidBodyStateSOA* states = create_bench_states(arena, DRONE_COUNT);
     setup_clustered_positions(states, DRONE_COUNT);
 
     /* Warmup */
@@ -314,7 +314,7 @@ static void bench_response_world(double cpu_ghz) {
 
     Arena* arena = arena_create(16 * 1024 * 1024);
     CollisionSystem* sys = collision_create(arena, DRONE_COUNT, 0.1f, 1.0f);
-    DroneStateSOA* states = create_bench_states(arena, DRONE_COUNT);
+    RigidBodyStateSOA* states = create_bench_states(arena, DRONE_COUNT);
 
     /* Setup ~10% of drones colliding with world */
     for (uint32_t i = 0; i < DRONE_COUNT; i++) {
@@ -363,8 +363,8 @@ static void bench_response_dd(double cpu_ghz) {
 
     Arena* arena = arena_create(16 * 1024 * 1024);
     CollisionSystem* sys = collision_create(arena, DRONE_COUNT, 0.1f, 1.0f);
-    DroneStateSOA* states = create_bench_states(arena, DRONE_COUNT);
-    DroneParamsSOA* params = create_bench_params(arena, DRONE_COUNT);
+    RigidBodyStateSOA* states = create_bench_states(arena, DRONE_COUNT);
+    RigidBodyParamsSOA* params = create_bench_params(arena, DRONE_COUNT);
 
     /* Setup moderate collision scenario */
     setup_moderate_collision_positions(states, DRONE_COUNT, 0.1f);
@@ -404,8 +404,8 @@ static void bench_total_frame(double cpu_ghz) {
 
     Arena* arena = arena_create(32 * 1024 * 1024);
     CollisionSystem* sys = collision_create(arena, DRONE_COUNT, 0.1f, 1.0f);
-    DroneStateSOA* states = create_bench_states(arena, DRONE_COUNT);
-    DroneParamsSOA* params = create_bench_params(arena, DRONE_COUNT);
+    RigidBodyStateSOA* states = create_bench_states(arena, DRONE_COUNT);
+    RigidBodyParamsSOA* params = create_bench_params(arena, DRONE_COUNT);
 
     /* Realistic scattered positions with some collisions */
     setup_moderate_collision_positions(states, DRONE_COUNT, 0.1f);
@@ -442,7 +442,7 @@ static void bench_knn_single(double cpu_ghz) {
 
     Arena* arena = arena_create(16 * 1024 * 1024);
     CollisionSystem* sys = collision_create(arena, DRONE_COUNT, 0.1f, 1.0f);
-    DroneStateSOA* states = create_bench_states(arena, DRONE_COUNT);
+    RigidBodyStateSOA* states = create_bench_states(arena, DRONE_COUNT);
     setup_scattered_positions(states, DRONE_COUNT);
 
     collision_build_spatial_hash(sys, states, DRONE_COUNT);
@@ -482,7 +482,7 @@ static void bench_knn_batch(double cpu_ghz) {
 
     Arena* arena = arena_create(32 * 1024 * 1024);
     CollisionSystem* sys = collision_create(arena, DRONE_COUNT, 0.1f, 1.0f);
-    DroneStateSOA* states = create_bench_states(arena, DRONE_COUNT);
+    RigidBodyStateSOA* states = create_bench_states(arena, DRONE_COUNT);
     setup_scattered_positions(states, DRONE_COUNT);
 
     collision_build_spatial_hash(sys, states, DRONE_COUNT);

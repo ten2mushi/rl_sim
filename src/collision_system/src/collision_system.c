@@ -30,14 +30,14 @@ size_t spatial_hash_memory_size(uint32_t max_entries) {
     return size;
 }
 
-size_t collision_memory_size(uint32_t max_drones, uint32_t max_pairs) {
+size_t collision_memory_size(uint32_t max_agents, uint32_t max_pairs) {
     size_t size = 0;
 
     /* CollisionSystem struct */
     size += sizeof(CollisionSystem);
 
     /* SpatialHashGrid */
-    size += spatial_hash_memory_size(max_drones);
+    size += spatial_hash_memory_size(max_agents);
 
     /* collision_pairs (32-byte aligned) */
     size = align_up_size(size, 32);
@@ -45,15 +45,15 @@ size_t collision_memory_size(uint32_t max_drones, uint32_t max_pairs) {
 
     /* drone_world_collision (32-byte aligned for SIMD) */
     size = align_up_size(size, 32);
-    size += max_drones * sizeof(uint8_t);
+    size += max_agents * sizeof(uint8_t);
 
     /* penetration_depth (32-byte aligned) */
     size = align_up_size(size, 32);
-    size += max_drones * sizeof(float);
+    size += max_agents * sizeof(float);
 
     /* collision_normals (16-byte aligned for Vec3) */
     size = align_up_size(size, 16);
-    size += max_drones * sizeof(Vec3);
+    size += max_agents * sizeof(Vec3);
 
     return size;
 }
@@ -116,7 +116,7 @@ void spatial_hash_clear(SpatialHashGrid* grid) {
     grid->entry_count = 0;
 }
 
-void spatial_hash_insert(SpatialHashGrid* grid, uint32_t drone_index,
+void spatial_hash_insert(SpatialHashGrid* grid, uint32_t agent_index,
                          float x, float y, float z) {
     if (grid == NULL || grid->entry_count >= grid->max_entries) {
         return;
@@ -130,7 +130,7 @@ void spatial_hash_insert(SpatialHashGrid* grid, uint32_t drone_index,
     SpatialHashEntry* entry = &grid->entries[entry_idx];
 
     /* Insert at head of chain */
-    entry->drone_index = drone_index;
+    entry->agent_index = agent_index;
     entry->next = grid->cell_heads[hash];
     grid->cell_heads[hash] = entry_idx;
 }
@@ -152,7 +152,7 @@ void spatial_hash_query_cell(const SpatialHashGrid* grid,
     uint32_t entry_idx = grid->cell_heads[hash];
     while (entry_idx != SPATIAL_HASH_END && result->count < result->capacity) {
         const SpatialHashEntry* entry = &grid->entries[entry_idx];
-        result->indices[result->count++] = entry->drone_index;
+        result->indices[result->count++] = entry->agent_index;
         entry_idx = entry->next;
     }
 }
@@ -182,7 +182,7 @@ void spatial_hash_query_neighborhood(const SpatialHashGrid* grid,
                 uint32_t entry_idx = grid->cell_heads[hash];
                 while (entry_idx != SPATIAL_HASH_END && result->count < result->capacity) {
                     const SpatialHashEntry* entry = &grid->entries[entry_idx];
-                    result->indices[result->count++] = entry->drone_index;
+                    result->indices[result->count++] = entry->agent_index;
                     entry_idx = entry->next;
                 }
             }
@@ -194,9 +194,9 @@ void spatial_hash_query_neighborhood(const SpatialHashGrid* grid,
  * Section 3: Collision System Lifecycle
  * ============================================================================ */
 
-CollisionSystem* collision_create(Arena* arena, uint32_t max_drones,
-                                  float drone_radius, float cell_size) {
-    if (arena == NULL || max_drones == 0) {
+CollisionSystem* collision_create(Arena* arena, uint32_t max_agents,
+                                  float collision_radius, float cell_size) {
+    if (arena == NULL || max_agents == 0) {
         return NULL;
     }
 
@@ -207,7 +207,7 @@ CollisionSystem* collision_create(Arena* arena, uint32_t max_drones,
     }
 
     /* Create spatial hash */
-    sys->spatial_hash = spatial_hash_create(arena, max_drones, cell_size);
+    sys->spatial_hash = spatial_hash_create(arena, max_agents, cell_size);
     if (sys->spatial_hash == NULL) {
         return NULL;
     }
@@ -216,12 +216,12 @@ CollisionSystem* collision_create(Arena* arena, uint32_t max_drones,
     sys->scratch_arena = arena;
 
     /* Set collision parameters */
-    sys->drone_radius = drone_radius;
-    sys->drone_radius_sq = drone_radius * drone_radius;
-    sys->world_collision_margin = drone_radius;  /* Collision at surface - radius */
+    sys->collision_radius = collision_radius;
+    sys->collision_radius_sq = collision_radius * collision_radius;
+    sys->world_collision_margin = collision_radius;  /* Collision at surface - radius */
 
-    /* Allocate collision pairs (max_pairs = 2 * max_drones) */
-    sys->max_pairs = max_drones * 2;
+    /* Allocate collision pairs (max_pairs = 2 * max_agents) */
+    sys->max_pairs = max_agents * 2;
     sys->collision_pairs = arena_alloc_aligned(arena,
                                                sys->max_pairs * 2 * sizeof(uint32_t),
                                                32);
@@ -232,7 +232,7 @@ CollisionSystem* collision_create(Arena* arena, uint32_t max_drones,
 
     /* Allocate per-drone world collision flags */
     sys->drone_world_collision = arena_alloc_aligned(arena,
-                                                     max_drones * sizeof(uint8_t),
+                                                     max_agents * sizeof(uint8_t),
                                                      32);
     if (sys->drone_world_collision == NULL) {
         return NULL;
@@ -240,7 +240,7 @@ CollisionSystem* collision_create(Arena* arena, uint32_t max_drones,
 
     /* Allocate penetration depth array */
     sys->penetration_depth = arena_alloc_aligned(arena,
-                                                 max_drones * sizeof(float),
+                                                 max_agents * sizeof(float),
                                                  32);
     if (sys->penetration_depth == NULL) {
         return NULL;
@@ -248,13 +248,13 @@ CollisionSystem* collision_create(Arena* arena, uint32_t max_drones,
 
     /* Allocate collision normals array */
     sys->collision_normals = arena_alloc_aligned(arena,
-                                                 max_drones * sizeof(Vec3),
+                                                 max_agents * sizeof(Vec3),
                                                  16);
     if (sys->collision_normals == NULL) {
         return NULL;
     }
 
-    sys->max_drones = max_drones;
+    sys->max_agents = max_agents;
 
     /* Initialize to clean state */
     collision_reset(sys);
@@ -279,11 +279,11 @@ void collision_reset(CollisionSystem* sys) {
     sys->pair_count = 0;
 
     /* Clear world collision flags */
-    memset(sys->drone_world_collision, 0, sys->max_drones * sizeof(uint8_t));
+    memset(sys->drone_world_collision, 0, sys->max_agents * sizeof(uint8_t));
 
     /* Initialize penetration depth to large positive value (far from surface)
      * so first-frame physics doesn't erroneously trigger ground effect */
-    for (uint32_t i = 0; i < sys->max_drones; i++) {
+    for (uint32_t i = 0; i < sys->max_agents; i++) {
         sys->penetration_depth[i] = 100.0f;
     }
 }
@@ -293,7 +293,7 @@ void collision_reset(CollisionSystem* sys) {
  * ============================================================================ */
 
 void collision_build_spatial_hash(CollisionSystem* sys,
-                                  const DroneStateSOA* states,
+                                  const RigidBodyStateSOA* states,
                                   uint32_t count) {
     if (sys == NULL || states == NULL || count == 0) {
         return;
@@ -311,7 +311,7 @@ void collision_build_spatial_hash(CollisionSystem* sys,
 }
 
 void collision_detect_drone_drone(CollisionSystem* sys,
-                                  const DroneStateSOA* states,
+                                  const RigidBodyStateSOA* states,
                                   uint32_t count) {
     if (sys == NULL || states == NULL || count == 0) {
         return;
@@ -320,7 +320,7 @@ void collision_detect_drone_drone(CollisionSystem* sys,
     sys->pair_count = 0;
 
     /* Collision threshold: (2 * radius)^2 */
-    float radius_sum_sq = sys->drone_radius_sq * 4.0f;
+    float radius_sum_sq = sys->collision_radius_sq * 4.0f;
 
     /* For each drone */
     for (uint32_t i = 0; i < count; i++) {
@@ -343,7 +343,7 @@ void collision_detect_drone_drone(CollisionSystem* sys,
                     uint32_t entry_idx = sys->spatial_hash->cell_heads[hash];
                     while (entry_idx != SPATIAL_HASH_END) {
                         const SpatialHashEntry* entry = &sys->spatial_hash->entries[entry_idx];
-                        uint32_t j = entry->drone_index;
+                        uint32_t j = entry->agent_index;
 
                         /* Only check pairs once: i < j avoids duplicates */
                         if (i < j) {
@@ -373,7 +373,7 @@ void collision_detect_drone_drone(CollisionSystem* sys,
 }
 
 void collision_detect_drone_world(CollisionSystem* sys,
-                                  const DroneStateSOA* states,
+                                  const RigidBodyStateSOA* states,
                                   const WorldBrickMap* world,
                                   uint32_t count) {
     if (sys == NULL || states == NULL || world == NULL || count == 0) {
@@ -429,7 +429,7 @@ void collision_detect_drone_world(CollisionSystem* sys,
 }
 
 void collision_detect_all(CollisionSystem* sys,
-                          const DroneStateSOA* states,
+                          const RigidBodyStateSOA* states,
                           const WorldBrickMap* world,
                           uint32_t count) {
     if (sys == NULL || states == NULL) {
@@ -469,14 +469,14 @@ CollisionResults collision_get_results(const CollisionSystem* sys) {
     return results;
 }
 
-bool collision_drone_world_check(const CollisionSystem* sys, uint32_t drone_idx) {
-    if (sys == NULL || drone_idx >= sys->max_drones) {
+bool collision_drone_world_check(const CollisionSystem* sys, uint32_t agent_idx) {
+    if (sys == NULL || agent_idx >= sys->max_agents) {
         return false;
     }
-    return sys->drone_world_collision[drone_idx] != 0;
+    return sys->drone_world_collision[agent_idx] != 0;
 }
 
-uint32_t collision_get_pair(const CollisionSystem* sys, uint32_t drone_idx) {
+uint32_t collision_get_pair(const CollisionSystem* sys, uint32_t agent_idx) {
     if (sys == NULL) {
         return UINT32_MAX;
     }
@@ -484,10 +484,10 @@ uint32_t collision_get_pair(const CollisionSystem* sys, uint32_t drone_idx) {
     /* Search through collision pairs */
     for (uint32_t p = 0; p < sys->pair_count; p++) {
         uint32_t idx = p * 2;
-        if (sys->collision_pairs[idx] == drone_idx) {
+        if (sys->collision_pairs[idx] == agent_idx) {
             return sys->collision_pairs[idx + 1];
         }
-        if (sys->collision_pairs[idx + 1] == drone_idx) {
+        if (sys->collision_pairs[idx + 1] == agent_idx) {
             return sys->collision_pairs[idx];
         }
     }
@@ -500,7 +500,7 @@ uint32_t collision_get_pair(const CollisionSystem* sys, uint32_t drone_idx) {
  * ============================================================================ */
 
 void collision_apply_world_response(CollisionSystem* sys,
-                                    DroneStateSOA* states,
+                                    RigidBodyStateSOA* states,
                                     float restitution,
                                     float pushout_speed,
                                     uint32_t count) {
@@ -549,17 +549,22 @@ void collision_apply_world_response(CollisionSystem* sys,
 }
 
 void collision_apply_drone_response(CollisionSystem* sys,
-                                    DroneStateSOA* states,
-                                    const DroneParamsSOA* params,
+                                    RigidBodyStateSOA* states,
+                                    const RigidBodyParamsSOA* params,
                                     float restitution,
                                     uint32_t count) {
     if (sys == NULL || states == NULL || sys->pair_count == 0) {
         return;
     }
 
-    (void)count;  /* Used for bounds checking if needed */
+    /* Validate pair indices against drone count */
+    for (uint32_t p = 0; p < sys->pair_count; p++) {
+        FOUNDATION_ASSERT(sys->collision_pairs[p * 2] < count &&
+                          sys->collision_pairs[p * 2 + 1] < count,
+                          "collision pair index exceeds drone count");
+    }
 
-    float radius_sum = sys->drone_radius * 2.0f;
+    float radius_sum = sys->collision_radius * 2.0f;
 
     /* Process each collision pair */
     for (uint32_t p = 0; p < sys->pair_count; p++) {
@@ -598,6 +603,11 @@ void collision_apply_drone_response(CollisionSystem* sys,
         float mass_i = (params != NULL) ? params->mass[i] : 1.0f;
         float mass_j = (params != NULL) ? params->mass[j] : 1.0f;
         float total_mass = mass_i + mass_j;
+
+        /* Guard: skip pair if both masses are zero (avoid 0/0 = NaN) */
+        if (total_mass <= 0.0f) {
+            continue;
+        }
 
         /* Mass ratios for separation */
         float ratio_i = mass_j / total_mass;
@@ -647,8 +657,8 @@ void collision_apply_drone_response(CollisionSystem* sys,
 }
 
 void collision_apply_response(CollisionSystem* sys,
-                              DroneStateSOA* states,
-                              const DroneParamsSOA* params,
+                              RigidBodyStateSOA* states,
+                              const RigidBodyParamsSOA* params,
                               float restitution,
                               float separation_force,
                               uint32_t count) {
@@ -704,7 +714,7 @@ static bool knn_insert_sorted(uint32_t* indices, float* distances, uint32_t* cou
 }
 
 void collision_find_k_nearest(const CollisionSystem* sys,
-                              const DroneStateSOA* states,
+                              const RigidBodyStateSOA* states,
                               Vec3 position,
                               uint32_t k,
                               uint32_t* out_indices,
@@ -756,7 +766,7 @@ void collision_find_k_nearest(const CollisionSystem* sys,
                     uint32_t entry_idx = sys->spatial_hash->cell_heads[hash];
                     while (entry_idx != SPATIAL_HASH_END) {
                         const SpatialHashEntry* entry = &sys->spatial_hash->entries[entry_idx];
-                        uint32_t j = entry->drone_index;
+                        uint32_t j = entry->agent_index;
 
                         /* Compute squared distance */
                         float dx_pos = states->pos_x[j] - x;
@@ -785,18 +795,18 @@ void collision_find_k_nearest(const CollisionSystem* sys,
 }
 
 void collision_find_k_nearest_batch(const CollisionSystem* sys,
-                                    const DroneStateSOA* states,
-                                    uint32_t drone_count,
+                                    const RigidBodyStateSOA* states,
+                                    uint32_t agent_count,
                                     uint32_t k,
                                     uint32_t* out_indices,
                                     float* out_distances) {
-    if (sys == NULL || states == NULL || drone_count == 0 || k == 0 ||
+    if (sys == NULL || states == NULL || agent_count == 0 || k == 0 ||
         out_indices == NULL || out_distances == NULL) {
         return;
     }
 
     /* Process each drone */
-    for (uint32_t i = 0; i < drone_count; i++) {
+    for (uint32_t i = 0; i < agent_count; i++) {
         Vec3 pos = VEC3(states->pos_x[i], states->pos_y[i], states->pos_z[i]);
 
         uint32_t* idx_ptr = out_indices + (i * k);
@@ -823,7 +833,7 @@ void collision_find_k_nearest_batch(const CollisionSystem* sys,
                     uint32_t entry_idx = sys->spatial_hash->cell_heads[hash];
                     while (entry_idx != SPATIAL_HASH_END) {
                         const SpatialHashEntry* entry = &sys->spatial_hash->entries[entry_idx];
-                        uint32_t j = entry->drone_index;
+                        uint32_t j = entry->agent_index;
 
                         /* Skip self */
                         if (j != i) {
@@ -849,7 +859,7 @@ void collision_find_k_nearest_batch(const CollisionSystem* sys,
  * Section 8: Utility Functions
  * ============================================================================ */
 
-bool collision_check_pair(const DroneStateSOA* states,
+bool collision_check_pair(const RigidBodyStateSOA* states,
                           uint32_t idx_a, uint32_t idx_b,
                           float radius_sum_sq) {
     if (states == NULL) {
@@ -864,7 +874,7 @@ bool collision_check_pair(const DroneStateSOA* states,
     return dist_sq < radius_sum_sq;
 }
 
-Vec3 collision_compute_normal(const DroneStateSOA* states,
+Vec3 collision_compute_normal(const RigidBodyStateSOA* states,
                               uint32_t idx_a, uint32_t idx_b) {
     if (states == NULL) {
         return VEC3(1.0f, 0.0f, 0.0f);

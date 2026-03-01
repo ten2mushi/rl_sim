@@ -55,13 +55,13 @@ static Vec3* create_camera_rays(uint32_t width, uint32_t height,
 }
 
 /* CPU depth render for a single drone */
-static void cpu_depth_render(const WorldBrickMap* world, Vec3 drone_pos, Quat drone_quat,
+static void cpu_depth_render(const WorldBrickMap* world, Vec3 agent_pos, Quat drone_quat,
                               const Vec3* rays, uint32_t total_pixels,
                               float near_clip, float far_clip, float inv_depth_range,
                               float* output) {
     for (uint32_t p = 0; p < total_pixels; p++) {
         Vec3 world_dir = quat_rotate(drone_quat, rays[p]);
-        RayHit hit = world_raymarch(world, drone_pos, world_dir, far_clip);
+        RayHit hit = world_raymarch(world, agent_pos, world_dir, far_clip);
 
         float depth = 1.0f;
         if (hit.hit && hit.distance >= near_clip) {
@@ -83,16 +83,16 @@ extern GpuResult gpu_dispatch_raymarch(struct GpuSensorContext* ctx,
                                        GpuKernel* kernel,
                                        GpuBuffer* ray_table_buf,
                                        GpuBuffer* output_buf,
-                                       GpuBuffer* drone_idx_buf,
+                                       GpuBuffer* agent_idx_buf,
                                        const WorldBrickMap* world,
                                        RaymarchParams rp);
 
-extern struct GpuSensorContext* gpu_sensor_context_create(uint32_t max_drones);
+extern struct GpuSensorContext* gpu_sensor_context_create(uint32_t max_agents);
 extern void gpu_sensor_context_destroy(struct GpuSensorContext* ctx);
 extern GpuResult gpu_sensor_context_sync_frame(struct GpuSensorContext* ctx,
                                                 const WorldBrickMap* world,
-                                                const DroneStateSOA* drones,
-                                                uint32_t drone_count);
+                                                const RigidBodyStateSOA* drones,
+                                                uint32_t agent_count);
 extern GpuDevice* gpu_sensor_context_device(struct GpuSensorContext* ctx);
 extern GpuCommandQueue* gpu_sensor_context_queue(struct GpuSensorContext* ctx);
 
@@ -178,12 +178,12 @@ static void test_depth_comparison(const char* scene_name,
                                    WorldBrickMap* world,
                                    struct GpuSensorContext* gpu_ctx,
                                    GpuKernel* kernel,
-                                   uint32_t num_drones,
+                                   uint32_t num_agents,
                                    uint32_t width, uint32_t height,
                                    bool use_rotation) {
     char test_name[128];
     snprintf(test_name, sizeof(test_name), "depth_%s_%ux%u_%ud%s",
-             scene_name, width, height, num_drones,
+             scene_name, width, height, num_agents,
              use_rotation ? "_rot" : "");
     _th_run++;
     printf("  Running %s...", test_name);
@@ -200,11 +200,11 @@ static void test_depth_comparison(const char* scene_name,
     if (rays == NULL) { printf(" FAILED (line %d)\n", __LINE__); return; }
 
     Arena* drone_arena = arena_create(4 * 1024 * 1024);
-    DroneStateSOA* drones = drone_state_create(drone_arena, num_drones);
+    RigidBodyStateSOA* drones = rigid_body_state_create(drone_arena, num_agents);
     if (drones == NULL) { printf(" FAILED (line %d)\n", __LINE__); free(rays); arena_destroy(drone_arena); return; }
 
     /* Place drones at various positions */
-    for (uint32_t i = 0; i < num_drones; i++) {
+    for (uint32_t i = 0; i < num_agents; i++) {
         drones->pos_x[i] = -7.0f + (float)(i % 4) * 2.0f;
         drones->pos_y[i] = -3.0f + (float)((i / 4) % 4) * 2.0f;
         drones->pos_z[i] = 0.0f + (float)(i / 16) * 1.0f;
@@ -224,13 +224,13 @@ static void test_depth_comparison(const char* scene_name,
     }
 
     /* ---- CPU reference ---- */
-    float* cpu_output = malloc(num_drones * total_pixels * sizeof(float));
+    float* cpu_output = malloc(num_agents * total_pixels * sizeof(float));
     if (cpu_output == NULL) { printf(" FAILED (line %d)\n", __LINE__); free(rays); arena_destroy(drone_arena); return; }
 
-    uint32_t* indices = malloc(num_drones * sizeof(uint32_t));
-    for (uint32_t i = 0; i < num_drones; i++) indices[i] = i;
+    uint32_t* indices = malloc(num_agents * sizeof(uint32_t));
+    for (uint32_t i = 0; i < num_agents; i++) indices[i] = i;
 
-    for (uint32_t d = 0; d < num_drones; d++) {
+    for (uint32_t d = 0; d < num_agents; d++) {
         Vec3 pos = VEC3(drones->pos_x[d], drones->pos_y[d], drones->pos_z[d]);
         Quat q = QUAT(drones->quat_w[d], drones->quat_x[d],
                        drones->quat_y[d], drones->quat_z[d]);
@@ -240,7 +240,7 @@ static void test_depth_comparison(const char* scene_name,
     }
 
     /* ---- GPU render ---- */
-    GpuResult r = gpu_sensor_context_sync_frame(gpu_ctx, world, drones, num_drones);
+    GpuResult r = gpu_sensor_context_sync_frame(gpu_ctx, world, drones, num_agents);
     if (r != GPU_SUCCESS) {
         printf(" FAILED (line %d)\n", __LINE__);
         free(cpu_output); free(indices); free(rays);
@@ -259,18 +259,18 @@ static void test_depth_comparison(const char* scene_name,
     }
 
     GpuBuffer* output_buf = gpu_buffer_create(device,
-        num_drones * total_pixels * sizeof(float), GPU_MEMORY_SHARED);
+        num_agents * total_pixels * sizeof(float), GPU_MEMORY_SHARED);
     if (output_buf == NULL) { printf(" FAILED (line %d)\n", __LINE__); gpu_ray_table_destroy(&ray_table); free(cpu_output); free(indices); free(rays); arena_destroy(drone_arena); return; }
 
     GpuBuffer* idx_buf = gpu_buffer_create(device,
-        num_drones * sizeof(uint32_t), GPU_MEMORY_SHARED);
+        num_agents * sizeof(uint32_t), GPU_MEMORY_SHARED);
     if (idx_buf == NULL) { printf(" FAILED (line %d)\n", __LINE__); gpu_buffer_destroy(output_buf); gpu_ray_table_destroy(&ray_table); free(cpu_output); free(indices); free(rays); arena_destroy(drone_arena); return; }
-    gpu_buffer_upload(idx_buf, indices, num_drones * sizeof(uint32_t), 0);
+    gpu_buffer_upload(idx_buf, indices, num_agents * sizeof(uint32_t), 0);
 
     RaymarchParams rp = gpu_raymarch_params_for_depth(near_clip, far_clip);
     rp.image_width = width;
     rp.image_height = height;
-    rp.drone_count = num_drones;
+    rp.agent_count = num_agents;
 
     r = gpu_dispatch_raymarch(gpu_ctx, kernel, ray_table.rays,
                               output_buf, idx_buf, world, rp);
@@ -293,10 +293,10 @@ static void test_depth_comparison(const char* scene_name,
         return;
     }
 
-    float* gpu_output = malloc(num_drones * total_pixels * sizeof(float));
+    float* gpu_output = malloc(num_agents * total_pixels * sizeof(float));
     if (gpu_output == NULL) { printf(" FAILED (line %d)\n", __LINE__); gpu_buffer_destroy(output_buf); gpu_buffer_destroy(idx_buf); gpu_ray_table_destroy(&ray_table); free(cpu_output); free(indices); free(rays); arena_destroy(drone_arena); return; }
     r = gpu_buffer_readback(output_buf, gpu_output,
-                            num_drones * total_pixels * sizeof(float), 0);
+                            num_agents * total_pixels * sizeof(float), 0);
     if (r != GPU_SUCCESS) { printf(" FAILED (line %d)\n", __LINE__); free(gpu_output); gpu_buffer_destroy(output_buf); gpu_buffer_destroy(idx_buf); gpu_ray_table_destroy(&ray_table); free(cpu_output); free(indices); free(rays); arena_destroy(drone_arena); return; }
 
     /* ---- Compare ---- */
@@ -304,7 +304,7 @@ static void test_depth_comparison(const char* scene_name,
     uint32_t mismatch_count = 0;
     uint32_t nan_count = 0;
     uint32_t boundary_count = 0;
-    uint32_t total = num_drones * total_pixels;
+    uint32_t total = num_agents * total_pixels;
     float tolerance = 1e-3f;
 
     for (uint32_t i = 0; i < total; i++) {
@@ -345,10 +345,10 @@ static void test_depth_comparison(const char* scene_name,
         for (uint32_t i = 0; i < total && printed < 5; i++) {
             float err = fabsf(gpu_output[i] - cpu_output[i]);
             if (err > 1e-3f) {
-                uint32_t drone_id = i / total_pixels;
+                uint32_t agent_id = i / total_pixels;
                 uint32_t pixel = i % total_pixels;
                 printf("    pixel[drone=%u, p=%u]: cpu=%.6f gpu=%.6f err=%.6f\n",
-                       drone_id, pixel, cpu_output[i], gpu_output[i], err);
+                       agent_id, pixel, cpu_output[i], gpu_output[i], err);
                 printed++;
             }
         }
@@ -375,7 +375,7 @@ static void test_determinism(WorldBrickMap* world,
     printf("  Running determinism...");
     fflush(stdout);
 
-    uint32_t num_drones = 16;
+    uint32_t num_agents = 16;
     uint32_t width = 32, height = 32;
     uint32_t total_pixels = width * height;
     float near_clip = 0.1f, far_clip = 20.0f;
@@ -384,10 +384,10 @@ static void test_determinism(WorldBrickMap* world,
     if (rays == NULL) { printf(" FAILED (line %d)\n", __LINE__); return; }
 
     Arena* drone_arena = arena_create(4 * 1024 * 1024);
-    DroneStateSOA* drones = drone_state_create(drone_arena, num_drones);
+    RigidBodyStateSOA* drones = rigid_body_state_create(drone_arena, num_agents);
     if (drones == NULL) { printf(" FAILED (line %d)\n", __LINE__); free(rays); arena_destroy(drone_arena); return; }
 
-    for (uint32_t i = 0; i < num_drones; i++) {
+    for (uint32_t i = 0; i < num_agents; i++) {
         drones->pos_x[i] = -5.0f + (float)(i % 4) * 2.5f;
         drones->pos_y[i] = -4.0f + (float)((i / 4) % 4) * 2.5f;
         drones->pos_z[i] = 1.0f;
@@ -397,17 +397,17 @@ static void test_determinism(WorldBrickMap* world,
         drones->quat_z[i] = 0.0f;
     }
 
-    uint32_t* indices = malloc(num_drones * sizeof(uint32_t));
-    for (uint32_t i = 0; i < num_drones; i++) indices[i] = i;
+    uint32_t* indices = malloc(num_agents * sizeof(uint32_t));
+    for (uint32_t i = 0; i < num_agents; i++) indices[i] = i;
 
     GpuDevice* device = gpu_sensor_context_device(gpu_ctx);
-    gpu_sensor_context_sync_frame(gpu_ctx, world, drones, num_drones);
+    gpu_sensor_context_sync_frame(gpu_ctx, world, drones, num_agents);
 
     GpuRayTable ray_table = gpu_ray_table_create(device, rays, total_pixels);
-    GpuBuffer* idx_buf = gpu_buffer_create(device, num_drones * sizeof(uint32_t), GPU_MEMORY_SHARED);
-    gpu_buffer_upload(idx_buf, indices, num_drones * sizeof(uint32_t), 0);
+    GpuBuffer* idx_buf = gpu_buffer_create(device, num_agents * sizeof(uint32_t), GPU_MEMORY_SHARED);
+    gpu_buffer_upload(idx_buf, indices, num_agents * sizeof(uint32_t), 0);
 
-    size_t out_size = num_drones * total_pixels * sizeof(float);
+    size_t out_size = num_agents * total_pixels * sizeof(float);
     float* run1 = malloc(out_size);
     float* run2 = malloc(out_size);
 
@@ -416,7 +416,7 @@ static void test_determinism(WorldBrickMap* world,
         RaymarchParams rp = gpu_raymarch_params_for_depth(near_clip, far_clip);
         rp.image_width = width;
         rp.image_height = height;
-        rp.drone_count = num_drones;
+        rp.agent_count = num_agents;
 
         gpu_dispatch_raymarch(gpu_ctx, kernel, ray_table.rays,
                               output_buf, idx_buf, world, rp);
@@ -431,11 +431,11 @@ static void test_determinism(WorldBrickMap* world,
         printf(" PASSED (bit-exact across 2 runs)\n");
     } else {
         uint32_t diff_count = 0;
-        for (uint32_t i = 0; i < num_drones * total_pixels; i++) {
+        for (uint32_t i = 0; i < num_agents * total_pixels; i++) {
             if (run1[i] != run2[i]) diff_count++;
         }
         printf(" FAILED (line %d)\n", __LINE__);
-        printf("    (%u/%u values differ)\n", diff_count, num_drones * total_pixels);
+        printf("    (%u/%u values differ)\n", diff_count, num_agents * total_pixels);
     }
 
     gpu_buffer_destroy(idx_buf);

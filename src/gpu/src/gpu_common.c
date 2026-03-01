@@ -90,24 +90,24 @@ GpuSdfAtlas gpu_sdf_atlas_upload(GpuDevice* device,
     for (uint32_t i = 0; i < active_count; i++) {
         uint32_t page = i / ATLAS_PAGE_BRICKS;
         uint32_t offset = i % ATLAS_PAGE_BRICKS;
+        size_t dst_off = (size_t)i * BRICK_VOXELS;
+        size_t src_off = (size_t)offset * BRICK_VOXELS;
 
         /* Copy SDF data */
         if (page < world->page_count && world->sdf_pages[page] != NULL) {
-            memcpy(sdf_dst + (size_t)i * BRICK_VOXELS,
-                   world->sdf_pages[page] + (size_t)offset * BRICK_VOXELS,
+            memcpy(sdf_dst + dst_off, world->sdf_pages[page] + src_off,
                    BRICK_VOXELS);
         } else {
             /* Page not allocated - fill with +127 (outside) */
-            memset(sdf_dst + (size_t)i * BRICK_VOXELS, 127, BRICK_VOXELS);
+            memset(sdf_dst + dst_off, 127, BRICK_VOXELS);
         }
 
         /* Copy material data */
         if (page < world->page_count && world->material_pages[page] != NULL) {
-            memcpy(mat_dst + (size_t)i * BRICK_VOXELS,
-                   world->material_pages[page] + (size_t)offset * BRICK_VOXELS,
+            memcpy(mat_dst + dst_off, world->material_pages[page] + src_off,
                    BRICK_VOXELS);
         } else {
-            memset(mat_dst + (size_t)i * BRICK_VOXELS, 0, BRICK_VOXELS);
+            memset(mat_dst + dst_off, 0, BRICK_VOXELS);
         }
     }
 
@@ -198,8 +198,6 @@ GpuResult gpu_sdf_atlas_sync_dirty(GpuSdfAtlas* atlas,
     }
 
     /* Only re-upload dirty pages */
-    size_t page_sdf_bytes = (size_t)ATLAS_PAGE_BRICKS * BRICK_VOXELS;
-
     for (uint32_t page = 0; page < world->page_count; page++) {
         if (!dirty_pages[page]) continue;
 
@@ -253,11 +251,11 @@ void gpu_sdf_atlas_destroy(GpuSdfAtlas* atlas) {
  * Section 3: Drone Poses
  * ============================================================================ */
 
-GpuDronePoses gpu_drone_poses_create(GpuDevice* device, uint32_t max_drones) {
+GpuDronePoses gpu_agent_poses_create(GpuDevice* device, uint32_t max_agents) {
     GpuDronePoses poses = {0};
-    if (device == NULL || max_drones == 0) return poses;
+    if (device == NULL || max_agents == 0) return poses;
 
-    size_t float_size = max_drones * sizeof(float);
+    size_t float_size = max_agents * sizeof(float);
 
     poses.pos_x  = gpu_buffer_create(device, float_size, GPU_MEMORY_SHARED);
     poses.pos_y  = gpu_buffer_create(device, float_size, GPU_MEMORY_SHARED);
@@ -270,41 +268,41 @@ GpuDronePoses gpu_drone_poses_create(GpuDevice* device, uint32_t max_drones) {
     if (poses.pos_x == NULL || poses.pos_y == NULL || poses.pos_z == NULL ||
         poses.quat_w == NULL || poses.quat_x == NULL ||
         poses.quat_y == NULL || poses.quat_z == NULL) {
-        gpu_drone_poses_destroy(&poses);
+        gpu_agent_poses_destroy(&poses);
         memset(&poses, 0, sizeof(poses));
         return poses;
     }
 
-    poses.max_drones = max_drones;
+    poses.max_agents = max_agents;
     return poses;
 }
 
-GpuResult gpu_drone_poses_upload(GpuDronePoses* poses,
-                                  const struct DroneStateSOA* drones,
-                                  uint32_t drone_count) {
-    if (poses == NULL || drones == NULL || drone_count == 0) {
+GpuResult gpu_agent_poses_upload(GpuDronePoses* poses,
+                                  const struct RigidBodyStateSOA* agents,
+                                  uint32_t agent_count) {
+    if (poses == NULL || agents == NULL || agent_count == 0) {
         return GPU_ERROR_INVALID_ARG;
     }
-    if (drone_count > poses->max_drones) {
-        drone_count = poses->max_drones;
+    if (agent_count > poses->max_agents) {
+        agent_count = poses->max_agents;
     }
 
-    size_t copy_size = drone_count * sizeof(float);
+    size_t copy_size = agent_count * sizeof(float);
 
     /* Direct memcpy from SoA arrays to GPU buffers (zero-copy on shared) */
     GpuResult r;
-    r = gpu_buffer_upload(poses->pos_x,  drones->pos_x,  copy_size, 0); if (r != GPU_SUCCESS) return r;
-    r = gpu_buffer_upload(poses->pos_y,  drones->pos_y,  copy_size, 0); if (r != GPU_SUCCESS) return r;
-    r = gpu_buffer_upload(poses->pos_z,  drones->pos_z,  copy_size, 0); if (r != GPU_SUCCESS) return r;
-    r = gpu_buffer_upload(poses->quat_w, drones->quat_w, copy_size, 0); if (r != GPU_SUCCESS) return r;
-    r = gpu_buffer_upload(poses->quat_x, drones->quat_x, copy_size, 0); if (r != GPU_SUCCESS) return r;
-    r = gpu_buffer_upload(poses->quat_y, drones->quat_y, copy_size, 0); if (r != GPU_SUCCESS) return r;
-    r = gpu_buffer_upload(poses->quat_z, drones->quat_z, copy_size, 0); if (r != GPU_SUCCESS) return r;
+    r = gpu_buffer_upload(poses->pos_x,  agents->pos_x,  copy_size, 0); if (r != GPU_SUCCESS) return r;
+    r = gpu_buffer_upload(poses->pos_y,  agents->pos_y,  copy_size, 0); if (r != GPU_SUCCESS) return r;
+    r = gpu_buffer_upload(poses->pos_z,  agents->pos_z,  copy_size, 0); if (r != GPU_SUCCESS) return r;
+    r = gpu_buffer_upload(poses->quat_w, agents->quat_w, copy_size, 0); if (r != GPU_SUCCESS) return r;
+    r = gpu_buffer_upload(poses->quat_x, agents->quat_x, copy_size, 0); if (r != GPU_SUCCESS) return r;
+    r = gpu_buffer_upload(poses->quat_y, agents->quat_y, copy_size, 0); if (r != GPU_SUCCESS) return r;
+    r = gpu_buffer_upload(poses->quat_z, agents->quat_z, copy_size, 0); if (r != GPU_SUCCESS) return r;
 
     return GPU_SUCCESS;
 }
 
-void gpu_drone_poses_destroy(GpuDronePoses* poses) {
+void gpu_agent_poses_destroy(GpuDronePoses* poses) {
     if (poses == NULL) return;
     gpu_buffer_destroy(poses->pos_x);
     gpu_buffer_destroy(poses->pos_y);

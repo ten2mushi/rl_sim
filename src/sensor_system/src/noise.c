@@ -56,8 +56,8 @@ NoiseType noise_type_from_string(const char* str) {
 #define NOISE_SEED_MIX 0x9E3779B97F4A7C15ULL
 
 NoiseState* noise_state_create(Arena* arena, const NoiseConfig* config,
-                                uint32_t max_drones, uint32_t sensor_id) {
-    if (!arena || !config || config->group_count == 0 || max_drones == 0) {
+                                uint32_t max_agents, uint32_t sensor_id) {
+    if (!arena || !config || config->group_count == 0 || max_agents == 0) {
         return NULL;
     }
 
@@ -66,7 +66,7 @@ NoiseState* noise_state_create(Arena* arena, const NoiseConfig* config,
     memset(state, 0, sizeof(NoiseState));
 
     state->group_count = config->group_count;
-    state->max_drones = max_drones;
+    state->max_agents = max_agents;
 
     for (uint32_t g = 0; g < config->group_count; g++) {
         NoiseGroupState* gs = &state->groups[g];
@@ -77,11 +77,11 @@ NoiseState* noise_state_create(Arena* arena, const NoiseConfig* config,
                         + (uint64_t)g * 0xda3e39cb94b95bdbULL;
 
         /* Allocate per-drone RNGs */
-        gs->rngs = arena_alloc_array(arena, PCG32, max_drones);
+        gs->rngs = arena_alloc_array(arena, PCG32, max_agents);
         if (!gs->rngs) return NULL;
 
         /* Seed each drone's RNG independently */
-        for (uint32_t d = 0; d < max_drones; d++) {
+        for (uint32_t d = 0; d < max_agents; d++) {
             pcg32_seed_dual(&gs->rngs[d],
                            gs->base_seed,
                            (uint64_t)d * NOISE_SEED_MIX);
@@ -99,7 +99,7 @@ NoiseState* noise_state_create(Arena* arena, const NoiseConfig* config,
         }
 
         if (gs->drift_channels > 0) {
-            size_t drift_size = (size_t)max_drones * gs->drift_channels;
+            size_t drift_size = (size_t)max_agents * gs->drift_channels;
             gs->drift_state = arena_alloc_array(arena, float, drift_size);
             if (!gs->drift_state) return NULL;
             memset(gs->drift_state, 0, drift_size * sizeof(float));
@@ -109,20 +109,20 @@ NoiseState* noise_state_create(Arena* arena, const NoiseConfig* config,
     return state;
 }
 
-void noise_state_reset_drone(NoiseState* state, uint32_t drone_idx) {
-    if (!state || drone_idx >= state->max_drones) return;
+void noise_state_reset_drone(NoiseState* state, uint32_t agent_idx) {
+    if (!state || agent_idx >= state->max_agents) return;
 
     for (uint32_t g = 0; g < state->group_count; g++) {
         NoiseGroupState* gs = &state->groups[g];
 
         /* Reseed RNG */
-        pcg32_seed_dual(&gs->rngs[drone_idx],
+        pcg32_seed_dual(&gs->rngs[agent_idx],
                        gs->base_seed,
-                       (uint64_t)drone_idx * NOISE_SEED_MIX);
+                       (uint64_t)agent_idx * NOISE_SEED_MIX);
 
         /* Zero drift state */
         if (gs->drift_state && gs->drift_channels > 0) {
-            float* drift = gs->drift_state + (size_t)drone_idx * gs->drift_channels;
+            float* drift = gs->drift_state + (size_t)agent_idx * gs->drift_channels;
             memset(drift, 0, gs->drift_channels * sizeof(float));
         }
     }
@@ -130,7 +130,7 @@ void noise_state_reset_drone(NoiseState* state, uint32_t drone_idx) {
 
 void noise_state_reset_all(NoiseState* state) {
     if (!state) return;
-    for (uint32_t d = 0; d < state->max_drones; d++) {
+    for (uint32_t d = 0; d < state->max_agents; d++) {
         noise_state_reset_drone(state, d);
     }
 }
@@ -204,8 +204,7 @@ static void apply_dropout(float* channel_data, uint32_t count,
 static void apply_saturation(float* channel_data, uint32_t count,
                               float min_val, float max_val) {
     for (uint32_t c = 0; c < count; c++) {
-        if (channel_data[c] < min_val) channel_data[c] = min_val;
-        if (channel_data[c] > max_val) channel_data[c] = max_val;
+        channel_data[c] = clampf(channel_data[c], min_val, max_val);
     }
 }
 
@@ -214,9 +213,9 @@ static void apply_saturation(float* channel_data, uint32_t count,
  * ============================================================================ */
 
 void noise_apply(const NoiseConfig* config, NoiseState* state,
-                 float* data, const uint32_t* drone_indices,
-                 uint32_t drone_count, uint32_t output_size, float dt) {
-    if (!config || !data || config->group_count == 0 || drone_count == 0) {
+                 float* data, const uint32_t* agent_indices,
+                 uint32_t agent_count, uint32_t output_size, float dt) {
+    if (!config || !data || config->group_count == 0 || agent_count == 0) {
         return;
     }
 
@@ -229,17 +228,18 @@ void noise_apply(const NoiseConfig* config, NoiseState* state,
         /* Resolve channel range */
         uint32_t ch_start = pipe->channel_start;
         uint32_t ch_count = pipe->channel_count;
-        if (ch_count == 0) ch_count = output_size;  /* 0 = all channels */
+        if (ch_start >= output_size) continue;  /* Entirely out of range */
+        if (ch_count == 0) ch_count = output_size - ch_start;  /* 0 = remaining channels */
         if (ch_start + ch_count > output_size) {
             ch_count = output_size - ch_start;
         }
 
         /* Process each drone */
-        for (uint32_t i = 0; i < drone_count; i++) {
-            uint32_t drone_idx = drone_indices ? drone_indices[i] : i;
+        for (uint32_t i = 0; i < agent_count; i++) {
+            uint32_t agent_idx = agent_indices ? agent_indices[i] : i;
             float* drone_data = data + (size_t)i * output_size + ch_start;
 
-            PCG32* rng = (gs && gs->rngs) ? &gs->rngs[drone_idx] : NULL;
+            PCG32* rng = (gs && gs->rngs) ? &gs->rngs[agent_idx] : NULL;
 
             uint32_t drift_offset = 0;
 
@@ -262,7 +262,7 @@ void noise_apply(const NoiseConfig* config, NoiseState* state,
                     case NOISE_BIAS_DRIFT:
                         if (rng && gs && gs->drift_state) {
                             float* drift = gs->drift_state +
-                                          (size_t)drone_idx * gs->drift_channels + drift_offset;
+                                          (size_t)agent_idx * gs->drift_channels + drift_offset;
                             apply_bias_drift(drone_data, ch_count,
                                            stage->params.drift.tau,
                                            stage->params.drift.sigma,

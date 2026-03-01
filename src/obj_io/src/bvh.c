@@ -133,8 +133,8 @@ static int find_best_split(BuildContext* ctx, uint32_t start, uint32_t count,
 
     /* Try each axis */
     for (int axis = 0; axis < 3; axis++) {
-        float axis_min = (axis == 0) ? bounds_min.x : (axis == 1) ? bounds_min.y : bounds_min.z;
-        float axis_max = (axis == 0) ? bounds_max.x : (axis == 1) ? bounds_max.y : bounds_max.z;
+        float axis_min = (&bounds_min.x)[axis];
+        float axis_max = (&bounds_max.x)[axis];
 
         if (axis_max - axis_min < 1e-6f) continue;
 
@@ -154,7 +154,7 @@ static int find_best_split(BuildContext* ctx, uint32_t start, uint32_t count,
         /* Assign faces to bins */
         for (uint32_t i = start; i < start + count; i++) {
             Vec3 centroid = face_centroid(ctx->mesh, ctx->face_indices[i]);
-            float c = (axis == 0) ? centroid.x : (axis == 1) ? centroid.y : centroid.z;
+            float c = (&centroid.x)[axis];
 
             int bin = (int)((c - axis_min) / bin_width);
             if (bin < 0) bin = 0;
@@ -246,7 +246,7 @@ static uint32_t partition_faces(BuildContext* ctx, uint32_t start, uint32_t coun
 
     while (left <= right && right < start + count) {
         Vec3 centroid = face_centroid(ctx->mesh, ctx->face_indices[left]);
-        float c = (axis == 0) ? centroid.x : (axis == 1) ? centroid.y : centroid.z;
+        float c = (&centroid.x)[axis];
 
         if (c < pos) {
             left++;

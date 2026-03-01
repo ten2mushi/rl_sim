@@ -24,20 +24,20 @@
  * Helper: Create engine with GPU-capable sensor config
  * ============================================================================ */
 
-static BatchDroneEngine* create_gpu_test_engine(uint32_t num_envs,
-                                                  uint32_t drones_per_env,
+static BatchEngine* create_gpu_test_engine(uint32_t num_envs,
+                                                  uint32_t agents_per_env,
                                                   SensorConfig* sensors,
                                                   uint32_t num_sensors) {
     EngineConfig cfg = engine_config_default();
     cfg.num_envs = num_envs;
-    cfg.drones_per_env = drones_per_env;
+    cfg.agents_per_env = agents_per_env;
     cfg.persistent_arena_size = 256 * 1024 * 1024;
     cfg.frame_arena_size = 64 * 1024 * 1024;
     cfg.sensor_configs = sensors;
     cfg.num_sensor_configs = num_sensors;
 
     char error[ENGINE_ERROR_MSG_SIZE];
-    BatchDroneEngine* engine = engine_create(&cfg, error);
+    BatchEngine* engine = engine_create(&cfg, error);
     if (engine == NULL) {
         printf("\n    engine_create failed: %s", error);
     }
@@ -88,7 +88,7 @@ TEST(gpu_context_created) {
     sensors[2].camera.fov_vertical = (float)(M_PI / 2.0);
     sensors[2].camera.far_clip = 50.0f;
 
-    BatchDroneEngine* engine = create_gpu_test_engine(4, 4, sensors, 3);
+    BatchEngine* engine = create_gpu_test_engine(4, 4, sensors, 3);
     ASSERT_NOT_NULL(engine);
 
     if (gpu_is_available()) {
@@ -118,7 +118,7 @@ TEST(step_with_gpu_sensors) {
     sensors[2].camera.fov_vertical = (float)(M_PI / 2.0);
     sensors[2].camera.far_clip = 50.0f;
 
-    BatchDroneEngine* engine = create_gpu_test_engine(4, 4, sensors, 3);
+    BatchEngine* engine = create_gpu_test_engine(4, 4, sensors, 3);
     ASSERT_NOT_NULL(engine);
 
     /* Add geometry so camera has something to see */
@@ -138,7 +138,7 @@ TEST(step_with_gpu_sensors) {
     ASSERT_NOT_NULL(obs);
 
     uint32_t obs_dim = engine_get_obs_dim(engine);
-    uint32_t total = engine->config.total_drones;
+    uint32_t total = engine->config.total_agents;
     ASSERT_GT(obs_dim, 0);
     ASSERT_TRUE(has_nonzero(obs, (size_t)total * obs_dim));
 
@@ -164,7 +164,7 @@ TEST(gpu_timing_recorded) {
     sensors[1].camera.fov_vertical = (float)(M_PI / 2.0);
     sensors[1].camera.far_clip = 50.0f;
 
-    BatchDroneEngine* engine = create_gpu_test_engine(4, 4, sensors, 2);
+    BatchEngine* engine = create_gpu_test_engine(4, 4, sensors, 2);
     ASSERT_NOT_NULL(engine);
     add_test_geometry(engine->world);
 
@@ -208,7 +208,7 @@ TEST(mixed_gpu_cpu_sensors) {
     Vec3 tof_dir = {1.0f, 0.0f, 0.0f};
     sensors[4] = sensor_config_tof(tof_dir, 50.0f);
 
-    BatchDroneEngine* engine = create_gpu_test_engine(4, 4, sensors, 5);
+    BatchEngine* engine = create_gpu_test_engine(4, 4, sensors, 5);
     ASSERT_NOT_NULL(engine);
     add_test_geometry(engine->world);
 
@@ -223,7 +223,7 @@ TEST(mixed_gpu_cpu_sensors) {
     float* obs = engine_get_observations(engine);
     ASSERT_NOT_NULL(obs);
     uint32_t obs_dim = engine_get_obs_dim(engine);
-    uint32_t total = engine->config.total_drones;
+    uint32_t total = engine->config.total_agents;
 
     /* Check for sanity: obs should have values and no NaN */
     ASSERT_TRUE(has_nonzero(obs, (size_t)total * obs_dim));
@@ -248,7 +248,7 @@ TEST(sustained_gpu_steps) {
     sensors[1].camera.fov_vertical = (float)(M_PI / 2.0);
     sensors[1].camera.far_clip = 50.0f;
 
-    BatchDroneEngine* engine = create_gpu_test_engine(4, 4, sensors, 2);
+    BatchEngine* engine = create_gpu_test_engine(4, 4, sensors, 2);
     ASSERT_NOT_NULL(engine);
     add_test_geometry(engine->world);
 
@@ -265,7 +265,7 @@ TEST(sustained_gpu_steps) {
     float* obs = engine_get_observations(engine);
     ASSERT_NOT_NULL(obs);
     uint32_t obs_dim = engine_get_obs_dim(engine);
-    uint32_t total = engine->config.total_drones;
+    uint32_t total = engine->config.total_agents;
     int bad = count_nan_inf(obs, (size_t)total * obs_dim);
     ASSERT_MSG(bad == 0, "Found NaN/Inf after 100 steps");
 
@@ -287,7 +287,7 @@ TEST(step_no_reset_gpu) {
     sensors[1].camera.fov_vertical = (float)(M_PI / 2.0);
     sensors[1].camera.far_clip = 50.0f;
 
-    BatchDroneEngine* engine = create_gpu_test_engine(4, 4, sensors, 2);
+    BatchEngine* engine = create_gpu_test_engine(4, 4, sensors, 2);
     ASSERT_NOT_NULL(engine);
 
     engine_reset(engine);
@@ -317,7 +317,7 @@ TEST(scaling_64_drones) {
     sensors[1].camera.far_clip = 50.0f;
 
     /* 8 envs x 8 drones = 64 drones */
-    BatchDroneEngine* engine = create_gpu_test_engine(8, 8, sensors, 2);
+    BatchEngine* engine = create_gpu_test_engine(8, 8, sensors, 2);
     ASSERT_NOT_NULL(engine);
     /* No geometry - tests scaling without world obstacles */
 
@@ -337,7 +337,7 @@ TEST(scaling_64_drones) {
     /* Observations valid */
     float* obs = engine_get_observations(engine);
     uint32_t obs_dim = engine_get_obs_dim(engine);
-    uint32_t total = engine->config.total_drones;
+    uint32_t total = engine->config.total_agents;
     int bad = count_nan_inf(obs, (size_t)total * obs_dim);
     ASSERT_MSG(bad == 0, "Found NaN/Inf");
 
@@ -359,18 +359,18 @@ TEST(auto_reset_gpu) {
     sensors[1].camera.fov_vertical = (float)(M_PI / 2.0);
     sensors[1].camera.far_clip = 50.0f;
 
-    BatchDroneEngine* engine = create_gpu_test_engine(4, 4, sensors, 2);
+    BatchEngine* engine = create_gpu_test_engine(4, 4, sensors, 2);
     ASSERT_NOT_NULL(engine);
 
     engine_reset(engine);
 
     /* Force a drone out of bounds to trigger termination + auto-reset */
-    engine->states->pos_z[0] = engine->config.world_min.z - 20.0f;
+    engine->states->rigid_body.pos_z[0] = engine->config.world_min.z - 20.0f;
 
     engine_step(engine);
 
     /* After auto-reset, drone should be back in bounds */
-    ASSERT_TRUE(engine->states->pos_z[0] >= engine->config.world_min.z);
+    ASSERT_TRUE(engine->states->rigid_body.pos_z[0] >= engine->config.world_min.z);
 
     /* Run more steps to verify stability after reset */
     for (int i = 0; i < 10; i++) {
@@ -379,7 +379,7 @@ TEST(auto_reset_gpu) {
 
     float* obs = engine_get_observations(engine);
     uint32_t obs_dim = engine_get_obs_dim(engine);
-    uint32_t total = engine->config.total_drones;
+    uint32_t total = engine->config.total_agents;
     int bad = count_nan_inf(obs, (size_t)total * obs_dim);
     ASSERT_MSG(bad == 0, "Found NaN/Inf after auto-reset");
 
@@ -398,7 +398,7 @@ TEST(cpu_only_fallback) {
     sensors[1] = sensor_config_position();
     sensors[2] = sensor_config_velocity();
 
-    BatchDroneEngine* engine = create_gpu_test_engine(4, 4, sensors, 3);
+    BatchEngine* engine = create_gpu_test_engine(4, 4, sensors, 3);
     ASSERT_NOT_NULL(engine);
 
     engine_reset(engine);
@@ -411,7 +411,7 @@ TEST(cpu_only_fallback) {
     float* obs = engine_get_observations(engine);
     ASSERT_NOT_NULL(obs);
     uint32_t obs_dim = engine_get_obs_dim(engine);
-    uint32_t total = engine->config.total_drones;
+    uint32_t total = engine->config.total_agents;
     ASSERT_TRUE(has_nonzero(obs, (size_t)total * obs_dim));
 
     engine_destroy(engine);

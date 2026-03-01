@@ -33,7 +33,7 @@ TEST(config_zero_envs_rejected) {
 /* 1.3 Zero drones per env rejected */
 TEST(config_zero_drones_rejected) {
     EngineConfig cfg = engine_config_default();
-    cfg.drones_per_env = 0;
+    cfg.agents_per_env = 0;
     char error[ENGINE_ERROR_MSG_SIZE];
     ASSERT_NE(engine_config_validate(&cfg, error), 0);
     return 0;
@@ -90,7 +90,7 @@ TEST(config_default_values) {
     EngineConfig cfg = engine_config_default();
 
     ASSERT_EQ(cfg.num_envs, ENGINE_DEFAULT_NUM_ENVS);
-    ASSERT_EQ(cfg.drones_per_env, ENGINE_DEFAULT_DRONES_PER_ENV);
+    ASSERT_EQ(cfg.agents_per_env, ENGINE_DEFAULT_AGENTS_PER_ENV);
     ASSERT_FLOAT_NEAR(cfg.timestep, ENGINE_DEFAULT_TIMESTEP, 0.001f);
     ASSERT_EQ(cfg.physics_substeps, ENGINE_DEFAULT_PHYSICS_SUBSTEPS);
     ASSERT_FLOAT_NEAR(cfg.gravity, ENGINE_DEFAULT_GRAVITY, 0.01f);

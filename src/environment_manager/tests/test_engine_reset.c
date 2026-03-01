@@ -11,10 +11,10 @@
 #include "test_harness.h"
 
 /* Helper: Create a small test engine */
-static BatchDroneEngine* create_test_engine(uint32_t num_envs, uint32_t drones_per_env) {
+static BatchEngine* create_test_engine(uint32_t num_envs, uint32_t agents_per_env) {
     EngineConfig cfg = engine_config_default();
     cfg.num_envs = num_envs;
-    cfg.drones_per_env = drones_per_env;
+    cfg.agents_per_env = agents_per_env;
     cfg.persistent_arena_size = 128 * 1024 * 1024;
     cfg.frame_arena_size = 32 * 1024 * 1024;
 
@@ -28,14 +28,14 @@ static BatchDroneEngine* create_test_engine(uint32_t num_envs, uint32_t drones_p
 
 /* 5.1 Reset zeros velocities */
 TEST(reset_zeros_velocities) {
-    BatchDroneEngine* engine = create_test_engine(4, 4);
+    BatchEngine* engine = create_test_engine(4, 4);
     ASSERT_NOT_NULL(engine);
 
     engine_reset(engine);
 
     /* Apply actions to build velocity */
     float* actions = engine_get_actions(engine);
-    for (uint32_t i = 0; i < 16 * ENGINE_ACTION_DIM; i++) {
+    for (uint32_t i = 0; i < 16 * engine->action_dim; i++) {
         actions[i] = 1.0f;
     }
     for (int s = 0; s < 10; s++) {
@@ -46,9 +46,9 @@ TEST(reset_zeros_velocities) {
     engine_reset(engine);
 
     /* Velocities should be zero */
-    ASSERT_FLOAT_EQ(engine->states->vel_x[0], 0.0f);
-    ASSERT_FLOAT_EQ(engine->states->vel_y[0], 0.0f);
-    ASSERT_FLOAT_EQ(engine->states->vel_z[0], 0.0f);
+    ASSERT_FLOAT_EQ(engine->states->rigid_body.vel_x[0], 0.0f);
+    ASSERT_FLOAT_EQ(engine->states->rigid_body.vel_y[0], 0.0f);
+    ASSERT_FLOAT_EQ(engine->states->rigid_body.vel_z[0], 0.0f);
 
     engine_destroy(engine);
     return 0;
@@ -56,16 +56,16 @@ TEST(reset_zeros_velocities) {
 
 /* 5.2 Reset sets identity-ish orientation */
 TEST(reset_sets_orientation) {
-    BatchDroneEngine* engine = create_test_engine(4, 4);
+    BatchEngine* engine = create_test_engine(4, 4);
     ASSERT_NOT_NULL(engine);
 
     engine_reset(engine);
 
     /* Orientation should be near identity */
-    ASSERT_FLOAT_EQ(engine->states->quat_w[0], 1.0f);
-    ASSERT_FLOAT_EQ(engine->states->quat_x[0], 0.0f);
-    ASSERT_FLOAT_EQ(engine->states->quat_y[0], 0.0f);
-    ASSERT_FLOAT_EQ(engine->states->quat_z[0], 0.0f);
+    ASSERT_FLOAT_EQ(engine->states->rigid_body.quat_w[0], 1.0f);
+    ASSERT_FLOAT_EQ(engine->states->rigid_body.quat_x[0], 0.0f);
+    ASSERT_FLOAT_EQ(engine->states->rigid_body.quat_y[0], 0.0f);
+    ASSERT_FLOAT_EQ(engine->states->rigid_body.quat_z[0], 0.0f);
 
     engine_destroy(engine);
     return 0;
@@ -73,7 +73,7 @@ TEST(reset_sets_orientation) {
 
 /* 5.3 Reset clears done flags */
 TEST(reset_clears_done_flags) {
-    BatchDroneEngine* engine = create_test_engine(4, 4);
+    BatchEngine* engine = create_test_engine(4, 4);
     ASSERT_NOT_NULL(engine);
 
     engine_reset(engine);
@@ -95,7 +95,7 @@ TEST(reset_clears_done_flags) {
 
 /* 5.4 Reset clears truncation flags */
 TEST(reset_clears_truncation_flags) {
-    BatchDroneEngine* engine = create_test_engine(4, 4);
+    BatchEngine* engine = create_test_engine(4, 4);
     ASSERT_NOT_NULL(engine);
 
     engine_reset(engine);
@@ -117,7 +117,7 @@ TEST(reset_clears_truncation_flags) {
 
 /* 5.5 Reset zeroes episode returns */
 TEST(reset_zeroes_episode_returns) {
-    BatchDroneEngine* engine = create_test_engine(4, 4);
+    BatchEngine* engine = create_test_engine(4, 4);
     ASSERT_NOT_NULL(engine);
 
     engine_reset(engine);
@@ -140,7 +140,7 @@ TEST(reset_zeroes_episode_returns) {
 
 /* 5.6 Reset zeroes episode lengths */
 TEST(reset_zeroes_episode_lengths) {
-    BatchDroneEngine* engine = create_test_engine(4, 4);
+    BatchEngine* engine = create_test_engine(4, 4);
     ASSERT_NOT_NULL(engine);
 
     engine_reset(engine);
@@ -163,7 +163,7 @@ TEST(reset_zeroes_episode_lengths) {
 
 /* 5.7 Spawn positions within bounds */
 TEST(spawn_positions_within_bounds) {
-    BatchDroneEngine* engine = create_test_engine(4, 4);
+    BatchEngine* engine = create_test_engine(4, 4);
     ASSERT_NOT_NULL(engine);
 
     engine_reset(engine);
@@ -173,9 +173,9 @@ TEST(spawn_positions_within_bounds) {
     Vec3 wmax = engine->config.world_max;
 
     for (uint32_t i = 0; i < 16; i++) {
-        float x = engine->states->pos_x[i];
-        float y = engine->states->pos_y[i];
-        float z = engine->states->pos_z[i];
+        float x = engine->states->rigid_body.pos_x[i];
+        float y = engine->states->rigid_body.pos_y[i];
+        float z = engine->states->rigid_body.pos_z[i];
 
         ASSERT_TRUE(x >= wmin.x && x <= wmax.x);
         ASSERT_TRUE(y >= wmin.y && y <= wmax.y);
@@ -188,14 +188,14 @@ TEST(spawn_positions_within_bounds) {
 
 /* 5.8 Partial reset only affects specified envs */
 TEST(partial_reset_specific_envs) {
-    BatchDroneEngine* engine = create_test_engine(4, 4);
+    BatchEngine* engine = create_test_engine(4, 4);
     ASSERT_NOT_NULL(engine);
 
     engine_reset(engine);
 
     /* Step to change state */
     float* actions = engine_get_actions(engine);
-    for (uint32_t i = 0; i < 16 * ENGINE_ACTION_DIM; i++) {
+    for (uint32_t i = 0; i < 16 * engine->action_dim; i++) {
         actions[i] = 1.0f;
     }
     for (int s = 0; s < 5; s++) {
@@ -205,7 +205,7 @@ TEST(partial_reset_specific_envs) {
     /* Record positions of env 1 drones */
     float env1_x[4];
     for (uint32_t d = 0; d < 4; d++) {
-        env1_x[d] = engine->states->pos_x[4 + d];  /* Env 1 starts at index 4 */
+        env1_x[d] = engine->states->rigid_body.pos_x[4 + d];  /* Env 1 starts at index 4 */
     }
 
     /* Reset only env 0 */
@@ -214,7 +214,7 @@ TEST(partial_reset_specific_envs) {
 
     /* Env 0 drones should be reset (velocities zero) */
     for (uint32_t d = 0; d < 4; d++) {
-        ASSERT_FLOAT_EQ(engine->states->vel_x[d], 0.0f);
+        ASSERT_FLOAT_EQ(engine->states->rigid_body.vel_x[d], 0.0f);
     }
 
     /* Env 1 drones should be unchanged (approximately) */
@@ -226,7 +226,7 @@ TEST(partial_reset_specific_envs) {
 
 /* 5.9 Reset clears needs_reset flag */
 TEST(reset_clears_needs_reset) {
-    BatchDroneEngine* engine = create_test_engine(4, 4);
+    BatchEngine* engine = create_test_engine(4, 4);
     ASSERT_NOT_NULL(engine);
 
     ASSERT_TRUE(engine->needs_reset);
@@ -241,7 +241,7 @@ TEST(reset_clears_needs_reset) {
 
 /* 5.10 Multiple resets work */
 TEST(multiple_resets) {
-    BatchDroneEngine* engine = create_test_engine(4, 4);
+    BatchEngine* engine = create_test_engine(4, 4);
     ASSERT_NOT_NULL(engine);
 
     for (int r = 0; r < 10; r++) {

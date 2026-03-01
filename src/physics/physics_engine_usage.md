@@ -65,7 +65,7 @@ Main physics simulation system.
 | `forces_x/y/z` | `float*` | World-frame force buffers [capacity] |
 | `torques_x/y/z` | `float*` | Body-frame torque buffers [capacity] |
 | `step_count` | `uint64_t` | Total physics steps executed |
-| `total_integration_time` | `double` | Cumulative integration time (s) |
+| `total_integration_time` | `float` | Cumulative integration time (s) |
 | `max_drones` | `uint32_t` | Maximum drone capacity |
 
 ---
@@ -145,10 +145,14 @@ void physics_compute_derivatives(const DroneStateSOA* states, const DroneParamsS
 ### Motor Dynamics
 
 ```c
-void physics_motor_dynamics(const float* rpm_commands, float* actual_rpms, const DroneParamsSOA* params, float dt, uint32_t count)
+void physics_motor_dynamics(const float* cmd_0, const float* cmd_1,
+                            const float* cmd_2, const float* cmd_3,
+                            float* rpm_0, float* rpm_1,
+                            float* rpm_2, float* rpm_3,
+                            const DroneParamsSOA* params, float dt, uint32_t count)
 ```
-- **rpm_commands**: Target RPM commands [count × 4] (input)
-- **actual_rpms**: Current RPMs to update [count × 4] (modified in place)
+- **cmd_0..3**: Target RPM commands per motor [count] SoA (input)
+- **rpm_0..3**: Current RPMs per motor [count] SoA (modified in place)
 - **params**: Drone parameters with motor_tau, max_rpm
 - **dt**: Timestep in seconds
 - **count**: Number of drones
@@ -371,17 +375,21 @@ void update(PhysicsSystem* physics, DroneStateSOA* states,
 void custom_physics_step(PhysicsSystem* physics, DroneStateSOA* states,
                          DroneParamsSOA* params, float* actions,
                          uint32_t count, float dt) {
-    // Apply motor dynamics first
-    float rpm_commands[4096];
+    // Deinterleave actions into SoA command arrays
+    float cmd_0[count], cmd_1[count], cmd_2[count], cmd_3[count];
     for (uint32_t i = 0; i < count; i++) {
-        for (int m = 0; m < 4; m++) {
-            rpm_commands[i * 4 + m] = action_to_rpm(actions[i * 4 + m],
-                                                     params->max_rpm[i]);
-        }
+        float max_rpm = params->max_rpm[i];
+        cmd_0[i] = action_to_rpm(actions[i * 4 + 0], max_rpm);
+        cmd_1[i] = action_to_rpm(actions[i * 4 + 1], max_rpm);
+        cmd_2[i] = action_to_rpm(actions[i * 4 + 2], max_rpm);
+        cmd_3[i] = action_to_rpm(actions[i * 4 + 3], max_rpm);
     }
 
-    float* actual_rpms = &states->rpm_0[0];  // Interleaved access
-    physics_motor_dynamics(rpm_commands, actual_rpms, params, dt, count);
+    // Motor dynamics operates directly on SoA RPM arrays
+    physics_motor_dynamics(cmd_0, cmd_1, cmd_2, cmd_3,
+                           states->rpm_0, states->rpm_1,
+                           states->rpm_2, states->rpm_3,
+                           params, dt, count);
 
     // RK4 integration
     physics_rk4_integrate(physics, states, params, actions, dt, count);

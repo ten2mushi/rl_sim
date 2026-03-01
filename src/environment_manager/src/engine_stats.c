@@ -11,9 +11,9 @@
  * Statistics Collection
  * ============================================================================ */
 
-void engine_get_stats(const BatchDroneEngine* engine, EngineStats* stats) {
-    FOUNDATION_ASSERT(engine != NULL, "assertion failed");
-    FOUNDATION_ASSERT(stats != NULL, "assertion failed");
+void engine_get_stats(const BatchEngine* engine, EngineStats* stats) {
+    FOUNDATION_ASSERT(engine != NULL, "engine handle is NULL");
+    FOUNDATION_ASSERT(stats != NULL, "stats output is NULL");
 
     /* Timing statistics */
     stats->physics_time_ms = engine->physics_time_ms;
@@ -33,22 +33,22 @@ void engine_get_stats(const BatchDroneEngine* engine, EngineStats* stats) {
     stats->total_episodes = engine->total_episodes;
 
     /* Episode statistics (compute averages) */
-    uint32_t total_drones = engine->config.total_drones;
+    uint32_t total_agents = engine->config.total_agents;
     float total_return = 0.0f;
     uint32_t total_length = 0;
 
-    for (uint32_t i = 0; i < total_drones; i++) {
+    for (uint32_t i = 0; i < total_agents; i++) {
         total_return += engine->episode_returns[i];
         total_length += engine->episode_lengths[i];
     }
 
-    stats->avg_episode_return = total_return / (float)total_drones;
-    stats->avg_episode_length = (float)total_length / (float)total_drones;
+    stats->avg_episode_return = total_return / (float)total_agents;
+    stats->avg_episode_length = (float)total_length / (float)total_agents;
 
     /* Performance metrics */
     if (stats->avg_step_time_ms > 0.0) {
         stats->steps_per_second = 1000.0 / stats->avg_step_time_ms;
-        stats->drones_per_second = stats->steps_per_second * total_drones;
+        stats->drones_per_second = stats->steps_per_second * total_agents;
     } else {
         stats->steps_per_second = 0.0;
         stats->drones_per_second = 0.0;
@@ -63,8 +63,8 @@ void engine_get_stats(const BatchDroneEngine* engine, EngineStats* stats) {
  * Statistics Reset
  * ============================================================================ */
 
-void engine_reset_stats(BatchDroneEngine* engine) {
-    FOUNDATION_ASSERT(engine != NULL, "assertion failed");
+void engine_reset_stats(BatchEngine* engine) {
+    FOUNDATION_ASSERT(engine != NULL, "engine handle is NULL");
 
     engine->total_steps = 0;
     engine->total_episodes = 0;
@@ -79,8 +79,8 @@ void engine_reset_stats(BatchDroneEngine* engine) {
  * Statistics Printing
  * ============================================================================ */
 
-void engine_print_stats(const BatchDroneEngine* engine) {
-    FOUNDATION_ASSERT(engine != NULL, "assertion failed");
+void engine_print_stats(const BatchEngine* engine) {
+    FOUNDATION_ASSERT(engine != NULL, "engine handle is NULL");
 
     EngineStats stats;
     engine_get_stats(engine, &stats);
@@ -88,8 +88,8 @@ void engine_print_stats(const BatchDroneEngine* engine) {
     printf("\n=== Engine Statistics ===\n");
     printf("Configuration:\n");
     printf("  Environments: %u\n", engine->config.num_envs);
-    printf("  Drones/env:   %u\n", engine->config.drones_per_env);
-    printf("  Total drones: %u\n", engine->config.total_drones);
+    printf("  Drones/env:   %u\n", engine->config.agents_per_env);
+    printf("  Total drones: %u\n", engine->config.total_agents);
     printf("  Obs dim:      %u\n", engine->obs_dim);
     printf("  Action dim:   %u\n", engine->action_dim);
 

@@ -101,6 +101,8 @@ INCLUDE_DIRS = [
     str(SOURCE_DIR / "src" / "configuration" / "external"),
     str(SOURCE_DIR / "src" / "environment_manager" / "include"),
     str(SOURCE_DIR / "src" / "gpu" / "include"),
+    str(SOURCE_DIR / "src" / "rigid_body_state" / "include"),
+    str(SOURCE_DIR / "src" / "platform" / "include"),
     str(PUFFERLIB_INCLUDE),
 ]
 

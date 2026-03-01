@@ -100,6 +100,65 @@ The engine is organized in dependency layers (lower layers have no upward depend
 
 The Python layer (`drone.py` + `binding.c`) wraps the C engine as a Gymnasium-compatible environment with zero-copy NumPy observation buffers for PufferLib vectorized training.
 
+## Benchmarks
+
+Measured on Apple M3 Max. Build with `-DCMAKE_BUILD_TYPE=Release -DBUILD_BENCHMARKS=ON`.
+
+### Full Pipeline (GPU, 1024 drones)
+
+| Profile | Sensors | ms/step | drone-steps/s | FPS @1024 |
+|---------|---------|--------:|--------------:|----------:|
+| MINIMAL | IMU + position | 0.61 | 1,677,000 | 1,639 |
+| LIGHT | IMU + position + velocity | 0.61 | 1,677,000 | 1,639 |
+| NAVIGATION | LiDAR 2D-64 + IMU + position | 1.04 | 983,000 | 961 |
+| VISION | Depth cam 32 + IMU + position | 1.46 | 701,000 | 685 |
+| FULL | Depth cam 32 + LiDAR 2D + IMU + pos + vel | 1.63 | 628,000 | 614 |
+| STRESS | Depth cam 64 + LiDAR 3D + all sensors | 7.45 | 137,000 | 134 |
+
+Target: 1024 drones at 50 FPS (20 ms/step) — met with 13x headroom on VISION.
+
+### GPU vs CPU Speedup (256 drones)
+
+| Sensor Config | CPU (ms) | GPU (ms) | Speedup |
+|---------------|--------:|---------:|--------:|
+| Depth cam 32 + IMU | 69.0 | 1.3 | 55x |
+| Depth cam 64 + IMU | 273.1 | 1.1 | 241x |
+| RGB cam 32 + IMU | 69.1 | 1.0 | 72x |
+| LiDAR 3D 16x64 + IMU | 62.7 | 0.8 | 75x |
+| LiDAR 2D-64 + IMU | 2.0 | 0.8 | 2.5x |
+
+### GPU Scaling (VISION profile)
+
+| Drones | GPU (ms) | Speedup vs CPU | us/drone |
+|-------:|---------:|---------------:|---------:|
+| 64 | 0.81 | 23x | 3.21 |
+| 256 | 0.88 | 84x | 1.96 |
+| 512 | 1.08 | 139x | 1.96 |
+| 1024 | 1.48 | 201x | 1.44 |
+| 2048 | 2.80 | — | 1.37 |
+| 4096 | 5.48 | — | 1.34 |
+
+### CPU Subsystem Breakdown (1024 drones)
+
+| Subsystem | ms/step |
+|-----------|--------:|
+| Physics (RK4) | 0.15 |
+| Collision (spatial hash + SDF) | 0.045 |
+| Rewards (hover task) | 0.004 |
+| LiDAR 2D-64 | 4.66 |
+| Depth cam 32 | 129.1 |
+| Neighbor K=5 | 0.16 |
+
+### Physics Scaling
+
+| Drones | ms/step |
+|-------:|--------:|
+| 256 | 0.031 |
+| 512 | 0.070 |
+| 1024 | 0.149 |
+| 2048 | 0.373 |
+| 4096 | 1.004 |
+
 ## Usage
 
 ```python

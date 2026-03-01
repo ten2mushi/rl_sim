@@ -37,9 +37,9 @@ const char* sensor_type_name(SensorType type) {
  * Section 2: Lifecycle Functions
  * ============================================================================ */
 
-SensorSystem* sensor_system_create(Arena* arena, uint32_t max_drones,
+SensorSystem* sensor_system_create(Arena* arena, uint32_t max_agents,
                                    uint32_t max_sensors, size_t max_obs_dim) {
-    if (arena == NULL || max_drones == 0 || max_sensors == 0 || max_obs_dim == 0) {
+    if (arena == NULL || max_agents == 0 || max_sensors == 0 || max_obs_dim == 0) {
         return NULL;
     }
 
@@ -50,7 +50,7 @@ SensorSystem* sensor_system_create(Arena* arena, uint32_t max_drones,
     }
 
     memset(sys, 0, sizeof(SensorSystem));
-    sys->max_drones = max_drones;
+    sys->max_agents = max_agents;
     sys->max_sensors = max_sensors;
     sys->obs_dim = max_obs_dim;
     sys->dt = 0.02f;  /* Default 50Hz, overridden by engine */
@@ -58,7 +58,7 @@ SensorSystem* sensor_system_create(Arena* arena, uint32_t max_drones,
 
     /* Create scratch arena for per-frame allocations */
     /* Size: enough for batch outputs + temporary data */
-    size_t scratch_size = max_drones * max_obs_dim * sizeof(float) + 1024 * 1024;
+    size_t scratch_size = max_agents * max_obs_dim * sizeof(float) + 1024 * 1024;
     sys->scratch_arena = arena_create(scratch_size);
     if (sys->scratch_arena == NULL) {
         return NULL;
@@ -72,21 +72,21 @@ SensorSystem* sensor_system_create(Arena* arena, uint32_t max_drones,
     memset(sys->sensors, 0, sizeof(Sensor) * max_sensors);
 
     /* Allocate attachment arrays */
-    size_t attach_count = (size_t)max_drones * MAX_SENSORS_PER_DRONE;
+    size_t attach_count = (size_t)max_agents * MAX_SENSORS_PER_DRONE;
     sys->attachments = arena_alloc_array(arena, SensorAttachment, attach_count);
     if (sys->attachments == NULL) {
         return NULL;
     }
     memset(sys->attachments, 0, sizeof(SensorAttachment) * attach_count);
 
-    sys->attachment_counts = arena_alloc_array(arena, uint32_t, max_drones);
+    sys->attachment_counts = arena_alloc_array(arena, uint32_t, max_agents);
     if (sys->attachment_counts == NULL) {
         return NULL;
     }
-    memset(sys->attachment_counts, 0, sizeof(uint32_t) * max_drones);
+    memset(sys->attachment_counts, 0, sizeof(uint32_t) * max_agents);
 
     /* Allocate observation buffer (32-byte aligned for SIMD) */
-    size_t obs_buffer_size = (size_t)max_drones * max_obs_dim * sizeof(float);
+    size_t obs_buffer_size = (size_t)max_agents * max_obs_dim * sizeof(float);
     sys->observation_buffer = arena_alloc_aligned(arena, obs_buffer_size, SENSOR_OBS_ALIGNMENT);
     if (sys->observation_buffer == NULL) {
         return NULL;
@@ -99,7 +99,7 @@ SensorSystem* sensor_system_create(Arena* arena, uint32_t max_drones,
         return NULL;
     }
     for (uint32_t i = 0; i < max_sensors; i++) {
-        sys->drones_by_sensor[i] = arena_alloc_array(arena, uint32_t, max_drones);
+        sys->drones_by_sensor[i] = arena_alloc_array(arena, uint32_t, max_agents);
         if (sys->drones_by_sensor[i] == NULL) {
             return NULL;
         }
@@ -144,7 +144,7 @@ void sensor_system_reset(SensorSystem* sys) {
     }
 
     /* Clear observation buffer */
-    size_t obs_buffer_size = (size_t)sys->max_drones * sys->obs_dim * sizeof(float);
+    size_t obs_buffer_size = (size_t)sys->max_agents * sys->obs_dim * sizeof(float);
     memset(sys->observation_buffer, 0, obs_buffer_size);
 
     /* Reset scratch arena */
@@ -159,7 +159,7 @@ void sensor_system_reset(SensorSystem* sys) {
     for (uint32_t s = 0; s < sys->sensor_count; s++) {
         Sensor* sensor = &sys->sensors[s];
         if (sensor->vtable != NULL && sensor->vtable->reset != NULL) {
-            for (uint32_t d = 0; d < sys->max_drones; d++) {
+            for (uint32_t d = 0; d < sys->max_agents; d++) {
                 sensor->vtable->reset(sensor, d);
             }
         }
@@ -248,26 +248,26 @@ uint32_t sensor_system_create_sensor(SensorSystem* sys, const SensorConfig* conf
     if (sensor->noise_config.group_count > 0) {
         sensor->noise_state = noise_state_create(sys->persistent_arena,
                                                   &sensor->noise_config,
-                                                  sys->max_drones, sensor->sensor_id);
+                                                  sys->max_agents, sensor->sensor_id);
     }
 
     sys->sensor_count++;
     return idx;
 }
 
-uint32_t sensor_system_attach(SensorSystem* sys, uint32_t drone_idx, uint32_t sensor_idx) {
-    if (sys == NULL || drone_idx >= sys->max_drones || sensor_idx >= sys->sensor_count) {
+uint32_t sensor_system_attach(SensorSystem* sys, uint32_t agent_idx, uint32_t sensor_idx) {
+    if (sys == NULL || agent_idx >= sys->max_agents || sensor_idx >= sys->sensor_count) {
         return UINT32_MAX;
     }
 
-    uint32_t attach_count = sys->attachment_counts[drone_idx];
+    uint32_t attach_count = sys->attachment_counts[agent_idx];
     if (attach_count >= MAX_SENSORS_PER_DRONE) {
         return UINT32_MAX;
     }
 
     /* Compute output offset based on existing attachments */
     uint32_t output_offset = 0;
-    uint32_t base_idx = drone_idx * MAX_SENSORS_PER_DRONE;
+    uint32_t base_idx = agent_idx * MAX_SENSORS_PER_DRONE;
     for (uint32_t i = 0; i < attach_count; i++) {
         output_offset += (uint32_t)sys->attachments[base_idx + i].output_size;
     }
@@ -284,23 +284,23 @@ uint32_t sensor_system_attach(SensorSystem* sys, uint32_t drone_idx, uint32_t se
     attach->output_offset = output_offset;
     attach->output_size = sensor->output_size;
 
-    sys->attachment_counts[drone_idx] = attach_count + 1;
+    sys->attachment_counts[agent_idx] = attach_count + 1;
 
     return output_offset;
 }
 
-void sensor_system_detach(SensorSystem* sys, uint32_t drone_idx, uint32_t attachment_idx) {
-    if (sys == NULL || drone_idx >= sys->max_drones) {
+void sensor_system_detach(SensorSystem* sys, uint32_t agent_idx, uint32_t attachment_idx) {
+    if (sys == NULL || agent_idx >= sys->max_agents) {
         return;
     }
 
-    uint32_t attach_count = sys->attachment_counts[drone_idx];
+    uint32_t attach_count = sys->attachment_counts[agent_idx];
     if (attachment_idx >= attach_count) {
         return;
     }
 
     /* Shift remaining attachments down */
-    uint32_t base_idx = drone_idx * MAX_SENSORS_PER_DRONE;
+    uint32_t base_idx = agent_idx * MAX_SENSORS_PER_DRONE;
 
     /* Recalculate output offsets for shifted attachments */
     uint32_t new_offset = 0;
@@ -319,7 +319,7 @@ void sensor_system_detach(SensorSystem* sys, uint32_t drone_idx, uint32_t attach
     /* Clear last slot */
     memset(&sys->attachments[base_idx + attach_count - 1], 0, sizeof(SensorAttachment));
 
-    sys->attachment_counts[drone_idx] = attach_count - 1;
+    sys->attachment_counts[agent_idx] = attach_count - 1;
 }
 
 Sensor* sensor_system_get_sensor(SensorSystem* sys, uint32_t sensor_idx) {
@@ -329,28 +329,62 @@ Sensor* sensor_system_get_sensor(SensorSystem* sys, uint32_t sensor_idx) {
     return &sys->sensors[sensor_idx];
 }
 
-uint32_t sensor_system_get_attachment_count(const SensorSystem* sys, uint32_t drone_idx) {
-    if (sys == NULL || drone_idx >= sys->max_drones) {
+uint32_t sensor_system_get_attachment_count(const SensorSystem* sys, uint32_t agent_idx) {
+    if (sys == NULL || agent_idx >= sys->max_agents) {
         return 0;
     }
-    return sys->attachment_counts[drone_idx];
+    return sys->attachment_counts[agent_idx];
 }
 
 /* ============================================================================
- * Section 5: Batch Processing Functions
+ * Section 5: Batch Processing Helpers
  * ============================================================================ */
 
-void sensor_system_sample_all(SensorSystem* sys, const DroneStateSOA* drones,
-                              const struct WorldBrickMap* world,
-                              const struct CollisionSystem* collision,
-                              uint32_t drone_count) {
-    if (sys == NULL || drones == NULL || drone_count == 0) {
+/**
+ * Scatter sensor output from a contiguous compute buffer into per-drone
+ * observation slots.
+ */
+static void scatter_sensor_output(const SensorSystem* sys, uint32_t sensor_idx,
+                                   const float* output, const uint32_t* agent_indices,
+                                   uint32_t count, size_t output_size) {
+    for (uint32_t i = 0; i < count; i++) {
+        uint32_t agent_idx = agent_indices[i];
+        uint32_t base_idx = agent_idx * MAX_SENSORS_PER_DRONE;
+        uint32_t attach_count = sys->attachment_counts[agent_idx];
+
+        for (uint32_t a = 0; a < attach_count; a++) {
+            if (sys->attachments[base_idx + a].sensor_idx == sensor_idx) {
+                float* dst = sys->observation_buffer +
+                             agent_idx * sys->obs_dim +
+                             sys->attachments[base_idx + a].output_offset;
+                memcpy(dst, output + i * output_size,
+                       output_size * sizeof(float));
+                break;
+            }
+        }
+    }
+}
+
+/* ============================================================================
+ * Section 5b: Batch Processing Functions
+ * ============================================================================ */
+
+/**
+ * Internal batch sampling shared by sample_all and sample_cpu_only.
+ * When skip_gpu_sensors is true, sensors with a GPU batch_sample path are
+ * skipped and ctx.gpu is forced to NULL.
+ */
+static void sample_sensors_internal(SensorSystem* sys, const RigidBodyStateSOA* agents,
+                                    const struct WorldBrickMap* world,
+                                    const struct CollisionSystem* collision,
+                                    uint32_t agent_count, bool skip_gpu_sensors) {
+    if (sys == NULL || agents == NULL || agent_count == 0) {
         return;
     }
 
     /* Clamp drone count to max */
-    if (drone_count > sys->max_drones) {
-        drone_count = sys->max_drones;
+    if (agent_count > sys->max_agents) {
+        agent_count = sys->max_agents;
     }
 
     /* Phase 1: Group drones by sensor type */
@@ -358,7 +392,7 @@ void sensor_system_sample_all(SensorSystem* sys, const DroneStateSOA* drones,
         sys->drones_per_sensor[i] = 0;
     }
 
-    for (uint32_t d = 0; d < drone_count; d++) {
+    for (uint32_t d = 0; d < agent_count; d++) {
         uint32_t attach_count = sys->attachment_counts[d];
         uint32_t base_idx = d * MAX_SENSORS_PER_DRONE;
 
@@ -372,20 +406,29 @@ void sensor_system_sample_all(SensorSystem* sys, const DroneStateSOA* drones,
 
     /* Phase 2: Process each sensor in batch (SINGLE vtable dispatch per type) */
     SensorContext ctx;
-    ctx.drones = drones;
+    ctx.agents = agents;
     ctx.world = world;
     ctx.collision = collision;
     ctx.scratch = sys->scratch_arena;
+    if (skip_gpu_sensors) {
+        ctx.gpu = NULL;
+    }
 
     for (uint32_t s = 0; s < sys->sensor_count; s++) {
+        Sensor* sensor = &sys->sensors[s];
+
+        /* Skip sensors that have GPU acceleration when in CPU-only mode */
+        if (skip_gpu_sensors && sensor->vtable->batch_sample_gpu != NULL) {
+            continue;
+        }
+
         uint32_t count = sys->drones_per_sensor[s];
         if (count == 0) {
             continue;
         }
 
-        Sensor* sensor = &sys->sensors[s];
-        ctx.drone_indices = sys->drones_by_sensor[s];
-        ctx.drone_count = count;
+        ctx.agent_indices = sys->drones_by_sensor[s];
+        ctx.agent_count = count;
 
         /* Allocate batch output from scratch arena */
         size_t batch_size = count * sensor->output_size * sizeof(float);
@@ -402,147 +445,50 @@ void sensor_system_sample_all(SensorSystem* sys, const DroneStateSOA* drones,
         /* Apply composable noise pipeline to batch output */
         if (sensor->noise_state != NULL) {
             noise_apply(&sensor->noise_config, sensor->noise_state,
-                        output, ctx.drone_indices, count,
+                        output, ctx.agent_indices, count,
                         (uint32_t)sensor->output_size, sys->dt);
         }
 
         /* Scatter to per-drone observation buffers */
-        for (uint32_t i = 0; i < count; i++) {
-            uint32_t drone_idx = ctx.drone_indices[i];
-            uint32_t base_idx = drone_idx * MAX_SENSORS_PER_DRONE;
-            uint32_t attach_count = sys->attachment_counts[drone_idx];
-
-            /* Find the attachment for this sensor */
-            for (uint32_t a = 0; a < attach_count; a++) {
-                if (sys->attachments[base_idx + a].sensor_idx == s) {
-                    float* dst = sys->observation_buffer +
-                                 drone_idx * sys->obs_dim +
-                                 sys->attachments[base_idx + a].output_offset;
-                    memcpy(dst, output + i * sensor->output_size,
-                           sensor->output_size * sizeof(float));
-                    break;
-                }
-            }
-        }
+        scatter_sensor_output(sys, s, output, ctx.agent_indices,
+                              count, sensor->output_size);
     }
 
     /* Reset scratch arena for next frame */
     arena_reset(sys->scratch_arena);
 }
 
-void sensor_system_sample_cpu_only(SensorSystem* sys, const DroneStateSOA* drones,
+void sensor_system_sample_all(SensorSystem* sys, const RigidBodyStateSOA* agents,
+                              const struct WorldBrickMap* world,
+                              const struct CollisionSystem* collision,
+                              uint32_t agent_count) {
+    sample_sensors_internal(sys, agents, world, collision, agent_count, false);
+}
+
+void sensor_system_sample_cpu_only(SensorSystem* sys, const RigidBodyStateSOA* agents,
                                     const struct WorldBrickMap* world,
                                     const struct CollisionSystem* collision,
-                                    uint32_t drone_count) {
-    if (sys == NULL || drones == NULL || drone_count == 0) {
-        return;
-    }
-
-    /* Clamp drone count to max */
-    if (drone_count > sys->max_drones) {
-        drone_count = sys->max_drones;
-    }
-
-    /* Phase 1: Group drones by sensor type (same as sample_all) */
-    for (uint32_t i = 0; i < sys->sensor_count; i++) {
-        sys->drones_per_sensor[i] = 0;
-    }
-
-    for (uint32_t d = 0; d < drone_count; d++) {
-        uint32_t attach_count = sys->attachment_counts[d];
-        uint32_t base_idx = d * MAX_SENSORS_PER_DRONE;
-
-        for (uint32_t a = 0; a < attach_count; a++) {
-            uint32_t sensor_idx = sys->attachments[base_idx + a].sensor_idx;
-            uint32_t list_idx = sys->drones_per_sensor[sensor_idx];
-            sys->drones_by_sensor[sensor_idx][list_idx] = d;
-            sys->drones_per_sensor[sensor_idx] = list_idx + 1;
-        }
-    }
-
-    /* Phase 2: Process only CPU sensors (skip GPU-accelerated types) */
-    SensorContext ctx;
-    ctx.drones = drones;
-    ctx.world = world;
-    ctx.collision = collision;
-    ctx.scratch = sys->scratch_arena;
-    ctx.gpu = NULL;
-
-    for (uint32_t s = 0; s < sys->sensor_count; s++) {
-        Sensor* sensor = &sys->sensors[s];
-
-        /* Skip sensors that have GPU acceleration */
-        if (sensor->vtable->batch_sample_gpu != NULL) {
-            continue;
-        }
-
-        uint32_t count = sys->drones_per_sensor[s];
-        if (count == 0) {
-            continue;
-        }
-
-        ctx.drone_indices = sys->drones_by_sensor[s];
-        ctx.drone_count = count;
-
-        /* Allocate batch output from scratch arena */
-        size_t batch_size = count * sensor->output_size * sizeof(float);
-        float* output = arena_alloc_aligned(sys->scratch_arena, batch_size, SENSOR_OBS_ALIGNMENT);
-        if (output == NULL) {
-            continue;
-        }
-
-        /* ONE vtable call processes ALL drones with this sensor */
-        if (sensor->vtable->batch_sample != NULL) {
-            sensor->vtable->batch_sample(sensor, &ctx, output);
-        }
-
-        /* Apply composable noise pipeline to batch output */
-        if (sensor->noise_state != NULL) {
-            noise_apply(&sensor->noise_config, sensor->noise_state,
-                        output, ctx.drone_indices, count,
-                        (uint32_t)sensor->output_size, sys->dt);
-        }
-
-        /* Scatter to per-drone observation buffers */
-        for (uint32_t i = 0; i < count; i++) {
-            uint32_t drone_idx = ctx.drone_indices[i];
-            uint32_t base_idx = drone_idx * MAX_SENSORS_PER_DRONE;
-            uint32_t attach_count = sys->attachment_counts[drone_idx];
-
-            for (uint32_t a = 0; a < attach_count; a++) {
-                if (sys->attachments[base_idx + a].sensor_idx == s) {
-                    float* dst = sys->observation_buffer +
-                                 drone_idx * sys->obs_dim +
-                                 sys->attachments[base_idx + a].output_offset;
-                    memcpy(dst, output + i * sensor->output_size,
-                           sensor->output_size * sizeof(float));
-                    break;
-                }
-            }
-        }
-    }
-
-    /* Reset scratch arena for next frame */
-    arena_reset(sys->scratch_arena);
+                                    uint32_t agent_count) {
+    sample_sensors_internal(sys, agents, world, collision, agent_count, true);
 }
 
 void sensor_system_sample_sensor(SensorSystem* sys, uint32_t sensor_idx,
-                                 const DroneStateSOA* drones,
+                                 const RigidBodyStateSOA* agents,
                                  const struct WorldBrickMap* world,
                                  const struct CollisionSystem* collision,
-                                 uint32_t drone_count) {
-    if (sys == NULL || drones == NULL || sensor_idx >= sys->sensor_count || drone_count == 0) {
+                                 uint32_t agent_count) {
+    if (sys == NULL || agents == NULL || sensor_idx >= sys->sensor_count || agent_count == 0) {
         return;
     }
 
-    if (drone_count > sys->max_drones) {
-        drone_count = sys->max_drones;
+    if (agent_count > sys->max_agents) {
+        agent_count = sys->max_agents;
     }
 
     /* Build drone list for this specific sensor */
     sys->drones_per_sensor[sensor_idx] = 0;
 
-    for (uint32_t d = 0; d < drone_count; d++) {
+    for (uint32_t d = 0; d < agent_count; d++) {
         uint32_t attach_count = sys->attachment_counts[d];
         uint32_t base_idx = d * MAX_SENSORS_PER_DRONE;
 
@@ -565,9 +511,9 @@ void sensor_system_sample_sensor(SensorSystem* sys, uint32_t sensor_idx,
 
     /* Create context */
     SensorContext ctx;
-    ctx.drones = drones;
-    ctx.drone_indices = sys->drones_by_sensor[sensor_idx];
-    ctx.drone_count = count;
+    ctx.agents = agents;
+    ctx.agent_indices = sys->drones_by_sensor[sensor_idx];
+    ctx.agent_count = count;
     ctx.world = world;
     ctx.collision = collision;
     ctx.scratch = sys->scratch_arena;
@@ -585,22 +531,8 @@ void sensor_system_sample_sensor(SensorSystem* sys, uint32_t sensor_idx,
     }
 
     /* Scatter to observation buffers */
-    for (uint32_t i = 0; i < count; i++) {
-        uint32_t drone_idx = ctx.drone_indices[i];
-        uint32_t base_idx = drone_idx * MAX_SENSORS_PER_DRONE;
-        uint32_t attach_count = sys->attachment_counts[drone_idx];
-
-        for (uint32_t a = 0; a < attach_count; a++) {
-            if (sys->attachments[base_idx + a].sensor_idx == sensor_idx) {
-                float* dst = sys->observation_buffer +
-                             drone_idx * sys->obs_dim +
-                             sys->attachments[base_idx + a].output_offset;
-                memcpy(dst, output + i * sensor->output_size,
-                       sensor->output_size * sizeof(float));
-                break;
-            }
-        }
-    }
+    scatter_sensor_output(sys, sensor_idx, output, ctx.agent_indices,
+                          count, sensor->output_size);
 
     arena_reset(sys->scratch_arena);
 }
@@ -630,18 +562,18 @@ size_t sensor_system_get_obs_dim(const SensorSystem* sys) {
     return sys->obs_dim;
 }
 
-float* sensor_system_get_drone_obs(SensorSystem* sys, uint32_t drone_idx) {
-    if (sys == NULL || drone_idx >= sys->max_drones) {
+float* sensor_system_get_drone_obs(SensorSystem* sys, uint32_t agent_idx) {
+    if (sys == NULL || agent_idx >= sys->max_agents) {
         return NULL;
     }
-    return sys->observation_buffer + drone_idx * sys->obs_dim;
+    return sys->observation_buffer + agent_idx * sys->obs_dim;
 }
 
-const float* sensor_system_get_drone_obs_const(const SensorSystem* sys, uint32_t drone_idx) {
-    if (sys == NULL || drone_idx >= sys->max_drones) {
+const float* sensor_system_get_drone_obs_const(const SensorSystem* sys, uint32_t agent_idx) {
+    if (sys == NULL || agent_idx >= sys->max_agents) {
         return NULL;
     }
-    return sys->observation_buffer + drone_idx * sys->obs_dim;
+    return sys->observation_buffer + agent_idx * sys->obs_dim;
 }
 
 void sensor_system_set_external_buffer(SensorSystem* sys, float* buffer) {
@@ -779,7 +711,7 @@ SensorConfig sensor_config_velocity(void) {
  * Section 8: Utility Functions
  * ============================================================================ */
 
-size_t sensor_system_memory_size(uint32_t max_drones, uint32_t max_sensors,
+size_t sensor_system_memory_size(uint32_t max_agents, uint32_t max_sensors,
                                  size_t max_obs_dim) {
     size_t total = 0;
 
@@ -790,17 +722,17 @@ size_t sensor_system_memory_size(uint32_t max_drones, uint32_t max_sensors,
     total += sizeof(Sensor) * max_sensors;
 
     /* Attachments */
-    total += sizeof(SensorAttachment) * max_drones * MAX_SENSORS_PER_DRONE;
+    total += sizeof(SensorAttachment) * max_agents * MAX_SENSORS_PER_DRONE;
 
     /* Attachment counts */
-    total += sizeof(uint32_t) * max_drones;
+    total += sizeof(uint32_t) * max_agents;
 
     /* Observation buffer (with alignment padding) */
-    total += max_drones * max_obs_dim * sizeof(float) + SENSOR_OBS_ALIGNMENT;
+    total += max_agents * max_obs_dim * sizeof(float) + SENSOR_OBS_ALIGNMENT;
 
     /* Drones-by-sensor lists */
     total += sizeof(uint32_t*) * max_sensors;
-    total += sizeof(uint32_t) * max_sensors * max_drones;
+    total += sizeof(uint32_t) * max_sensors * max_agents;
 
     /* Drones-per-sensor counts */
     total += sizeof(uint32_t) * max_sensors;
@@ -808,14 +740,14 @@ size_t sensor_system_memory_size(uint32_t max_drones, uint32_t max_sensors,
     return total;
 }
 
-size_t sensor_system_compute_obs_dim(const SensorSystem* sys, uint32_t drone_idx) {
-    if (sys == NULL || drone_idx >= sys->max_drones) {
+size_t sensor_system_compute_obs_dim(const SensorSystem* sys, uint32_t agent_idx) {
+    if (sys == NULL || agent_idx >= sys->max_agents) {
         return 0;
     }
 
     size_t total = 0;
-    uint32_t attach_count = sys->attachment_counts[drone_idx];
-    uint32_t base_idx = drone_idx * MAX_SENSORS_PER_DRONE;
+    uint32_t attach_count = sys->attachment_counts[agent_idx];
+    uint32_t base_idx = agent_idx * MAX_SENSORS_PER_DRONE;
 
     for (uint32_t i = 0; i < attach_count; i++) {
         total += sys->attachments[base_idx + i].output_size;

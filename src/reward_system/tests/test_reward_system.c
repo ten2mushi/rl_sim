@@ -20,7 +20,7 @@ TEST(allocation_basic) {
 
     RewardSystem* sys = reward_create(arena, NULL, 100, 0);
     ASSERT_NOT_NULL(sys);
-    ASSERT_EQ(sys->max_drones, 100);
+    ASSERT_EQ(sys->max_agents, 100);
     ASSERT_NOT_NULL(sys->targets);
     ASSERT_NOT_NULL(sys->termination);
 
@@ -179,7 +179,7 @@ TEST(target_update) {
     RewardSystem* sys = reward_create(arena, NULL, 10, 0);
 
     reward_set_target(sys, 0, VEC3(0, 0, 0), VEC3(1, 2, 3), 0.5f);
-    reward_update_targets(sys, 0.1f);
+    reward_update_targets(sys, 0.1f, 10);
 
     ASSERT_FLOAT_NEAR(sys->targets->target_x[0], 0.1f, EPSILON);
     ASSERT_FLOAT_NEAR(sys->targets->target_y[0], 0.2f, EPSILON);
@@ -220,7 +220,7 @@ TEST(gate_set) {
 
 TEST(gate_crossing_detection) {
     Arena* arena = arena_create(4 * 1024 * 1024);
-    DroneStateSOA* states = drone_state_create(arena, 10);
+    RigidBodyStateSOA* states = rigid_body_state_create(arena, 10);
     RewardConfig cfg = reward_config_default(TASK_RACE);
     RewardSystem* sys = reward_create(arena, &cfg, 10, 5);
 
@@ -251,7 +251,7 @@ TEST(gate_crossing_detection) {
 
 TEST(distance_basic) {
     Arena* arena = arena_create(2 * 1024 * 1024);
-    DroneStateSOA* states = drone_state_create(arena, 10);
+    RigidBodyStateSOA* states = rigid_body_state_create(arena, 10);
     RewardSystem* sys = reward_create(arena, NULL, 10, 0);
 
     states->pos_x[0] = 3.0f;
@@ -268,7 +268,7 @@ TEST(distance_basic) {
 
 TEST(distance_zero) {
     Arena* arena = arena_create(2 * 1024 * 1024);
-    DroneStateSOA* states = drone_state_create(arena, 10);
+    RigidBodyStateSOA* states = rigid_body_state_create(arena, 10);
     RewardSystem* sys = reward_create(arena, NULL, 10, 0);
 
     states->pos_x[0] = 5.0f;
@@ -285,7 +285,7 @@ TEST(distance_zero) {
 
 TEST(reached_target) {
     Arena* arena = arena_create(2 * 1024 * 1024);
-    DroneStateSOA* states = drone_state_create(arena, 10);
+    RigidBodyStateSOA* states = rigid_body_state_create(arena, 10);
     RewardSystem* sys = reward_create(arena, NULL, 10, 0);
 
     reward_set_target(sys, 0, VEC3(0, 0, 0), VEC3_ZERO, 1.0f);
@@ -308,8 +308,8 @@ TEST(reached_target) {
 
 TEST(hover_alive_bonus) {
     Arena* arena = arena_create(2 * 1024 * 1024);
-    DroneStateSOA* states = drone_state_create(arena, 10);
-    drone_state_zero(states);
+    RigidBodyStateSOA* states = rigid_body_state_create(arena, 10);
+    rigid_body_state_zero(states);
     RewardConfig cfg = reward_config_default(TASK_HOVER);
     cfg.distance_scale = 0.0f;
     cfg.uprightness_scale = 0.0f;
@@ -334,8 +334,8 @@ TEST(hover_alive_bonus) {
 
 TEST(hover_distance_penalty) {
     Arena* arena = arena_create(2 * 1024 * 1024);
-    DroneStateSOA* states = drone_state_create(arena, 10);
-    drone_state_zero(states);
+    RigidBodyStateSOA* states = rigid_body_state_create(arena, 10);
+    rigid_body_state_zero(states);
 
     RewardConfig cfg = reward_config_default(TASK_HOVER);
     cfg.alive_bonus = 0.0f;
@@ -359,8 +359,8 @@ TEST(hover_distance_penalty) {
 
 TEST(hover_reach_bonus) {
     Arena* arena = arena_create(2 * 1024 * 1024);
-    DroneStateSOA* states = drone_state_create(arena, 10);
-    drone_state_zero(states);
+    RigidBodyStateSOA* states = rigid_body_state_create(arena, 10);
+    rigid_body_state_zero(states);
 
     RewardConfig cfg = reward_config_default(TASK_HOVER);
     cfg.reach_radius = 1.0f;
@@ -381,8 +381,8 @@ TEST(hover_reach_bonus) {
 
 TEST(hover_uprightness) {
     Arena* arena = arena_create(2 * 1024 * 1024);
-    DroneStateSOA* states = drone_state_create(arena, 10);
-    drone_state_zero(states);
+    RigidBodyStateSOA* states = rigid_body_state_create(arena, 10);
+    rigid_body_state_zero(states);
 
     RewardConfig cfg = reward_config_default(TASK_HOVER);
     cfg.distance_scale = 0.0f;
@@ -412,8 +412,8 @@ TEST(hover_uprightness) {
 
 TEST(race_gate_bonus) {
     Arena* arena = arena_create(4 * 1024 * 1024);
-    DroneStateSOA* states = drone_state_create(arena, 10);
-    drone_state_zero(states);
+    RigidBodyStateSOA* states = rigid_body_state_create(arena, 10);
+    rigid_body_state_zero(states);
 
     RewardConfig cfg = reward_config_default(TASK_RACE);
     cfg.gate_pass_bonus = 20.0f;
@@ -445,8 +445,8 @@ TEST(race_gate_bonus) {
 
 TEST(collision_world_penalty) {
     Arena* arena = arena_create(2 * 1024 * 1024);
-    DroneStateSOA* states = drone_state_create(arena, 10);
-    drone_state_zero(states);
+    RigidBodyStateSOA* states = rigid_body_state_create(arena, 10);
+    rigid_body_state_zero(states);
 
     RewardConfig cfg = reward_config_default(TASK_HOVER);
     cfg.collision_penalty = 10.0f;
@@ -481,8 +481,8 @@ TEST(collision_world_penalty) {
 
 TEST(collision_drone_penalty) {
     Arena* arena = arena_create(2 * 1024 * 1024);
-    DroneStateSOA* states = drone_state_create(arena, 10);
-    drone_state_zero(states);
+    RigidBodyStateSOA* states = rigid_body_state_create(arena, 10);
+    rigid_body_state_zero(states);
 
     RewardConfig cfg = reward_config_default(TASK_HOVER);
     cfg.collision_penalty = 10.0f;
@@ -514,8 +514,8 @@ TEST(collision_drone_penalty) {
 
 TEST(reward_clipping_min) {
     Arena* arena = arena_create(2 * 1024 * 1024);
-    DroneStateSOA* states = drone_state_create(arena, 10);
-    drone_state_zero(states);
+    RigidBodyStateSOA* states = rigid_body_state_create(arena, 10);
+    rigid_body_state_zero(states);
 
     RewardConfig cfg = reward_config_default(TASK_HOVER);
     cfg.distance_scale = 1000.0f;
@@ -536,8 +536,8 @@ TEST(reward_clipping_min) {
 
 TEST(reward_clipping_max) {
     Arena* arena = arena_create(2 * 1024 * 1024);
-    DroneStateSOA* states = drone_state_create(arena, 10);
-    drone_state_zero(states);
+    RigidBodyStateSOA* states = rigid_body_state_create(arena, 10);
+    rigid_body_state_zero(states);
 
     RewardConfig cfg = reward_config_default(TASK_HOVER);
     cfg.reach_bonus = 1000.0f;
@@ -561,8 +561,8 @@ TEST(reward_clipping_max) {
 
 TEST(termination_collision) {
     Arena* arena = arena_create(2 * 1024 * 1024);
-    DroneStateSOA* states = drone_state_create(arena, 10);
-    drone_state_zero(states);
+    RigidBodyStateSOA* states = rigid_body_state_create(arena, 10);
+    rigid_body_state_zero(states);
     RewardSystem* sys = reward_create(arena, NULL, 10, 0);
 
     uint8_t world_flags[10] = {0};
@@ -592,8 +592,8 @@ TEST(termination_collision) {
 
 TEST(termination_out_of_bounds) {
     Arena* arena = arena_create(2 * 1024 * 1024);
-    DroneStateSOA* states = drone_state_create(arena, 10);
-    drone_state_zero(states);
+    RigidBodyStateSOA* states = rigid_body_state_create(arena, 10);
+    rigid_body_state_zero(states);
     RewardSystem* sys = reward_create(arena, NULL, 10, 0);
 
     states->pos_x[0] = 150.0f;
@@ -616,8 +616,8 @@ TEST(termination_out_of_bounds) {
 
 TEST(termination_timeout) {
     Arena* arena = arena_create(2 * 1024 * 1024);
-    DroneStateSOA* states = drone_state_create(arena, 10);
-    drone_state_zero(states);
+    RigidBodyStateSOA* states = rigid_body_state_create(arena, 10);
+    rigid_body_state_zero(states);
     RewardSystem* sys = reward_create(arena, NULL, 10, 0);
 
     sys->episode_length[0] = 1000;
@@ -645,8 +645,8 @@ TEST(termination_timeout) {
 
 TEST(episode_stats) {
     Arena* arena = arena_create(2 * 1024 * 1024);
-    DroneStateSOA* states = drone_state_create(arena, 10);
-    drone_state_zero(states);
+    RigidBodyStateSOA* states = rigid_body_state_create(arena, 10);
+    rigid_body_state_zero(states);
     RewardSystem* sys = reward_create(arena, NULL, 10, 0);
 
     float rewards[10];
@@ -711,7 +711,7 @@ TEST(alignment) {
 
 TEST(edge_zero_count) {
     Arena* arena = arena_create(2 * 1024 * 1024);
-    DroneStateSOA* states = drone_state_create(arena, 10);
+    RigidBodyStateSOA* states = rigid_body_state_create(arena, 10);
     RewardSystem* sys = reward_create(arena, NULL, 10, 0);
 
     float rewards[10];
@@ -723,8 +723,8 @@ TEST(edge_zero_count) {
 
 TEST(edge_boundary_indices) {
     Arena* arena = arena_create(2 * 1024 * 1024);
-    DroneStateSOA* states = drone_state_create(arena, 100);
-    drone_state_zero(states);
+    RigidBodyStateSOA* states = rigid_body_state_create(arena, 100);
+    rigid_body_state_zero(states);
     RewardSystem* sys = reward_create(arena, NULL, 100, 0);
 
     reward_set_target(sys, 0, VEC3(1, 2, 3), VEC3_ZERO, 0.5f);
@@ -746,8 +746,8 @@ TEST(edge_boundary_indices) {
 
 TEST(track_velocity_matching) {
     Arena* arena = arena_create(2 * 1024 * 1024);
-    DroneStateSOA* states = drone_state_create(arena, 10);
-    drone_state_zero(states);
+    RigidBodyStateSOA* states = rigid_body_state_create(arena, 10);
+    rigid_body_state_zero(states);
 
     RewardConfig cfg = reward_config_default(TASK_TRACK);
     RewardSystem* sys = reward_create(arena, &cfg, 10, 0);
@@ -776,8 +776,8 @@ TEST(track_velocity_matching) {
 
 TEST(land_soft_landing) {
     Arena* arena = arena_create(2 * 1024 * 1024);
-    DroneStateSOA* states = drone_state_create(arena, 10);
-    drone_state_zero(states);
+    RigidBodyStateSOA* states = rigid_body_state_create(arena, 10);
+    rigid_body_state_zero(states);
 
     RewardConfig cfg = reward_config_default(TASK_LAND);
     cfg.reach_radius = 1.0f;
@@ -807,8 +807,8 @@ TEST(land_soft_landing) {
 
 TEST(formation_relative_position) {
     Arena* arena = arena_create(2 * 1024 * 1024);
-    DroneStateSOA* states = drone_state_create(arena, 10);
-    drone_state_zero(states);
+    RigidBodyStateSOA* states = rigid_body_state_create(arena, 10);
+    rigid_body_state_zero(states);
 
     RewardConfig cfg = reward_config_default(TASK_FORMATION);
     RewardSystem* sys = reward_create(arena, &cfg, 10, 0);
@@ -826,6 +826,596 @@ TEST(formation_relative_position) {
     reward_compute_formation(sys, states, NULL, NULL, NULL, rewards_wrong, 2);
 
     ASSERT_GT(rewards_correct[1], rewards_wrong[1]);
+
+    arena_destroy(arena);
+    return 0;
+}
+
+/* ============================================================================
+ * Section 18: AI-108 Regression Tests — SIMD Boundary Consistency
+ * Verify hover reward is identical for all drones regardless of count
+ * (was broken by incomplete SIMD path on AVX2).
+ * ============================================================================ */
+
+/* Helper: set up identical states for N drones, compute hover, verify all equal */
+static int hover_consistency_for_count(uint32_t count) {
+    Arena* arena = arena_create(4 * 1024 * 1024);
+    ASSERT_NOT_NULL(arena);
+    uint32_t cap = count > 0 ? count : 1;
+    RigidBodyStateSOA* states = rigid_body_state_create(arena, cap);
+    rigid_body_state_zero(states);
+
+    RewardConfig cfg = reward_config_default(TASK_HOVER);
+    RewardSystem* sys = reward_create(arena, &cfg, cap, 0);
+
+    /* Set identical state for all drones: 5m from target, upright */
+    for (uint32_t i = 0; i < count; i++) {
+        states->pos_x[i] = 5.0f;
+        states->pos_y[i] = 0.0f;
+        states->pos_z[i] = 5.0f;
+        states->quat_w[i] = 1.0f;
+        states->quat_x[i] = 0.0f;
+        states->quat_y[i] = 0.0f;
+        states->quat_z[i] = 0.0f;
+        reward_set_target(sys, i, VEC3(0, 0, 5), VEC3_ZERO, 0.5f);
+    }
+
+    float* rewards = (float*)arena_alloc(arena, count * sizeof(float));
+    if (count > 0) {
+        reward_compute_hover(sys, states, NULL, NULL, NULL, rewards, count);
+
+        /* All drones should get identical reward */
+        for (uint32_t i = 1; i < count; i++) {
+            ASSERT_FLOAT_NEAR(rewards[i], rewards[0], 1e-5f);
+        }
+    }
+
+    arena_destroy(arena);
+    return 0;
+}
+
+TEST(hover_consistency_count_1)   { return hover_consistency_for_count(1); }
+TEST(hover_consistency_count_7)   { return hover_consistency_for_count(7); }
+TEST(hover_consistency_count_8)   { return hover_consistency_for_count(8); }
+TEST(hover_consistency_count_9)   { return hover_consistency_for_count(9); }
+TEST(hover_consistency_count_15)  { return hover_consistency_for_count(15); }
+TEST(hover_consistency_count_16)  { return hover_consistency_for_count(16); }
+TEST(hover_consistency_count_17)  { return hover_consistency_for_count(17); }
+TEST(hover_consistency_count_100) { return hover_consistency_for_count(100); }
+
+TEST(hover_energy_penalty_applied) {
+    Arena* arena = arena_create(4 * 1024 * 1024);
+    RigidBodyStateSOA* states = rigid_body_state_create(arena, 10);
+    rigid_body_state_zero(states);
+
+    RewardConfig cfg = reward_config_default(TASK_HOVER);
+    cfg.energy_scale = 1.0f;
+    cfg.distance_scale = 0.0f;
+    cfg.uprightness_scale = 0.0f;
+    cfg.delta_distance_scale = 0.0f;
+    cfg.reach_bonus = 0.0f;
+    RewardSystem* sys = reward_create(arena, &cfg, 10, 0);
+
+    /* Put drone far from target so reach doesn't trigger */
+    states->pos_x[0] = 100.0f;
+    reward_set_target(sys, 0, VEC3(0, 0, 0), VEC3_ZERO, 0.5f);
+
+    /* Actions with high values → high energy */
+    float actions[40] = {0};
+    actions[0] = 1.0f; actions[1] = 1.0f; actions[2] = 1.0f; actions[3] = 1.0f;
+
+    float rewards_no_action[10], rewards_with_action[10];
+    reward_compute_hover(sys, states, NULL, NULL, NULL, rewards_no_action, 1);
+    reward_reset(sys, 0);
+    reward_compute_hover(sys, states, NULL, actions, NULL, rewards_with_action, 1);
+
+    ASSERT_LT(rewards_with_action[0], rewards_no_action[0]);
+
+    arena_destroy(arena);
+    return 0;
+}
+
+TEST(hover_jerk_penalty_applied) {
+    Arena* arena = arena_create(4 * 1024 * 1024);
+    RigidBodyStateSOA* states = rigid_body_state_create(arena, 10);
+    rigid_body_state_zero(states);
+
+    RewardConfig cfg = reward_config_default(TASK_HOVER);
+    cfg.jerk_scale = 1.0f;
+    cfg.energy_scale = 0.0f;
+    cfg.distance_scale = 0.0f;
+    cfg.uprightness_scale = 0.0f;
+    cfg.delta_distance_scale = 0.0f;
+    cfg.reach_bonus = 0.0f;
+    RewardSystem* sys = reward_create(arena, &cfg, 10, 0);
+
+    states->pos_x[0] = 100.0f;
+    reward_set_target(sys, 0, VEC3(0, 0, 0), VEC3_ZERO, 0.5f);
+
+    /* Step 1: set prev_actions by computing with some actions */
+    float actions1[40] = {0};
+    actions1[0] = 0.0f; actions1[1] = 0.0f; actions1[2] = 0.0f; actions1[3] = 0.0f;
+    float rewards_step1[10];
+    reward_compute(sys, states, NULL, actions1, NULL, rewards_step1, 1);
+
+    /* Step 2: change actions drastically → jerk penalty should apply */
+    float actions2[40] = {0};
+    actions2[0] = 1.0f; actions2[1] = 1.0f; actions2[2] = 1.0f; actions2[3] = 1.0f;
+    float rewards_step2[10];
+    reward_compute(sys, states, NULL, actions2, NULL, rewards_step2, 1);
+
+    /* Step 3: same actions as step 2 → no jerk */
+    float rewards_step3[10];
+    reward_compute(sys, states, NULL, actions2, NULL, rewards_step3, 1);
+
+    /* Step 2 should have more penalty (jerk) than step 3 (no jerk) */
+    ASSERT_LT(rewards_step2[0], rewards_step3[0]);
+
+    arena_destroy(arena);
+    return 0;
+}
+
+TEST(hover_distance_exp_nonlinear) {
+    Arena* arena = arena_create(4 * 1024 * 1024);
+    RigidBodyStateSOA* states = rigid_body_state_create(arena, 10);
+    rigid_body_state_zero(states);
+
+    RewardConfig cfg = reward_config_default(TASK_HOVER);
+    cfg.distance_scale = 1.0f;
+    cfg.distance_exp = 2.0f;  /* Quadratic distance */
+    cfg.alive_bonus = 0.0f;
+    cfg.uprightness_scale = 0.0f;
+    cfg.delta_distance_scale = 0.0f;
+    cfg.reach_bonus = 0.0f;
+    cfg.energy_scale = 0.0f;
+    RewardSystem* sys = reward_create(arena, &cfg, 10, 0);
+
+    reward_set_target(sys, 0, VEC3(0, 0, 0), VEC3_ZERO, 0.5f);
+    states->pos_x[0] = 3.0f;  /* dist = 3.0 */
+
+    float rewards[10];
+    reward_compute_hover(sys, states, NULL, NULL, NULL, rewards, 1);
+
+    /* With exp=2: penalty = 1.0 * 3^2 = 9.0, so reward = -9.0 (clipped) */
+    ASSERT_FLOAT_NEAR(rewards[0], -9.0f, 0.1f);
+
+    arena_destroy(arena);
+    return 0;
+}
+
+TEST(hover_episode_return_all_drones) {
+    Arena* arena = arena_create(4 * 1024 * 1024);
+    uint32_t count = 16;
+    RigidBodyStateSOA* states = rigid_body_state_create(arena, count);
+    rigid_body_state_zero(states);
+    RewardConfig cfg = reward_config_default(TASK_HOVER);
+    RewardSystem* sys = reward_create(arena, &cfg, count, 0);
+
+    for (uint32_t i = 0; i < count; i++) {
+        reward_set_target(sys, i, VEC3(0, 0, 5), VEC3_ZERO, 0.5f);
+        states->pos_z[i] = 5.0f;
+    }
+
+    float* rewards = (float*)arena_alloc(arena, count * sizeof(float));
+
+    /* 5 steps */
+    for (int step = 0; step < 5; step++) {
+        reward_compute_hover(sys, states, NULL, NULL, NULL, rewards, count);
+    }
+
+    /* All drones should have episode_return accumulated and episode_length = 5 */
+    for (uint32_t i = 0; i < count; i++) {
+        ASSERT_EQ(sys->episode_length[i], 5);
+        ASSERT_TRUE(sys->episode_return[i] != 0.0f);
+        /* All identical states → identical returns */
+        ASSERT_FLOAT_NEAR(sys->episode_return[i], sys->episode_return[0], 1e-4f);
+    }
+
+    arena_destroy(arena);
+    return 0;
+}
+
+TEST(hover_best_distance_all_drones) {
+    Arena* arena = arena_create(4 * 1024 * 1024);
+    uint32_t count = 16;
+    RigidBodyStateSOA* states = rigid_body_state_create(arena, count);
+    rigid_body_state_zero(states);
+    RewardConfig cfg = reward_config_default(TASK_HOVER);
+    RewardSystem* sys = reward_create(arena, &cfg, count, 0);
+
+    for (uint32_t i = 0; i < count; i++) {
+        reward_set_target(sys, i, VEC3(0, 0, 5), VEC3_ZERO, 0.5f);
+        states->pos_x[i] = 10.0f;
+        states->pos_z[i] = 5.0f;
+    }
+
+    float* rewards = (float*)arena_alloc(arena, count * sizeof(float));
+    reward_compute_hover(sys, states, NULL, NULL, NULL, rewards, count);
+
+    /* Move drones closer */
+    for (uint32_t i = 0; i < count; i++) {
+        states->pos_x[i] = 3.0f;
+    }
+    reward_compute_hover(sys, states, NULL, NULL, NULL, rewards, count);
+
+    /* best_distance should be updated for ALL drones */
+    for (uint32_t i = 0; i < count; i++) {
+        ASSERT_FLOAT_NEAR(sys->best_distance[i], 3.0f, 0.1f);
+    }
+
+    arena_destroy(arena);
+    return 0;
+}
+
+/* ============================================================================
+ * Section 19: AI-106 Tests — compute_collision_penalty Helper
+ * ============================================================================ */
+
+TEST(collision_helper_no_collisions) {
+    Arena* arena = arena_create(2 * 1024 * 1024);
+    RigidBodyStateSOA* states = rigid_body_state_create(arena, 10);
+    rigid_body_state_zero(states);
+
+    RewardConfig cfg = reward_config_default(TASK_HOVER);
+    cfg.collision_penalty = 10.0f;
+    cfg.world_collision_penalty = 5.0f;
+    cfg.drone_collision_penalty = 3.0f;
+    RewardSystem* sys = reward_create(arena, &cfg, 10, 0);
+
+    float rewards_no_collision[10];
+    reward_compute_hover(sys, states, NULL, NULL, NULL, rewards_no_collision, 1);
+
+    /* No collisions → reward = alive_bonus + uprightness (no penalties) */
+    ASSERT_GE(rewards_no_collision[0], cfg.alive_bonus - 0.1f);
+
+    arena_destroy(arena);
+    return 0;
+}
+
+TEST(collision_helper_world_only) {
+    Arena* arena = arena_create(2 * 1024 * 1024);
+    RigidBodyStateSOA* states = rigid_body_state_create(arena, 10);
+    rigid_body_state_zero(states);
+
+    RewardConfig cfg = reward_config_default(TASK_HOVER);
+    cfg.collision_penalty = 10.0f;
+    cfg.world_collision_penalty = 5.0f;
+    cfg.drone_collision_penalty = 3.0f;
+    cfg.distance_scale = 0.0f;
+    cfg.uprightness_scale = 0.0f;
+    cfg.delta_distance_scale = 0.0f;
+    cfg.reach_bonus = 0.0f;
+    cfg.energy_scale = 0.0f;
+    RewardSystem* sys = reward_create(arena, &cfg, 10, 0);
+
+    states->pos_x[0] = 100.0f;
+    reward_set_target(sys, 0, VEC3(0, 0, 0), VEC3_ZERO, 0.5f);
+
+    uint8_t world_flags[10] = {0};
+    world_flags[0] = 1;
+    CollisionResults collisions = {
+        .pairs = NULL, .pair_count = 0,
+        .world_flags = world_flags
+    };
+
+    float rewards_base[10], rewards_coll[10];
+    reward_compute_hover(sys, states, NULL, NULL, NULL, rewards_base, 1);
+    reward_reset(sys, 0);
+    reward_compute_hover(sys, states, NULL, NULL, &collisions, rewards_coll, 1);
+
+    float penalty = rewards_base[0] - rewards_coll[0];
+    /* collision_penalty + world_collision_penalty = 10 + 5 = 15 */
+    ASSERT_FLOAT_NEAR(penalty, 15.0f, 0.1f);
+
+    arena_destroy(arena);
+    return 0;
+}
+
+TEST(collision_helper_drone_only) {
+    Arena* arena = arena_create(2 * 1024 * 1024);
+    RigidBodyStateSOA* states = rigid_body_state_create(arena, 10);
+    rigid_body_state_zero(states);
+
+    RewardConfig cfg = reward_config_default(TASK_HOVER);
+    cfg.collision_penalty = 10.0f;
+    cfg.drone_collision_penalty = 3.0f;
+    cfg.world_collision_penalty = 5.0f;
+    cfg.distance_scale = 0.0f;
+    cfg.uprightness_scale = 0.0f;
+    cfg.delta_distance_scale = 0.0f;
+    cfg.reach_bonus = 0.0f;
+    cfg.energy_scale = 0.0f;
+    RewardSystem* sys = reward_create(arena, &cfg, 10, 0);
+
+    for (int i = 0; i < 2; i++) {
+        states->pos_x[i] = 100.0f;
+        reward_set_target(sys, (uint32_t)i, VEC3(0, 0, 0), VEC3_ZERO, 0.5f);
+    }
+
+    uint32_t pairs[2] = {0, 1};
+    CollisionResults collisions = {
+        .pairs = pairs, .pair_count = 1,
+        .world_flags = NULL
+    };
+
+    float rewards_base[10], rewards_coll[10];
+    reward_compute_hover(sys, states, NULL, NULL, NULL, rewards_base, 2);
+    reward_reset(sys, 0);
+    reward_reset(sys, 1);
+    reward_compute_hover(sys, states, NULL, NULL, &collisions, rewards_coll, 2);
+
+    float penalty = rewards_base[0] - rewards_coll[0];
+    /* collision_penalty + drone_collision_penalty * 1.0 = 10 + 3 = 13 */
+    ASSERT_FLOAT_NEAR(penalty, 13.0f, 0.1f);
+
+    arena_destroy(arena);
+    return 0;
+}
+
+TEST(collision_helper_both) {
+    Arena* arena = arena_create(2 * 1024 * 1024);
+    RigidBodyStateSOA* states = rigid_body_state_create(arena, 10);
+    rigid_body_state_zero(states);
+
+    RewardConfig cfg = reward_config_default(TASK_HOVER);
+    cfg.collision_penalty = 10.0f;
+    cfg.world_collision_penalty = 5.0f;
+    cfg.drone_collision_penalty = 3.0f;
+    cfg.distance_scale = 0.0f;
+    cfg.uprightness_scale = 0.0f;
+    cfg.delta_distance_scale = 0.0f;
+    cfg.reach_bonus = 0.0f;
+    cfg.energy_scale = 0.0f;
+    RewardSystem* sys = reward_create(arena, &cfg, 10, 0);
+
+    for (int i = 0; i < 2; i++) {
+        states->pos_x[i] = 100.0f;
+        reward_set_target(sys, (uint32_t)i, VEC3(0, 0, 0), VEC3_ZERO, 0.5f);
+    }
+
+    uint8_t world_flags[10] = {0};
+    world_flags[0] = 1;
+    uint32_t pairs[2] = {0, 1};
+    CollisionResults collisions = {
+        .pairs = pairs, .pair_count = 1,
+        .world_flags = world_flags
+    };
+
+    float rewards_base[10], rewards_coll[10];
+    reward_compute_hover(sys, states, NULL, NULL, NULL, rewards_base, 1);
+    reward_reset(sys, 0);
+    reward_compute_hover(sys, states, NULL, NULL, &collisions, rewards_coll, 1);
+
+    float penalty = rewards_base[0] - rewards_coll[0];
+    /* world: 10+5=15, drone: 10+3=13, total: 28 */
+    ASSERT_FLOAT_NEAR(penalty, 28.0f, 0.1f);
+
+    arena_destroy(arena);
+    return 0;
+}
+
+TEST(collision_helper_formation_multiplier) {
+    Arena* arena = arena_create(2 * 1024 * 1024);
+    RigidBodyStateSOA* states = rigid_body_state_create(arena, 10);
+    rigid_body_state_zero(states);
+
+    RewardConfig cfg = reward_config_default(TASK_FORMATION);
+    cfg.collision_penalty = 10.0f;
+    cfg.drone_collision_penalty = 3.0f;
+    cfg.world_collision_penalty = 0.0f;
+    cfg.distance_scale = 0.0f;
+    cfg.uprightness_scale = 0.0f;
+    cfg.formation_position_scale = 0.0f;
+    RewardSystem* sys = reward_create(arena, &cfg, 10, 0);
+
+    /* Set leader target */
+    reward_set_target(sys, 0, VEC3(0, 0, 0), VEC3_ZERO, 0.5f);
+    reward_set_target(sys, 1, VEC3(2, 0, 0), VEC3_ZERO, 0.5f);
+    states->pos_x[1] = 2.0f;
+
+    uint32_t pairs[2] = {0, 1};
+    CollisionResults collisions = {
+        .pairs = pairs, .pair_count = 1,
+        .world_flags = NULL
+    };
+
+    float rewards_base[10], rewards_coll[10];
+    reward_compute_formation(sys, states, NULL, NULL, NULL, rewards_base, 2);
+    reward_reset(sys, 0);
+    reward_reset(sys, 1);
+    reward_compute_formation(sys, states, NULL, NULL, &collisions, rewards_coll, 2);
+
+    float penalty = rewards_base[0] - rewards_coll[0];
+    /* collision_penalty + drone_collision_penalty * 2.0 = 10 + 6 = 16 */
+    ASSERT_FLOAT_NEAR(penalty, 16.0f, 0.1f);
+
+    arena_destroy(arena);
+    return 0;
+}
+
+TEST(collision_helper_null_collisions) {
+    Arena* arena = arena_create(2 * 1024 * 1024);
+    RigidBodyStateSOA* states = rigid_body_state_create(arena, 10);
+    rigid_body_state_zero(states);
+
+    RewardConfig cfg = reward_config_default(TASK_HOVER);
+    cfg.collision_penalty = 100.0f;
+    RewardSystem* sys = reward_create(arena, &cfg, 10, 0);
+
+    float rewards[10];
+    /* NULL collisions should not crash and should not apply penalty */
+    reward_compute_hover(sys, states, NULL, NULL, NULL, rewards, 1);
+    float baseline = rewards[0];
+
+    reward_reset(sys, 0);
+    CollisionResults empty = { .pairs = NULL, .pair_count = 0, .world_flags = NULL };
+    reward_compute_hover(sys, states, NULL, NULL, &empty, rewards, 1);
+
+    ASSERT_FLOAT_NEAR(rewards[0], baseline, 0.01f);
+
+    arena_destroy(arena);
+    return 0;
+}
+
+/* ============================================================================
+ * Section 20: Full Task Composition Tests
+ * ============================================================================ */
+
+TEST(hover_full_composition) {
+    Arena* arena = arena_create(4 * 1024 * 1024);
+    RigidBodyStateSOA* states = rigid_body_state_create(arena, 10);
+    rigid_body_state_zero(states);
+
+    RewardConfig cfg = reward_config_default(TASK_HOVER);
+    cfg.alive_bonus = 1.0f;
+    cfg.distance_scale = 0.5f;
+    cfg.distance_exp = 1.0f;
+    cfg.uprightness_scale = 0.2f;
+    cfg.energy_scale = 0.0f;
+    cfg.delta_distance_scale = 0.0f;
+    cfg.reach_bonus = 0.0f;
+    cfg.collision_penalty = 0.0f;
+    RewardSystem* sys = reward_create(arena, &cfg, 10, 0);
+
+    reward_set_target(sys, 0, VEC3(0, 0, 5), VEC3_ZERO, 0.5f);
+    states->pos_x[0] = 3.0f;
+    states->pos_y[0] = 4.0f;
+    states->pos_z[0] = 5.0f;
+    /* Distance = 5.0, upright (quat_w=1 → up_z=1.0) */
+
+    float rewards[10];
+    reward_compute_hover(sys, states, NULL, NULL, NULL, rewards, 1);
+
+    /* Expected: alive(1.0) - dist_scale*dist(0.5*5=2.5) + upright(0.2*1.0=0.2) = -1.3 */
+    ASSERT_FLOAT_NEAR(rewards[0], -1.3f, 0.1f);
+
+    arena_destroy(arena);
+    return 0;
+}
+
+TEST(track_full_composition) {
+    Arena* arena = arena_create(4 * 1024 * 1024);
+    RigidBodyStateSOA* states = rigid_body_state_create(arena, 10);
+    rigid_body_state_zero(states);
+
+    RewardConfig cfg = reward_config_default(TASK_TRACK);
+    RewardSystem* sys = reward_create(arena, &cfg, 10, 0);
+
+    reward_set_target(sys, 0, VEC3(10, 0, 5), VEC3(1, 0, 0), 1.0f);
+    states->pos_x[0] = 10.0f;
+    states->pos_z[0] = 5.0f;
+    states->vel_x[0] = 1.0f;  /* Match target velocity */
+
+    float rewards[10];
+    reward_compute_track(sys, states, NULL, NULL, NULL, rewards, 1);
+
+    /* At target, matching velocity → high reward */
+    ASSERT_GT(rewards[0], 0.0f);
+
+    arena_destroy(arena);
+    return 0;
+}
+
+TEST(land_full_composition) {
+    Arena* arena = arena_create(4 * 1024 * 1024);
+    RigidBodyStateSOA* states = rigid_body_state_create(arena, 10);
+    rigid_body_state_zero(states);
+
+    RewardConfig cfg = reward_config_default(TASK_LAND);
+    RewardSystem* sys = reward_create(arena, &cfg, 10, 0);
+
+    reward_set_target(sys, 0, VEC3(0, 0, 0), VEC3_ZERO, 1.0f);
+    /* Drone near target, low velocity, upright */
+    states->pos_z[0] = 0.3f;
+    states->vel_z[0] = -0.1f;
+
+    float rewards[10];
+    reward_compute_land(sys, states, NULL, NULL, NULL, rewards, 1);
+
+    /* Close to target, slow descent, upright → should get success bonus */
+    ASSERT_GT(rewards[0], cfg.alive_bonus);
+
+    arena_destroy(arena);
+    return 0;
+}
+
+TEST(formation_full_composition) {
+    Arena* arena = arena_create(4 * 1024 * 1024);
+    RigidBodyStateSOA* states = rigid_body_state_create(arena, 10);
+    rigid_body_state_zero(states);
+
+    RewardConfig cfg = reward_config_default(TASK_FORMATION);
+    RewardSystem* sys = reward_create(arena, &cfg, 10, 0);
+
+    /* Leader at origin, follower at relative (5,0,0) */
+    states->pos_x[0] = 0.0f;
+    reward_set_target(sys, 0, VEC3(0, 0, 0), VEC3_ZERO, 0.5f);
+    reward_set_target(sys, 1, VEC3(5, 0, 0), VEC3_ZERO, 0.5f);
+
+    /* Follower in correct position */
+    states->pos_x[1] = 5.0f;
+    float rewards_correct[10];
+    reward_compute_formation(sys, states, NULL, NULL, NULL, rewards_correct, 2);
+
+    /* Follower in wrong position */
+    reward_reset(sys, 0);
+    reward_reset(sys, 1);
+    states->pos_x[1] = 10.0f;
+    float rewards_wrong[10];
+    reward_compute_formation(sys, states, NULL, NULL, NULL, rewards_wrong, 2);
+
+    /* Correct position should yield higher reward */
+    ASSERT_GT(rewards_correct[1], rewards_wrong[1]);
+
+    arena_destroy(arena);
+    return 0;
+}
+
+/* ============================================================================
+ * Section 21: Collision Penalty Across All Task Types
+ * ============================================================================ */
+
+TEST(collision_penalty_all_tasks) {
+    Arena* arena = arena_create(4 * 1024 * 1024);
+    RigidBodyStateSOA* states = rigid_body_state_create(arena, 10);
+    rigid_body_state_zero(states);
+
+    uint8_t world_flags[10] = {0};
+    world_flags[0] = 1;
+    CollisionResults collisions = {
+        .pairs = NULL, .pair_count = 0,
+        .world_flags = world_flags
+    };
+
+    /* Test that collision penalty applies to track, land, and formation too */
+    TaskType tasks[] = { TASK_TRACK, TASK_LAND, TASK_FORMATION };
+    for (int t = 0; t < 3; t++) {
+        RewardConfig cfg = reward_config_default(tasks[t]);
+        cfg.collision_penalty = 10.0f;
+        cfg.world_collision_penalty = 5.0f;
+        RewardSystem* sys = reward_create(arena, &cfg, 10, 0);
+
+        reward_set_target(sys, 0, VEC3(0, 0, 5), VEC3_ZERO, 0.5f);
+        states->pos_z[0] = 5.0f;
+
+        float rewards_no_coll[10], rewards_with_coll[10];
+
+        if (tasks[t] == TASK_TRACK) {
+            reward_compute_track(sys, states, NULL, NULL, NULL, rewards_no_coll, 1);
+            reward_reset(sys, 0);
+            reward_compute_track(sys, states, NULL, NULL, &collisions, rewards_with_coll, 1);
+        } else if (tasks[t] == TASK_LAND) {
+            reward_compute_land(sys, states, NULL, NULL, NULL, rewards_no_coll, 1);
+            reward_reset(sys, 0);
+            reward_compute_land(sys, states, NULL, NULL, &collisions, rewards_with_coll, 1);
+        } else {
+            reward_compute_formation(sys, states, NULL, NULL, NULL, rewards_no_coll, 1);
+            reward_reset(sys, 0);
+            reward_compute_formation(sys, states, NULL, NULL, &collisions, rewards_with_coll, 1);
+        }
+
+        ASSERT_GT(rewards_no_coll[0], rewards_with_coll[0]);
+    }
 
     arena_destroy(arena);
     return 0;
@@ -908,6 +1498,36 @@ int main(void) {
 
     /* Formation task tests */
     RUN_TEST(formation_relative_position);
+
+    /* AI-108 regression: SIMD boundary consistency */
+    RUN_TEST(hover_consistency_count_1);
+    RUN_TEST(hover_consistency_count_7);
+    RUN_TEST(hover_consistency_count_8);
+    RUN_TEST(hover_consistency_count_9);
+    RUN_TEST(hover_consistency_count_15);
+    RUN_TEST(hover_consistency_count_16);
+    RUN_TEST(hover_consistency_count_17);
+    RUN_TEST(hover_consistency_count_100);
+    RUN_TEST(hover_energy_penalty_applied);
+    RUN_TEST(hover_jerk_penalty_applied);
+    RUN_TEST(hover_distance_exp_nonlinear);
+    RUN_TEST(hover_episode_return_all_drones);
+    RUN_TEST(hover_best_distance_all_drones);
+
+    /* AI-106: collision penalty helper */
+    RUN_TEST(collision_helper_no_collisions);
+    RUN_TEST(collision_helper_world_only);
+    RUN_TEST(collision_helper_drone_only);
+    RUN_TEST(collision_helper_both);
+    RUN_TEST(collision_helper_formation_multiplier);
+    RUN_TEST(collision_helper_null_collisions);
+
+    /* Full task composition */
+    RUN_TEST(hover_full_composition);
+    RUN_TEST(track_full_composition);
+    RUN_TEST(land_full_composition);
+    RUN_TEST(formation_full_composition);
+    RUN_TEST(collision_penalty_all_tasks);
 
     TEST_SUITE_END();
 }

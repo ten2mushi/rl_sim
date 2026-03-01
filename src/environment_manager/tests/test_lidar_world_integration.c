@@ -22,16 +22,16 @@
  * Helper: Create engine with LiDAR 3D sensor
  * ============================================================================ */
 
-static BatchDroneEngine* create_engine_with_lidar3d(
+static BatchEngine* create_engine_with_lidar3d(
     uint32_t num_envs,
-    uint32_t drones_per_env,
+    uint32_t agents_per_env,
     uint32_t horizontal_rays,
     uint32_t vertical_layers,
     float max_range
 ) {
     EngineConfig cfg = engine_config_default();
     cfg.num_envs = num_envs;
-    cfg.drones_per_env = drones_per_env;
+    cfg.agents_per_env = agents_per_env;
     cfg.seed = 12345;
     cfg.persistent_arena_size = 256 * 1024 * 1024;  /* 256 MB */
     cfg.frame_arena_size = 64 * 1024 * 1024;         /* 64 MB */
@@ -63,14 +63,14 @@ static BatchDroneEngine* create_engine_with_lidar3d(
 
 TEST(lidar_empty_world_max_range) {
     /* Create engine with 8x8 LiDAR, no world geometry */
-    BatchDroneEngine* engine = create_engine_with_lidar3d(1, 1, 8, 8, 50.0f);
+    BatchEngine* engine = create_engine_with_lidar3d(1, 1, 8, 8, 50.0f);
     ASSERT_NOT_NULL(engine);
 
     engine_reset(engine);
 
     /* Step to populate observations */
     float* actions = engine_get_actions(engine);
-    memset(actions, 0, ENGINE_ACTION_DIM * sizeof(float));
+    memset(actions, 0, engine->action_dim * sizeof(float));
     engine_step(engine);
 
     /* Get observations */
@@ -104,7 +104,7 @@ TEST(lidar_empty_world_max_range) {
 TEST(lidar_detects_box_obstacle) {
     /* Create engine with 16x8 LiDAR */
     float max_range = 50.0f;
-    BatchDroneEngine* engine = create_engine_with_lidar3d(1, 1, 16, 8, max_range);
+    BatchEngine* engine = create_engine_with_lidar3d(1, 1, 16, 8, max_range);
     ASSERT_NOT_NULL(engine);
     ASSERT_NOT_NULL(engine->world);
 
@@ -155,13 +155,13 @@ TEST(lidar_detects_box_obstacle) {
     ASSERT_LT(hit.distance, 12.0f);
 
     /* Now position drone and test through sensor system */
-    engine->states->pos_x[0] = 0.0f;
-    engine->states->pos_y[0] = 0.0f;
-    engine->states->pos_z[0] = 10.0f;  /* Same Z (altitude) as box */
-    engine->states->quat_w[0] = 1.0f;  /* Identity quaternion */
-    engine->states->quat_x[0] = 0.0f;
-    engine->states->quat_y[0] = 0.0f;
-    engine->states->quat_z[0] = 0.0f;
+    engine->states->rigid_body.pos_x[0] = 0.0f;
+    engine->states->rigid_body.pos_y[0] = 0.0f;
+    engine->states->rigid_body.pos_z[0] = 10.0f;  /* Same Z (altitude) as box */
+    engine->states->rigid_body.quat_w[0] = 1.0f;  /* Identity quaternion */
+    engine->states->rigid_body.quat_x[0] = 0.0f;
+    engine->states->rigid_body.quat_y[0] = 0.0f;
+    engine->states->rigid_body.quat_z[0] = 0.0f;
 
     /* Sample sensors */
     engine_step_sensors(engine);
@@ -199,19 +199,19 @@ TEST(lidar_detects_box_obstacle) {
 
 TEST(lidar_detects_sphere_obstacle) {
     float max_range = 50.0f;
-    BatchDroneEngine* engine = create_engine_with_lidar3d(1, 1, 16, 8, max_range);
+    BatchEngine* engine = create_engine_with_lidar3d(1, 1, 16, 8, max_range);
     ASSERT_NOT_NULL(engine);
 
     engine_reset(engine);
 
     /* Position drone at origin, elevated to match sphere Z */
-    engine->states->pos_x[0] = 0.0f;
-    engine->states->pos_y[0] = 0.0f;
-    engine->states->pos_z[0] = 10.0f;  /* Match sphere Z (altitude) */
-    engine->states->quat_w[0] = 1.0f;
-    engine->states->quat_x[0] = 0.0f;
-    engine->states->quat_y[0] = 0.0f;
-    engine->states->quat_z[0] = 0.0f;
+    engine->states->rigid_body.pos_x[0] = 0.0f;
+    engine->states->rigid_body.pos_y[0] = 0.0f;
+    engine->states->rigid_body.pos_z[0] = 10.0f;  /* Match sphere Z (altitude) */
+    engine->states->rigid_body.quat_w[0] = 1.0f;
+    engine->states->rigid_body.quat_x[0] = 0.0f;
+    engine->states->rigid_body.quat_y[0] = 0.0f;
+    engine->states->rigid_body.quat_z[0] = 0.0f;
 
     /* Add large sphere in front of drone (use larger radius for atlas efficiency) */
     Vec3 sphere_center = VEC3(15.0f, 0.0f, 10.0f);  /* 15m in +X, same altitude */
@@ -254,38 +254,38 @@ TEST(lidar_detects_sphere_obstacle) {
 
 TEST(lidar_multiple_drones_shared_world) {
     float max_range = 50.0f;
-    BatchDroneEngine* engine = create_engine_with_lidar3d(2, 2, 8, 4, max_range);
+    BatchEngine* engine = create_engine_with_lidar3d(2, 2, 8, 4, max_range);
     ASSERT_NOT_NULL(engine);
 
     engine_reset(engine);
 
     /* Position drones at different locations - all at same Z level (altitude) */
     /* Drone 0: near obstacle */
-    engine->states->pos_x[0] = 0.0f;
-    engine->states->pos_y[0] = 0.0f;
-    engine->states->pos_z[0] = 10.0f;
+    engine->states->rigid_body.pos_x[0] = 0.0f;
+    engine->states->rigid_body.pos_y[0] = 0.0f;
+    engine->states->rigid_body.pos_z[0] = 10.0f;
 
     /* Drone 1: far from obstacle in -X */
-    engine->states->pos_x[1] = -30.0f;
-    engine->states->pos_y[1] = 0.0f;
-    engine->states->pos_z[1] = 10.0f;
+    engine->states->rigid_body.pos_x[1] = -30.0f;
+    engine->states->rigid_body.pos_y[1] = 0.0f;
+    engine->states->rigid_body.pos_z[1] = 10.0f;
 
     /* Drone 2: also near obstacle */
-    engine->states->pos_x[2] = 2.0f;
-    engine->states->pos_y[2] = 0.0f;
-    engine->states->pos_z[2] = 10.0f;
+    engine->states->rigid_body.pos_x[2] = 2.0f;
+    engine->states->rigid_body.pos_y[2] = 0.0f;
+    engine->states->rigid_body.pos_z[2] = 10.0f;
 
     /* Drone 3: very far in -X */
-    engine->states->pos_x[3] = -40.0f;
-    engine->states->pos_y[3] = 0.0f;
-    engine->states->pos_z[3] = 10.0f;
+    engine->states->rigid_body.pos_x[3] = -40.0f;
+    engine->states->rigid_body.pos_y[3] = 0.0f;
+    engine->states->rigid_body.pos_z[3] = 10.0f;
 
     /* Identity quaternions for all */
     for (int i = 0; i < 4; i++) {
-        engine->states->quat_w[i] = 1.0f;
-        engine->states->quat_x[i] = 0.0f;
-        engine->states->quat_y[i] = 0.0f;
-        engine->states->quat_z[i] = 0.0f;
+        engine->states->rigid_body.quat_w[i] = 1.0f;
+        engine->states->rigid_body.quat_x[i] = 0.0f;
+        engine->states->rigid_body.quat_y[i] = 0.0f;
+        engine->states->rigid_body.quat_z[i] = 0.0f;
     }
 
     /* Add large box that drones 0 and 2 should see, but not 1 and 3 */
@@ -303,17 +303,17 @@ TEST(lidar_multiple_drones_shared_world) {
     float* obs = engine_get_observations(engine);
     ASSERT_NOT_NULL(obs);
 
-    uint32_t rays_per_drone = 8 * 4;
-    uint32_t obs_per_drone = engine->obs_dim;
+    uint32_t rays_per_agent = 8 * 4;
+    uint32_t obs_per_agent = engine->obs_dim;
 
-    /* Find min distance for each drone */
+    /* Find min distance for each agent */
     float min_dist[4];
     for (int d = 0; d < 4; d++) {
         min_dist[d] = max_range;
-        float* drone_obs = &obs[d * obs_per_drone];
-        for (uint32_t r = 0; r < rays_per_drone && r < obs_per_drone; r++) {
-            if (drone_obs[r] < min_dist[d] && drone_obs[r] > 0.0f) {
-                min_dist[d] = drone_obs[r];
+        float* agent_obs = &obs[d * obs_per_agent];
+        for (uint32_t r = 0; r < rays_per_agent && r < obs_per_agent; r++) {
+            if (agent_obs[r] < min_dist[d] && agent_obs[r] > 0.0f) {
+                min_dist[d] = agent_obs[r];
             }
         }
     }
@@ -336,21 +336,21 @@ TEST(lidar_multiple_drones_shared_world) {
 
 TEST(lidar_detects_ground) {
     float max_range = 50.0f;
-    BatchDroneEngine* engine = create_engine_with_lidar3d(1, 1, 16, 16, max_range);
+    BatchEngine* engine = create_engine_with_lidar3d(1, 1, 16, 16, max_range);
     ASSERT_NOT_NULL(engine);
 
     engine_reset(engine);
 
     /* Position drone elevated at z=10 */
-    engine->states->pos_x[0] = 0.0f;
-    engine->states->pos_y[0] = 0.0f;
-    engine->states->pos_z[0] = 10.0f;  /* 10m above a floor at z=0 */
+    engine->states->rigid_body.pos_x[0] = 0.0f;
+    engine->states->rigid_body.pos_y[0] = 0.0f;
+    engine->states->rigid_body.pos_z[0] = 10.0f;  /* 10m above a floor at z=0 */
 
     /* Identity quaternion */
-    engine->states->quat_w[0] = 1.0f;
-    engine->states->quat_x[0] = 0.0f;
-    engine->states->quat_y[0] = 0.0f;
-    engine->states->quat_z[0] = 0.0f;
+    engine->states->rigid_body.quat_w[0] = 1.0f;
+    engine->states->rigid_body.quat_x[0] = 0.0f;
+    engine->states->rigid_body.quat_y[0] = 0.0f;
+    engine->states->rigid_body.quat_z[0] = 0.0f;
 
     /* Add a large flat box as a floor at z=0 (extending from z=-5 to z=5) */
     Vec3 floor_center = VEC3(0.0f, 0.0f, 0.0f);
@@ -402,7 +402,7 @@ TEST(lidar_detects_ground) {
 
 TEST(lidar_full_step_pipeline) {
     float max_range = 50.0f;
-    BatchDroneEngine* engine = create_engine_with_lidar3d(4, 4, 8, 4, max_range);
+    BatchEngine* engine = create_engine_with_lidar3d(4, 4, 8, 4, max_range);
     ASSERT_NOT_NULL(engine);
 
     /* Add some large geometry (large enough for UNIFORM_INSIDE optimization) */
@@ -419,7 +419,7 @@ TEST(lidar_full_step_pipeline) {
     float* actions = engine_get_actions(engine);
     for (int step = 0; step < 50; step++) {
         /* Random-ish actions */
-        for (uint32_t i = 0; i < 16 * ENGINE_ACTION_DIM; i++) {
+        for (uint32_t i = 0; i < 16 * engine->action_dim; i++) {
             actions[i] = 0.5f;
         }
 
@@ -449,19 +449,19 @@ TEST(lidar_full_step_pipeline) {
 
 TEST(lidar_clear_world) {
     float max_range = 50.0f;
-    BatchDroneEngine* engine = create_engine_with_lidar3d(1, 1, 16, 8, max_range);
+    BatchEngine* engine = create_engine_with_lidar3d(1, 1, 16, 8, max_range);
     ASSERT_NOT_NULL(engine);
 
     engine_reset(engine);
 
     /* Position drone elevated and facing +X */
-    engine->states->pos_x[0] = 0.0f;
-    engine->states->pos_y[0] = 0.0f;
-    engine->states->pos_z[0] = 10.0f;  /* Elevated */
-    engine->states->quat_w[0] = 1.0f;
-    engine->states->quat_x[0] = 0.0f;
-    engine->states->quat_y[0] = 0.0f;
-    engine->states->quat_z[0] = 0.0f;
+    engine->states->rigid_body.pos_x[0] = 0.0f;
+    engine->states->rigid_body.pos_y[0] = 0.0f;
+    engine->states->rigid_body.pos_z[0] = 10.0f;  /* Elevated */
+    engine->states->rigid_body.quat_w[0] = 1.0f;
+    engine->states->rigid_body.quat_x[0] = 0.0f;
+    engine->states->rigid_body.quat_y[0] = 0.0f;
+    engine->states->rigid_body.quat_z[0] = 0.0f;
 
     /* Add large box */
     Vec3 box_center = VEC3(15.0f, 0.0f, 10.0f);  /* 15m in +X direction, same altitude */

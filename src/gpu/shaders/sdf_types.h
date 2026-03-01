@@ -46,9 +46,6 @@
 #ifndef RAYMARCH_HIT_DIST
 #define RAYMARCH_HIT_DIST    0.01f
 #endif
-#ifndef RAYMARCH_NORMAL_EPSILON
-#define RAYMARCH_NORMAL_EPSILON 0.01f
-#endif
 
 /* ============================================================================
  * WorldParams - SDF grid parameters
@@ -91,7 +88,7 @@ typedef struct RaymarchParams {
     unsigned int output_mode;      /* OUTPUT_MODE_* */
     unsigned int image_width;
     unsigned int image_height;
-    unsigned int drone_count;
+    unsigned int agent_count;
     unsigned int output_precision; /* OUTPUT_PRECISION_FP32 or FP16 */
 } RaymarchParams;
 
@@ -108,10 +105,7 @@ typedef struct RaymarchParams {
 #define MATERIAL_PALETTE_B { 0.5f, 0.2f, 0.2f, 0.5f, 0.1f, 0.1f, 0.1f, 0.7f, \
                              0.1f, 0.1f, 0.6f, 0.6f, 0.9f, 0.1f, 0.4f, 0.8f }
 
-/* Light direction for Phong shading (unnormalized, will be normalized in shader) */
-#define LIGHT_DIR_X 0.5f
-#define LIGHT_DIR_Y 0.3f
-#define LIGHT_DIR_Z 1.0f
+/* Phong shading constants */
 #define AMBIENT     0.3f
 #define DIFFUSE     0.7f
 

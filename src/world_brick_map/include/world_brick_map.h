@@ -53,8 +53,6 @@ extern "C" {
 #define RAYMARCH_MAX_STEPS 128  /* Maximum sphere trace iterations */
 #define RAYMARCH_EPSILON 0.001f /* Minimum step size */
 #define RAYMARCH_HIT_DIST 0.01f /* Distance threshold for hit detection */
-#define RAYMARCH_NORMAL_EPSILON                                                \
-  0.01f /* Epsilon for gradient/normal calculation */
 
 /* Memory alignment for bricks (cache line friendly) */
 #define BRICK_ALIGNMENT 64
@@ -563,13 +561,7 @@ FOUNDATION_INLINE int8_t *world_brick_sdf(WorldBrickMap *world,
  */
 FOUNDATION_INLINE const int8_t *
 world_brick_sdf_const(const WorldBrickMap *world, int32_t atlas_idx) {
-  if (atlas_idx < 0 || (uint32_t)atlas_idx >= world->atlas_count)
-    return NULL;
-  uint32_t page = (uint32_t)atlas_idx / ATLAS_PAGE_BRICKS;
-  uint32_t offset = (uint32_t)atlas_idx % ATLAS_PAGE_BRICKS;
-  if (page >= world->page_count || world->sdf_pages[page] == NULL)
-    return NULL;
-  return world->sdf_pages[page] + (offset * BRICK_VOXELS);
+  return world_brick_sdf((WorldBrickMap *)world, atlas_idx);
 }
 
 /**
@@ -595,13 +587,7 @@ FOUNDATION_INLINE uint8_t *world_brick_material(WorldBrickMap *world,
  */
 FOUNDATION_INLINE const uint8_t *
 world_brick_material_const(const WorldBrickMap *world, int32_t atlas_idx) {
-  if (atlas_idx < 0 || (uint32_t)atlas_idx >= world->atlas_count)
-    return NULL;
-  uint32_t page = (uint32_t)atlas_idx / ATLAS_PAGE_BRICKS;
-  uint32_t offset = (uint32_t)atlas_idx % ATLAS_PAGE_BRICKS;
-  if (page >= world->page_count || world->material_pages[page] == NULL)
-    return NULL;
-  return world->material_pages[page] + (offset * BRICK_VOXELS);
+  return world_brick_material((WorldBrickMap *)world, atlas_idx);
 }
 
 /* ============================================================================
@@ -1217,6 +1203,10 @@ void clipmap_set_box(ClipMapWorld *clipmap, Vec3 center, Vec3 half_size,
  * Quantize a float SDF value to int8
  *
  * Maps [-sdf_scale, +sdf_scale] to [-127, +127]
+ *
+ * C truncation maps (-sdf_scale/127, +sdf_scale/127) to int8=0 (dequant 0.0).
+ * A post-voxelization sweep eliminates phantom zeros (isolated int8=0 voxels
+ * with no negative neighbor) to prevent false raymarcher hits.
  */
 FOUNDATION_INLINE int8_t sdf_quantize(float sdf, float inv_sdf_scale) {
   float normalized = clampf(sdf * inv_sdf_scale, -1.0f, 1.0f);
@@ -1260,10 +1250,6 @@ FOUNDATION_INLINE uint32_t brick_linear_index(const WorldBrickMap *world,
  * ============================================================================
  */
 
-/* Scalar min/max helpers for SDF functions */
-FOUNDATION_INLINE float sdf_maxf(float a, float b) { return a > b ? a : b; }
-FOUNDATION_INLINE float sdf_minf(float a, float b) { return a < b ? a : b; }
-
 /**
  * Signed distance to a box (rounded corners)
  */
@@ -1271,7 +1257,7 @@ FOUNDATION_INLINE float sdf_box(Vec3 p, Vec3 center, Vec3 half_size) {
   Vec3 d = vec3_sub(vec3_abs(vec3_sub(p, center)), half_size);
   Vec3 d_clamped = vec3_max(d, VEC3_ZERO);
   float outside = vec3_length(d_clamped);
-  float inside = sdf_minf(sdf_maxf(d.x, sdf_maxf(d.y, d.z)), 0.0f);
+  float inside = minf(maxf(d.x, maxf(d.y, d.z)), 0.0f);
   return outside + inside;
 }
 
@@ -1290,9 +1276,9 @@ FOUNDATION_INLINE float sdf_cylinder(Vec3 p, Vec3 center, float radius,
   Vec3 rel = vec3_sub(p, center);
   float dist_xy = sqrtf(rel.x * rel.x + rel.y * rel.y) - radius;
   float dist_z = absf(rel.z) - half_height;
-  float outside = sqrtf(sdf_maxf(dist_xy, 0.0f) * sdf_maxf(dist_xy, 0.0f) +
-                        sdf_maxf(dist_z, 0.0f) * sdf_maxf(dist_z, 0.0f));
-  float inside = sdf_minf(sdf_maxf(dist_xy, dist_z), 0.0f);
+  float outside = sqrtf(maxf(dist_xy, 0.0f) * maxf(dist_xy, 0.0f) +
+                        maxf(dist_z, 0.0f) * maxf(dist_z, 0.0f));
+  float inside = minf(maxf(dist_xy, dist_z), 0.0f);
   return outside + inside;
 }
 

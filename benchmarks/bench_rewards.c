@@ -7,6 +7,7 @@
 
 #include "bench_harness.h"
 #include "reward_system.h"
+#include "platform_quadcopter.h"
 
 /* ============================================================================
  * Fixture
@@ -15,30 +16,30 @@
 typedef struct RewardBenchCtx {
     Arena* arena;
     RewardSystem* rewards;
-    DroneStateSOA* drones;
-    DroneParamsSOA* params;
+    PlatformStateSOA* drones;
+    PlatformParamsSOA* params;
     float* actions;
     float* reward_buf;
     CollisionResults collision_results;
     uint8_t* world_flags;
     float* penetration;
-    uint32_t num_drones;
+    uint32_t num_agents;
 } RewardBenchCtx;
 
-static RewardBenchCtx* reward_ctx_create(Arena* arena, uint32_t num_drones,
+static RewardBenchCtx* reward_ctx_create(Arena* arena, uint32_t num_agents,
                                           TaskType task, uint32_t num_gates,
                                           uint64_t seed) {
     RewardBenchCtx* ctx = arena_alloc_type(arena, RewardBenchCtx);
     memset(ctx, 0, sizeof(*ctx));
     ctx->arena = arena;
-    ctx->num_drones = num_drones;
+    ctx->num_agents = num_agents;
 
     RewardConfig config = reward_config_default(task);
-    ctx->rewards = reward_create(arena, &config, num_drones, num_gates);
-    ctx->drones = drone_state_create(arena, num_drones);
-    ctx->params = drone_params_create(arena, num_drones);
-    ctx->actions = arena_alloc_array(arena, float, num_drones * 4);
-    ctx->reward_buf = arena_alloc_array(arena, float, num_drones);
+    ctx->rewards = reward_create(arena, &config, num_agents, num_gates);
+    ctx->drones = platform_state_create(arena, num_agents, QUAD_STATE_EXT_COUNT);
+    ctx->params = platform_params_create(arena, num_agents, QUAD_PARAMS_EXT_COUNT);
+    ctx->actions = arena_alloc_array(arena, float, num_agents * 4);
+    ctx->reward_buf = arena_alloc_array(arena, float, num_agents);
 
     if (!ctx->rewards || !ctx->drones || !ctx->params || !ctx->actions || !ctx->reward_buf)
         return NULL;
@@ -46,23 +47,24 @@ static RewardBenchCtx* reward_ctx_create(Arena* arena, uint32_t num_drones,
     /* Initialize drones with random positions/velocities */
     PCG32 rng;
     pcg32_seed(&rng, seed);
-    for (uint32_t i = 0; i < num_drones; i++) {
-        drone_state_init(ctx->drones, i);
-        drone_params_init(ctx->params, i);
-        ctx->drones->pos_x[i] = pcg32_range(&rng, -30, 30);
-        ctx->drones->pos_y[i] = pcg32_range(&rng, -30, 30);
-        ctx->drones->pos_z[i] = pcg32_range(&rng, 2, 20);
-        ctx->drones->vel_x[i] = pcg32_range(&rng, -2, 2);
-        ctx->drones->vel_y[i] = pcg32_range(&rng, -2, 2);
-        ctx->drones->vel_z[i] = pcg32_range(&rng, -1, 1);
+    for (uint32_t i = 0; i < num_agents; i++) {
+        platform_state_init(ctx->drones, i);
+        platform_params_init(ctx->params, i);
+        PLATFORM_QUADCOPTER.init_params(ctx->params->extension, ctx->params->extension_count, i);
+        ctx->drones->rigid_body.pos_x[i] = pcg32_range(&rng, -30, 30);
+        ctx->drones->rigid_body.pos_y[i] = pcg32_range(&rng, -30, 30);
+        ctx->drones->rigid_body.pos_z[i] = pcg32_range(&rng, 2, 20);
+        ctx->drones->rigid_body.vel_x[i] = pcg32_range(&rng, -2, 2);
+        ctx->drones->rigid_body.vel_y[i] = pcg32_range(&rng, -2, 2);
+        ctx->drones->rigid_body.vel_z[i] = pcg32_range(&rng, -1, 1);
         for (uint32_t m = 0; m < 4; m++) {
             ctx->actions[i * 4 + m] = pcg32_range(&rng, 0.2f, 0.8f);
         }
     }
-    ctx->drones->count = num_drones;
+    ctx->drones->rigid_body.count = num_agents;
 
     /* Set random targets */
-    reward_set_targets_random(ctx->rewards, num_drones,
+    reward_set_targets_random(ctx->rewards, num_agents,
                                VEC3(-30, -30, 2), VEC3(30, 30, 20), &rng);
 
     /* Set gates if racing */
@@ -81,10 +83,10 @@ static RewardBenchCtx* reward_ctx_create(Arena* arena, uint32_t num_drones,
     }
 
     /* Pre-populated collision results (~5% collision flags) */
-    ctx->world_flags = arena_alloc_zero(arena, num_drones);
-    ctx->penetration = arena_alloc_array(arena, float, num_drones);
-    memset(ctx->penetration, 0, sizeof(float) * num_drones);
-    for (uint32_t i = 0; i < num_drones; i++) {
+    ctx->world_flags = arena_alloc_zero(arena, num_agents);
+    ctx->penetration = arena_alloc_array(arena, float, num_agents);
+    memset(ctx->penetration, 0, sizeof(float) * num_agents);
+    for (uint32_t i = 0; i < num_agents; i++) {
         if (pcg32_bounded(&rng, 20) == 0) { /* ~5% */
             ctx->world_flags[i] = 1;
             ctx->penetration[i] = -0.05f;
@@ -106,7 +108,7 @@ static RewardBenchCtx* reward_ctx_create(Arena* arena, uint32_t num_drones,
 static void fn_reward_compute(void* arg) {
     RewardBenchCtx* ctx = (RewardBenchCtx*)arg;
     reward_compute(ctx->rewards, ctx->drones, ctx->params, ctx->actions,
-                    &ctx->collision_results, ctx->reward_buf, ctx->num_drones);
+                    &ctx->collision_results, ctx->reward_buf, ctx->num_agents);
 }
 
 typedef struct TermBenchCtx {
@@ -119,7 +121,7 @@ static void fn_termination(void* arg) {
     reward_compute_terminations(ctx->rctx->rewards, ctx->rctx->drones,
                                  &ctx->rctx->collision_results,
                                  VEC3(-50, -50, -10), VEC3(50, 50, 50),
-                                 1000, ctx->flags, ctx->rctx->num_drones);
+                                 1000, ctx->flags, ctx->rctx->num_agents);
 }
 
 typedef struct FullFrameCtx {
@@ -131,24 +133,24 @@ static void fn_full_frame(void* arg) {
     FullFrameCtx* ctx = (FullFrameCtx*)arg;
     reward_compute(ctx->rctx->rewards, ctx->rctx->drones, ctx->rctx->params,
                     ctx->rctx->actions, &ctx->rctx->collision_results,
-                    ctx->rctx->reward_buf, ctx->rctx->num_drones);
+                    ctx->rctx->reward_buf, ctx->rctx->num_agents);
     reward_compute_terminations(ctx->rctx->rewards, ctx->rctx->drones,
                                  &ctx->rctx->collision_results,
                                  VEC3(-50, -50, -10), VEC3(50, 50, 50),
-                                 1000, ctx->flags, ctx->rctx->num_drones);
+                                 1000, ctx->flags, ctx->rctx->num_agents);
 }
 
 /* ============================================================================
  * Scaling helper
  * ============================================================================ */
 
-static BenchStats bench_hover_frame_scaling(uint32_t drone_count, uint32_t iterations,
+static BenchStats bench_hover_frame_scaling(uint32_t agent_count, uint32_t iterations,
                                              uint32_t warmup, uint64_t seed) {
     Arena* arena = arena_create(64 * 1024 * 1024);
     BenchStats s = {0};
     s.name = "full_hover_frame";
 
-    RewardBenchCtx* rctx = reward_ctx_create(arena, drone_count, TASK_HOVER, 0, seed);
+    RewardBenchCtx* rctx = reward_ctx_create(arena, agent_count, TASK_HOVER, 0, seed);
     if (!rctx) {
         arena_destroy(arena);
         return s;
@@ -156,17 +158,17 @@ static BenchStats bench_hover_frame_scaling(uint32_t drone_count, uint32_t itera
 
     /* Create termination flags */
     TerminationFlags flags = {0};
-    flags.done = arena_alloc_zero(arena, drone_count);
-    flags.truncated = arena_alloc_zero(arena, drone_count);
-    flags.success = arena_alloc_zero(arena, drone_count);
-    flags.collision = arena_alloc_zero(arena, drone_count);
-    flags.out_of_bounds = arena_alloc_zero(arena, drone_count);
-    flags.timeout = arena_alloc_zero(arena, drone_count);
-    flags.capacity = drone_count;
+    flags.done = arena_alloc_zero(arena, agent_count);
+    flags.truncated = arena_alloc_zero(arena, agent_count);
+    flags.success = arena_alloc_zero(arena, agent_count);
+    flags.collision = arena_alloc_zero(arena, agent_count);
+    flags.out_of_bounds = arena_alloc_zero(arena, agent_count);
+    flags.timeout = arena_alloc_zero(arena, agent_count);
+    flags.capacity = agent_count;
 
     FullFrameCtx fctx = { .rctx = rctx, .flags = &flags };
     s = bench_measure("full_hover_frame", fn_full_frame, &fctx, warmup, iterations, 1.0);
-    s.drone_count = drone_count;
+    s.agent_count = agent_count;
 
     arena_destroy(arena);
     return s;
@@ -197,7 +199,7 @@ int main(int argc, char** argv) {
         if (ctx) {
             BenchStats s = bench_measure("hover_reward", fn_reward_compute, ctx,
                                           cli.warmup, cli.iterations, 0.3);
-            s.drone_count = N;
+            s.agent_count = N;
             bench_print_row(&s);
             results[num_results++] = s;
         }
@@ -211,7 +213,7 @@ int main(int argc, char** argv) {
         if (ctx) {
             BenchStats s = bench_measure("race_reward_10", fn_reward_compute, ctx,
                                           cli.warmup, cli.iterations, 0.5);
-            s.drone_count = N;
+            s.agent_count = N;
             bench_print_row(&s);
             results[num_results++] = s;
         }
@@ -225,7 +227,7 @@ int main(int argc, char** argv) {
         if (ctx) {
             BenchStats s = bench_measure("race_reward_50", fn_reward_compute, ctx,
                                           cli.warmup, cli.iterations, 0.8);
-            s.drone_count = N;
+            s.agent_count = N;
             bench_print_row(&s);
             results[num_results++] = s;
         }
@@ -239,7 +241,7 @@ int main(int argc, char** argv) {
         if (ctx) {
             BenchStats s = bench_measure("track_reward", fn_reward_compute, ctx,
                                           cli.warmup, cli.iterations, 0.4);
-            s.drone_count = N;
+            s.agent_count = N;
             bench_print_row(&s);
             results[num_results++] = s;
         }
@@ -253,7 +255,7 @@ int main(int argc, char** argv) {
         if (ctx) {
             BenchStats s = bench_measure("land_reward", fn_reward_compute, ctx,
                                           cli.warmup, cli.iterations, 0.3);
-            s.drone_count = N;
+            s.agent_count = N;
             bench_print_row(&s);
             results[num_results++] = s;
         }
@@ -280,14 +282,14 @@ int main(int argc, char** argv) {
             TermBenchCtx tctx = { .rctx = rctx, .flags = &flags };
             BenchStats s = bench_measure("termination", fn_termination, &tctx,
                                           cli.warmup, cli.iterations, 0.1);
-            s.drone_count = N;
+            s.agent_count = N;
             bench_print_row(&s);
             results[num_results++] = s;
 
             FullFrameCtx fctx = { .rctx = rctx, .flags = &flags };
             s = bench_measure("full_hover_frame", fn_full_frame, &fctx,
                                cli.warmup, cli.iterations, 1.0);
-            s.drone_count = N;
+            s.agent_count = N;
             bench_print_row(&s);
             results[num_results++] = s;
         }
@@ -310,7 +312,7 @@ int main(int argc, char** argv) {
             FullFrameCtx fctx = { .rctx = rctx, .flags = &flags };
             BenchStats s = bench_measure("full_race_frame", fn_full_frame, &fctx,
                                           cli.warmup, cli.iterations, 1.2);
-            s.drone_count = N;
+            s.agent_count = N;
             bench_print_row(&s);
             results[num_results++] = s;
         }

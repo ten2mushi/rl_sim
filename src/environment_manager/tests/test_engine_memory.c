@@ -1,6 +1,6 @@
 /**
  * @file test_engine_memory.c
- * @brief Deep Memory Management Tests for BatchDroneEngine (12 tests)
+ * @brief Deep Memory Management Tests for BatchEngine (12 tests)
  *
  * Tests verify memory safety and optimization:
  * - Arena allocator behavior (alloc, alignment, reset, overflow)
@@ -16,6 +16,7 @@
  */
 
 #include "environment_manager.h"
+#include "platform_quadcopter.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -30,10 +31,10 @@
 /**
  * Create a test engine with fixed seed
  */
-static BatchDroneEngine* create_test_engine(uint64_t seed) {
+static BatchEngine* create_test_engine(uint64_t seed) {
     EngineConfig cfg = engine_config_default();
     cfg.num_envs = 4;
-    cfg.drones_per_env = 4;
+    cfg.agents_per_env = 4;
     cfg.seed = seed;
     cfg.persistent_arena_size = 128 * 1024 * 1024;  /* 128 MB */
     cfg.frame_arena_size = 32 * 1024 * 1024;        /* 32 MB */
@@ -185,7 +186,7 @@ TEST(arena_overflow_handling) {
  * ============================================================================ */
 
 TEST(frame_arena_reset_each_step) {
-    BatchDroneEngine* engine = create_test_engine(12345);
+    BatchEngine* engine = create_test_engine(12345);
     ASSERT_NOT_NULL(engine);
     ASSERT_NOT_NULL(engine->frame_arena);
 
@@ -219,7 +220,7 @@ TEST(frame_arena_reset_each_step) {
  * ============================================================================ */
 
 TEST(persistent_arena_stability) {
-    BatchDroneEngine* engine = create_test_engine(12345);
+    BatchEngine* engine = create_test_engine(12345);
     ASSERT_NOT_NULL(engine);
     ASSERT_NOT_NULL(engine->persistent_arena);
 
@@ -247,28 +248,28 @@ TEST(persistent_arena_stability) {
  * ============================================================================ */
 
 TEST(soa_array_alignment) {
-    BatchDroneEngine* engine = create_test_engine(12345);
+    BatchEngine* engine = create_test_engine(12345);
     ASSERT_NOT_NULL(engine);
     ASSERT_NOT_NULL(engine->states);
 
-    /* All 17 DroneStateSOA arrays must be 32-byte aligned for AVX2 */
-    ASSERT_TRUE(is_aligned(engine->states->pos_x, 32));
-    ASSERT_TRUE(is_aligned(engine->states->pos_y, 32));
-    ASSERT_TRUE(is_aligned(engine->states->pos_z, 32));
-    ASSERT_TRUE(is_aligned(engine->states->vel_x, 32));
-    ASSERT_TRUE(is_aligned(engine->states->vel_y, 32));
-    ASSERT_TRUE(is_aligned(engine->states->vel_z, 32));
-    ASSERT_TRUE(is_aligned(engine->states->quat_w, 32));
-    ASSERT_TRUE(is_aligned(engine->states->quat_x, 32));
-    ASSERT_TRUE(is_aligned(engine->states->quat_y, 32));
-    ASSERT_TRUE(is_aligned(engine->states->quat_z, 32));
-    ASSERT_TRUE(is_aligned(engine->states->omega_x, 32));
-    ASSERT_TRUE(is_aligned(engine->states->omega_y, 32));
-    ASSERT_TRUE(is_aligned(engine->states->omega_z, 32));
-    ASSERT_TRUE(is_aligned(engine->states->rpm_0, 32));
-    ASSERT_TRUE(is_aligned(engine->states->rpm_1, 32));
-    ASSERT_TRUE(is_aligned(engine->states->rpm_2, 32));
-    ASSERT_TRUE(is_aligned(engine->states->rpm_3, 32));
+    /* All 17 PlatformStateSOA arrays must be 32-byte aligned for AVX2 */
+    ASSERT_TRUE(is_aligned(engine->states->rigid_body.pos_x, 32));
+    ASSERT_TRUE(is_aligned(engine->states->rigid_body.pos_y, 32));
+    ASSERT_TRUE(is_aligned(engine->states->rigid_body.pos_z, 32));
+    ASSERT_TRUE(is_aligned(engine->states->rigid_body.vel_x, 32));
+    ASSERT_TRUE(is_aligned(engine->states->rigid_body.vel_y, 32));
+    ASSERT_TRUE(is_aligned(engine->states->rigid_body.vel_z, 32));
+    ASSERT_TRUE(is_aligned(engine->states->rigid_body.quat_w, 32));
+    ASSERT_TRUE(is_aligned(engine->states->rigid_body.quat_x, 32));
+    ASSERT_TRUE(is_aligned(engine->states->rigid_body.quat_y, 32));
+    ASSERT_TRUE(is_aligned(engine->states->rigid_body.quat_z, 32));
+    ASSERT_TRUE(is_aligned(engine->states->rigid_body.omega_x, 32));
+    ASSERT_TRUE(is_aligned(engine->states->rigid_body.omega_y, 32));
+    ASSERT_TRUE(is_aligned(engine->states->rigid_body.omega_z, 32));
+    ASSERT_TRUE(is_aligned(engine->states->extension[QUAD_EXT_RPM_0], 32));
+    ASSERT_TRUE(is_aligned(engine->states->extension[QUAD_EXT_RPM_1], 32));
+    ASSERT_TRUE(is_aligned(engine->states->extension[QUAD_EXT_RPM_2], 32));
+    ASSERT_TRUE(is_aligned(engine->states->extension[QUAD_EXT_RPM_3], 32));
 
     engine_destroy(engine);
     return 0;
@@ -279,26 +280,26 @@ TEST(soa_array_alignment) {
  * ============================================================================ */
 
 TEST(soa_params_alignment) {
-    BatchDroneEngine* engine = create_test_engine(12345);
+    BatchEngine* engine = create_test_engine(12345);
     ASSERT_NOT_NULL(engine);
     ASSERT_NOT_NULL(engine->params);
 
-    /* All 15 DroneParamsSOA arrays must be 32-byte aligned */
-    ASSERT_TRUE(is_aligned(engine->params->mass, 32));
-    ASSERT_TRUE(is_aligned(engine->params->ixx, 32));
-    ASSERT_TRUE(is_aligned(engine->params->iyy, 32));
-    ASSERT_TRUE(is_aligned(engine->params->izz, 32));
-    ASSERT_TRUE(is_aligned(engine->params->arm_length, 32));
-    ASSERT_TRUE(is_aligned(engine->params->collision_radius, 32));
-    ASSERT_TRUE(is_aligned(engine->params->k_thrust, 32));
-    ASSERT_TRUE(is_aligned(engine->params->k_torque, 32));
-    ASSERT_TRUE(is_aligned(engine->params->k_drag, 32));
-    ASSERT_TRUE(is_aligned(engine->params->k_ang_damp, 32));
-    ASSERT_TRUE(is_aligned(engine->params->motor_tau, 32));
-    ASSERT_TRUE(is_aligned(engine->params->max_rpm, 32));
-    ASSERT_TRUE(is_aligned(engine->params->max_vel, 32));
-    ASSERT_TRUE(is_aligned(engine->params->max_omega, 32));
-    ASSERT_TRUE(is_aligned(engine->params->gravity, 32));
+    /* All 15 PlatformParamsSOA arrays must be 32-byte aligned */
+    ASSERT_TRUE(is_aligned(engine->params->rigid_body.mass, 32));
+    ASSERT_TRUE(is_aligned(engine->params->rigid_body.ixx, 32));
+    ASSERT_TRUE(is_aligned(engine->params->rigid_body.iyy, 32));
+    ASSERT_TRUE(is_aligned(engine->params->rigid_body.izz, 32));
+    ASSERT_TRUE(is_aligned(engine->params->extension[QUAD_PEXT_ARM_LENGTH], 32));
+    ASSERT_TRUE(is_aligned(engine->params->rigid_body.collision_radius, 32));
+    ASSERT_TRUE(is_aligned(engine->params->extension[QUAD_PEXT_K_THRUST], 32));
+    ASSERT_TRUE(is_aligned(engine->params->extension[QUAD_PEXT_K_TORQUE], 32));
+    ASSERT_TRUE(is_aligned(engine->params->extension[QUAD_PEXT_K_DRAG], 32));
+    ASSERT_TRUE(is_aligned(engine->params->extension[QUAD_PEXT_K_ANG_DAMP], 32));
+    ASSERT_TRUE(is_aligned(engine->params->extension[QUAD_PEXT_MOTOR_TAU], 32));
+    ASSERT_TRUE(is_aligned(engine->params->extension[QUAD_PEXT_MAX_RPM], 32));
+    ASSERT_TRUE(is_aligned(engine->params->rigid_body.max_vel, 32));
+    ASSERT_TRUE(is_aligned(engine->params->rigid_body.max_omega, 32));
+    ASSERT_TRUE(is_aligned(engine->params->rigid_body.gravity, 32));
 
     engine_destroy(engine);
     return 0;
@@ -309,7 +310,7 @@ TEST(soa_params_alignment) {
  * ============================================================================ */
 
 TEST(hot_cold_separation) {
-    BatchDroneEngine* engine = create_test_engine(12345);
+    BatchEngine* engine = create_test_engine(12345);
     ASSERT_NOT_NULL(engine);
 
     /* Hot data (pos/vel/quat/omega) should fit in roughly 64 bytes per drone:
@@ -350,7 +351,7 @@ TEST(hot_cold_separation) {
  * ============================================================================ */
 
 TEST(false_sharing_avoidance) {
-    BatchDroneEngine* engine = create_test_engine(12345);
+    BatchEngine* engine = create_test_engine(12345);
     ASSERT_NOT_NULL(engine);
 
     /* Per-thread data should be on separate 64-byte cache lines
@@ -369,14 +370,14 @@ TEST(false_sharing_avoidance) {
      * cache line alignment when processing chunks of 8 drones
      * (8 floats = 32 bytes, half a cache line)
      */
-    ASSERT_TRUE(is_aligned(engine->states->pos_x, 32));
+    ASSERT_TRUE(is_aligned(engine->states->rigid_body.pos_x, 32));
 
     /* Verify that arrays have sufficient stride between elements
      * for false-sharing avoidance when different threads process
      * different contiguous chunks of drones.
      */
-    uint32_t total_drones = engine->config.total_drones;
-    ASSERT_GT(total_drones, 0);
+    uint32_t total_agents = engine->config.total_agents;
+    ASSERT_GT(total_agents, 0);
 
     engine_destroy(engine);
     return 0;
@@ -395,7 +396,7 @@ TEST(valgrind_no_leaks) {
      */
 
     for (int i = 0; i < 3; i++) {
-        BatchDroneEngine* engine = create_test_engine(12345 + i);
+        BatchEngine* engine = create_test_engine(12345 + i);
         ASSERT_NOT_NULL(engine);
 
         engine_reset(engine);
@@ -432,37 +433,37 @@ TEST(asan_clean) {
      * - Stack buffer overflow
      */
 
-    BatchDroneEngine* engine = create_test_engine(12345);
+    BatchEngine* engine = create_test_engine(12345);
     ASSERT_NOT_NULL(engine);
 
     engine_reset(engine);
 
-    uint32_t total_drones = engine->config.total_drones;
+    uint32_t total_agents = engine->config.total_agents;
 
     /* Test 1: Access within bounds */
-    for (uint32_t i = 0; i < total_drones; i++) {
+    for (uint32_t i = 0; i < total_agents; i++) {
         /* Read access */
-        float px = engine->states->pos_x[i];
-        float py = engine->states->pos_y[i];
-        float pz = engine->states->pos_z[i];
+        float px = engine->states->rigid_body.pos_x[i];
+        float py = engine->states->rigid_body.pos_y[i];
+        float pz = engine->states->rigid_body.pos_z[i];
         ASSERT_TRUE(isfinite(px) || !isfinite(px));  /* Just access, don't crash */
 
         /* Write access */
-        engine->states->pos_x[i] = 0.0f;
-        engine->states->pos_y[i] = 0.0f;
-        engine->states->pos_z[i] = 0.0f;
+        engine->states->rigid_body.pos_x[i] = 0.0f;
+        engine->states->rigid_body.pos_y[i] = 0.0f;
+        engine->states->rigid_body.pos_z[i] = 0.0f;
     }
 
     /* Test 2: Action buffer access within bounds */
     float* actions = engine_get_actions(engine);
-    for (uint32_t i = 0; i < total_drones * ENGINE_ACTION_DIM; i++) {
+    for (uint32_t i = 0; i < total_agents * engine->action_dim; i++) {
         actions[i] = 0.5f;
     }
 
     /* Test 3: Observation buffer access within bounds */
     uint32_t obs_dim = engine_get_obs_dim(engine);
     float* obs = engine_get_observations(engine);
-    for (uint32_t i = 0; i < total_drones * obs_dim && i < 1000; i++) {
+    for (uint32_t i = 0; i < total_agents * obs_dim && i < 1000; i++) {
         float val = obs[i];
         (void)val;
     }
@@ -470,7 +471,7 @@ TEST(asan_clean) {
     /* Test 4: Done/truncation buffer access */
     uint8_t* dones = engine_get_dones(engine);
     uint8_t* truncs = engine_get_truncations(engine);
-    for (uint32_t i = 0; i < total_drones; i++) {
+    for (uint32_t i = 0; i < total_agents; i++) {
         uint8_t d = dones[i];
         uint8_t t = truncs[i];
         (void)d;

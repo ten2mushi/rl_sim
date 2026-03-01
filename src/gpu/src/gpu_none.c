@@ -82,16 +82,16 @@ GpuResult gpu_sdf_atlas_sync_dirty(GpuSdfAtlas* atlas, const struct WorldBrickMa
 void gpu_sdf_atlas_destroy(GpuSdfAtlas* atlas) { (void)atlas; }
 
 /* Drone Poses */
-GpuDronePoses gpu_drone_poses_create(GpuDevice* device, uint32_t max_drones) {
-    (void)device; (void)max_drones;
+GpuDronePoses gpu_agent_poses_create(GpuDevice* device, uint32_t max_agents) {
+    (void)device; (void)max_agents;
     GpuDronePoses poses = {0};
     return poses;
 }
-GpuResult gpu_drone_poses_upload(GpuDronePoses* poses, const struct DroneStateSOA* drones,
-                                  uint32_t drone_count) {
-    (void)poses; (void)drones; (void)drone_count; return GPU_ERROR_BACKEND;
+GpuResult gpu_agent_poses_upload(GpuDronePoses* poses, const struct RigidBodyStateSOA* agents,
+                                  uint32_t agent_count) {
+    (void)poses; (void)agents; (void)agent_count; return GPU_ERROR_BACKEND;
 }
-void gpu_drone_poses_destroy(GpuDronePoses* poses) { (void)poses; }
+void gpu_agent_poses_destroy(GpuDronePoses* poses) { (void)poses; }
 
 /* Ray Table */
 GpuRayTable gpu_ray_table_create(GpuDevice* device, const Vec3* directions, uint32_t count) {
@@ -121,8 +121,8 @@ void sensor_implementations_register_gpu(SensorRegistry* registry) {
     (void)registry;
 }
 
-struct GpuSensorContext* gpu_sensor_context_create(uint32_t max_drones) {
-    (void)max_drones;
+struct GpuSensorContext* gpu_sensor_context_create(uint32_t max_agents) {
+    (void)max_agents;
     return NULL;
 }
 
@@ -132,24 +132,24 @@ void gpu_sensor_context_destroy(struct GpuSensorContext* ctx) {
 
 int32_t gpu_sensor_context_sync_frame(struct GpuSensorContext* ctx,
                                        const struct WorldBrickMap* world,
-                                       const struct DroneStateSOA* drones,
-                                       uint32_t drone_count) {
-    (void)ctx; (void)world; (void)drones; (void)drone_count;
+                                       const struct RigidBodyStateSOA* agents,
+                                       uint32_t agent_count) {
+    (void)ctx; (void)world; (void)agents; (void)agent_count;
     return GPU_ERROR_BACKEND;
 }
 
 int32_t gpu_sensor_context_init_sensor(struct GpuSensorContext* ctx,
                                         const Sensor* sensor,
-                                        uint32_t drone_count) {
-    (void)ctx; (void)sensor; (void)drone_count;
+                                        uint32_t agent_count) {
+    (void)ctx; (void)sensor; (void)agent_count;
     return GPU_ERROR_BACKEND;
 }
 
 int32_t gpu_sensors_dispatch(struct GpuSensorContext* gpu_ctx,
                               SensorSystem* sys,
                               const struct WorldBrickMap* world,
-                              uint32_t drone_count) {
-    (void)gpu_ctx; (void)sys; (void)world; (void)drone_count;
+                              uint32_t agent_count) {
+    (void)gpu_ctx; (void)sys; (void)world; (void)agent_count;
     return GPU_ERROR_BACKEND;
 }
 
@@ -160,8 +160,8 @@ int32_t gpu_sensors_wait(struct GpuSensorContext* gpu_ctx) {
 
 int32_t gpu_sensors_scatter_results(struct GpuSensorContext* gpu_ctx,
                                      SensorSystem* sys,
-                                     uint32_t drone_count) {
-    (void)gpu_ctx; (void)sys; (void)drone_count;
+                                     uint32_t agent_count) {
+    (void)gpu_ctx; (void)sys; (void)agent_count;
     return GPU_ERROR_BACKEND;
 }
 

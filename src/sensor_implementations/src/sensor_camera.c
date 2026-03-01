@@ -22,8 +22,12 @@
 
 /* Constants */
 #ifndef M_PI
-#define M_PI 3.14159265358979323846f
+#define M_PI 3.14159265358979323846
 #endif
+
+/* Default camera dimensions used when impl is NULL */
+#define CAMERA_DEFAULT_WIDTH  64
+#define CAMERA_DEFAULT_HEIGHT 64
 
 /* Material colors for RGB rendering (placeholder palette) */
 static const float MATERIAL_COLORS[16][3] = {
@@ -47,6 +51,9 @@ static const float MATERIAL_COLORS[16][3] = {
 
 /* Sky color for misses */
 static const float SKY_COLOR[3] = {0.5f, 0.7f, 0.9f};
+
+/* Precomputed light direction: normalize(0.5, 0.3, 1.0) */
+static const Vec3 LIGHT_DIR = {0.43193421f, 0.25916053f, 0.86386843f, 0.0f};
 
 /* ============================================================================
  * Camera Ray Precomputation
@@ -99,7 +106,8 @@ Vec3* precompute_camera_rays(Arena* arena, uint32_t width, uint32_t height,
  * ============================================================================ */
 
 static CameraImpl* camera_init_common(Sensor* sensor, const SensorConfig* config,
-                                      Arena* arena, SensorType type) {
+                                      Arena* arena) {
+    (void)sensor;
     CameraImpl* impl = arena_alloc_type(arena, CameraImpl);
     if (impl == NULL) {
         return NULL;
@@ -130,12 +138,12 @@ static CameraImpl* camera_init_common(Sensor* sensor, const SensorConfig* config
  * ============================================================================ */
 
 static void camera_rgb_init(Sensor* sensor, const SensorConfig* config, Arena* arena) {
-    sensor->impl = camera_init_common(sensor, config, arena, SENSOR_TYPE_CAMERA_RGB);
+    sensor->impl = camera_init_common(sensor, config, arena);
 }
 
 static size_t camera_rgb_get_output_size(const Sensor* sensor) {
     CameraImpl* impl = (CameraImpl*)sensor->impl;
-    if (impl == NULL) return 64 * 64 * 3;
+    if (impl == NULL) return CAMERA_DEFAULT_WIDTH * CAMERA_DEFAULT_HEIGHT * 3;
     return impl->total_pixels * 3;
 }
 
@@ -147,8 +155,8 @@ static const char* camera_rgb_get_output_dtype(const Sensor* sensor) {
 static uint32_t camera_rgb_get_output_shape(const Sensor* sensor, uint32_t* shape) {
     CameraImpl* impl = (CameraImpl*)sensor->impl;
     if (impl == NULL) {
-        shape[0] = 64;
-        shape[1] = 64;
+        shape[0] = CAMERA_DEFAULT_HEIGHT;
+        shape[1] = CAMERA_DEFAULT_WIDTH;
         shape[2] = 3;
     } else {
         shape[0] = impl->height;
@@ -161,13 +169,13 @@ static uint32_t camera_rgb_get_output_shape(const Sensor* sensor, uint32_t* shap
 static void camera_rgb_batch_sample(Sensor* sensor, const SensorContext* ctx, float* output_buffer) {
     CameraImpl* impl = (CameraImpl*)sensor->impl;
     if (impl == NULL || impl->ray_directions == NULL) {
-        memset(output_buffer, 0, ctx->drone_count * 64 * 64 * 3 * sizeof(float));
+        memset(output_buffer, 0, ctx->agent_count * CAMERA_DEFAULT_WIDTH * CAMERA_DEFAULT_HEIGHT * 3 * sizeof(float));
         return;
     }
 
-    const DroneStateSOA* drones = ctx->drones;
-    const uint32_t* indices = ctx->drone_indices;
-    uint32_t count = ctx->drone_count;
+    const RigidBodyStateSOA* drones = ctx->agents;
+    const uint32_t* indices = ctx->agent_indices;
+    uint32_t count = ctx->agent_count;
     const struct WorldBrickMap* world = ctx->world;
     uint32_t total_pixels = impl->total_pixels;
 
@@ -211,15 +219,11 @@ static void camera_rgb_batch_sample(Sensor* sensor, const SensorContext* ctx, fl
                 if (mat > 15) mat = 0;
 
                 /* Simple diffuse lighting based on normal */
-                Vec3 light_dir = vec3_normalize(VEC3(0.5f, 0.3f, 1.0f));
-                float diffuse = 0.3f + 0.7f * clampf(vec3_dot(hit.normal, light_dir), 0.0f, 1.0f);
+                float diffuse = 0.3f + 0.7f * clampf(vec3_dot(hit.normal, LIGHT_DIR), 0.0f, 1.0f);
 
-                /* Apply ambient occlusion (simplified) */
-                float ao = 1.0f;
-
-                pixel[0] = MATERIAL_COLORS[mat][0] * diffuse * ao;
-                pixel[1] = MATERIAL_COLORS[mat][1] * diffuse * ao;
-                pixel[2] = MATERIAL_COLORS[mat][2] * diffuse * ao;
+                pixel[0] = MATERIAL_COLORS[mat][0] * diffuse;
+                pixel[1] = MATERIAL_COLORS[mat][1] * diffuse;
+                pixel[2] = MATERIAL_COLORS[mat][2] * diffuse;
             } else {
                 /* Sky color */
                 pixel[0] = SKY_COLOR[0];
@@ -230,9 +234,9 @@ static void camera_rgb_batch_sample(Sensor* sensor, const SensorContext* ctx, fl
     }
 }
 
-static void camera_rgb_reset(Sensor* sensor, uint32_t drone_index) {
+static void camera_rgb_reset(Sensor* sensor, uint32_t agent_index) {
     (void)sensor;
-    (void)drone_index;
+    (void)agent_index;
 }
 
 static void camera_rgb_destroy(Sensor* sensor) {
@@ -256,12 +260,12 @@ const SensorVTable SENSOR_VTABLE_CAMERA_RGB = {
  * ============================================================================ */
 
 static void camera_depth_init(Sensor* sensor, const SensorConfig* config, Arena* arena) {
-    sensor->impl = camera_init_common(sensor, config, arena, SENSOR_TYPE_CAMERA_DEPTH);
+    sensor->impl = camera_init_common(sensor, config, arena);
 }
 
 static size_t camera_depth_get_output_size(const Sensor* sensor) {
     CameraImpl* impl = (CameraImpl*)sensor->impl;
-    if (impl == NULL) return 64 * 64;
+    if (impl == NULL) return CAMERA_DEFAULT_WIDTH * CAMERA_DEFAULT_HEIGHT;
     return impl->total_pixels;
 }
 
@@ -273,8 +277,8 @@ static const char* camera_depth_get_output_dtype(const Sensor* sensor) {
 static uint32_t camera_depth_get_output_shape(const Sensor* sensor, uint32_t* shape) {
     CameraImpl* impl = (CameraImpl*)sensor->impl;
     if (impl == NULL) {
-        shape[0] = 64;
-        shape[1] = 64;
+        shape[0] = CAMERA_DEFAULT_HEIGHT;
+        shape[1] = CAMERA_DEFAULT_WIDTH;
     } else {
         shape[0] = impl->height;
         shape[1] = impl->width;
@@ -286,15 +290,15 @@ static void camera_depth_batch_sample(Sensor* sensor, const SensorContext* ctx, 
     CameraImpl* impl = (CameraImpl*)sensor->impl;
     if (impl == NULL || impl->ray_directions == NULL) {
         /* Fill with 1.0 (max depth) */
-        for (uint32_t i = 0; i < ctx->drone_count * 64 * 64; i++) {
+        for (uint32_t i = 0; i < ctx->agent_count * CAMERA_DEFAULT_WIDTH * CAMERA_DEFAULT_HEIGHT; i++) {
             output_buffer[i] = 1.0f;
         }
         return;
     }
 
-    const DroneStateSOA* drones = ctx->drones;
-    const uint32_t* indices = ctx->drone_indices;
-    uint32_t count = ctx->drone_count;
+    const RigidBodyStateSOA* drones = ctx->agents;
+    const uint32_t* indices = ctx->agent_indices;
+    uint32_t count = ctx->agent_count;
     const struct WorldBrickMap* world = ctx->world;
     uint32_t total_pixels = impl->total_pixels;
 
@@ -337,9 +341,9 @@ static void camera_depth_batch_sample(Sensor* sensor, const SensorContext* ctx, 
     }
 }
 
-static void camera_depth_reset(Sensor* sensor, uint32_t drone_index) {
+static void camera_depth_reset(Sensor* sensor, uint32_t agent_index) {
     (void)sensor;
-    (void)drone_index;
+    (void)agent_index;
 }
 
 static void camera_depth_destroy(Sensor* sensor) {
@@ -363,12 +367,12 @@ const SensorVTable SENSOR_VTABLE_CAMERA_DEPTH = {
  * ============================================================================ */
 
 static void camera_seg_init(Sensor* sensor, const SensorConfig* config, Arena* arena) {
-    sensor->impl = camera_init_common(sensor, config, arena, SENSOR_TYPE_CAMERA_SEGMENTATION);
+    sensor->impl = camera_init_common(sensor, config, arena);
 }
 
 static size_t camera_seg_get_output_size(const Sensor* sensor) {
     CameraImpl* impl = (CameraImpl*)sensor->impl;
-    if (impl == NULL) return 64 * 64;
+    if (impl == NULL) return CAMERA_DEFAULT_WIDTH * CAMERA_DEFAULT_HEIGHT;
     return impl->total_pixels;
 }
 
@@ -380,8 +384,8 @@ static const char* camera_seg_get_output_dtype(const Sensor* sensor) {
 static uint32_t camera_seg_get_output_shape(const Sensor* sensor, uint32_t* shape) {
     CameraImpl* impl = (CameraImpl*)sensor->impl;
     if (impl == NULL) {
-        shape[0] = 64;
-        shape[1] = 64;
+        shape[0] = CAMERA_DEFAULT_HEIGHT;
+        shape[1] = CAMERA_DEFAULT_WIDTH;
     } else {
         shape[0] = impl->height;
         shape[1] = impl->width;
@@ -392,13 +396,13 @@ static uint32_t camera_seg_get_output_shape(const Sensor* sensor, uint32_t* shap
 static void camera_seg_batch_sample(Sensor* sensor, const SensorContext* ctx, float* output_buffer) {
     CameraImpl* impl = (CameraImpl*)sensor->impl;
     if (impl == NULL || impl->ray_directions == NULL) {
-        memset(output_buffer, 0, ctx->drone_count * 64 * 64 * sizeof(float));
+        memset(output_buffer, 0, ctx->agent_count * CAMERA_DEFAULT_WIDTH * CAMERA_DEFAULT_HEIGHT * sizeof(float));
         return;
     }
 
-    const DroneStateSOA* drones = ctx->drones;
-    const uint32_t* indices = ctx->drone_indices;
-    uint32_t count = ctx->drone_count;
+    const RigidBodyStateSOA* drones = ctx->agents;
+    const uint32_t* indices = ctx->agent_indices;
+    uint32_t count = ctx->agent_count;
     const struct WorldBrickMap* world = ctx->world;
     uint32_t total_pixels = impl->total_pixels;
 
@@ -435,9 +439,9 @@ static void camera_seg_batch_sample(Sensor* sensor, const SensorContext* ctx, fl
     }
 }
 
-static void camera_seg_reset(Sensor* sensor, uint32_t drone_index) {
+static void camera_seg_reset(Sensor* sensor, uint32_t agent_index) {
     (void)sensor;
-    (void)drone_index;
+    (void)agent_index;
 }
 
 static void camera_seg_destroy(Sensor* sensor) {

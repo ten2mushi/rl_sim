@@ -17,10 +17,66 @@ using namespace metal;
 #include "sdf_types.h"
 
 /* ============================================================================
- * BVH Traversal Stack
+ * BVH Traversal Stack & Shared Helpers
  * ============================================================================ */
 
 #define BVH_STACK_SIZE 32
+
+/**
+ * BVH traversal macro — shared stack management for all traversal functions.
+ * NODES: device pointer to GpuBVHNode array
+ * NODE_COUNT: total node count for bounds checking
+ * BOUNDS_CHECK: code block to test if subtree can be pruned (use `continue;` to skip)
+ * LEAF_ACTION: code block to execute for each leaf node (access `_node` for the leaf)
+ */
+#define BVH_TRAVERSE(NODES, NODE_COUNT, BOUNDS_CHECK, LEAF_ACTION) \
+    { \
+        uint _stack[BVH_STACK_SIZE]; \
+        int _sp = 0; \
+        _stack[_sp++] = 0; \
+        while (_sp > 0) { \
+            uint _idx = _stack[--_sp]; \
+            if (_idx >= (NODE_COUNT)) continue; \
+            const device GpuBVHNode& _node = (NODES)[_idx]; \
+            BOUNDS_CHECK \
+            if (_node.left == _node.right) { LEAF_ACTION } \
+            else { bvh_push_children(_stack, _sp, _node); } \
+        } \
+    }
+
+/**
+ * Extract AABB min/max from a BVH node into float3 pair.
+ */
+static inline void bvh_node_aabb(const device GpuBVHNode& node,
+                                  thread float3& box_min,
+                                  thread float3& box_max) {
+    box_min = float3(node.bbox_min_x, node.bbox_min_y, node.bbox_min_z);
+    box_max = float3(node.bbox_max_x, node.bbox_max_y, node.bbox_max_z);
+}
+
+/**
+ * Squared distance from a point to a BVH node's AABB.
+ * Returns 0 if the point is inside the AABB.
+ * Used by closest-point traversal for distance-based pruning.
+ */
+static inline float bvh_aabb_dist_sq(float3 point, const device GpuBVHNode& node) {
+    float3 clamped = clamp(point,
+                           float3(node.bbox_min_x, node.bbox_min_y, node.bbox_min_z),
+                           float3(node.bbox_max_x, node.bbox_max_y, node.bbox_max_z));
+    return length_squared(clamped - point);
+}
+
+/**
+ * Push both children of an internal node onto the traversal stack.
+ * Guards against stack overflow (reserves 2 slots).
+ */
+static inline void bvh_push_children(thread uint* stack, thread int& sp,
+                                      const device GpuBVHNode& node) {
+    if (sp < BVH_STACK_SIZE - 1) {
+        stack[sp++] = node.right;
+        stack[sp++] = node.left;
+    }
+}
 
 /* ============================================================================
  * Triangle Geometry Functions
@@ -114,44 +170,23 @@ static float bvh_closest_point_gpu(float3 point,
     float best_dist_sq = FLT_MAX;
     out_face = UINT_MAX;
 
-    uint stack[BVH_STACK_SIZE];
-    int sp = 0;
-    stack[sp++] = 0; /* Root */
-
-    while (sp > 0) {
-        uint idx = stack[--sp];
-        if (idx >= node_count) continue;
-
-        const device GpuBVHNode& node = nodes[idx];
-
-        /* AABB distance check: can this subtree contain a closer point? */
-        float3 clamped = clamp(point,
-                               float3(node.bbox_min_x, node.bbox_min_y, node.bbox_min_z),
-                               float3(node.bbox_max_x, node.bbox_max_y, node.bbox_max_z));
-        float dist_sq = length_squared(clamped - point);
-        if (dist_sq >= best_dist_sq) continue;
-
-        /* Leaf node? */
-        if (node.left == node.right) {
-            for (uint i = 0; i < node.face_count; i++) {
-                uint f = bvh_face_indices[node.face_start + i];
-                float3 v0, v1, v2;
-                get_triangle(face_v, vx, vy, vz, f, v0, v1, v2);
-
-                float3 cp = closest_point_on_triangle(point, v0, v1, v2);
-                float d2 = length_squared(cp - point);
-                if (d2 < best_dist_sq) {
-                    best_dist_sq = d2;
-                    out_face = f;
-                }
-            }
-        } else {
-            if (sp < BVH_STACK_SIZE - 1) {
-                stack[sp++] = node.right;
-                stack[sp++] = node.left;
+    BVH_TRAVERSE(nodes, node_count,
+        /* BOUNDS_CHECK: prune if AABB can't contain a closer point */
+        if (bvh_aabb_dist_sq(point, _node) >= best_dist_sq) continue;
+    ,
+        /* LEAF_ACTION: closest point on each triangle */
+        for (uint i = 0; i < _node.face_count; i++) {
+            uint f = bvh_face_indices[_node.face_start + i];
+            float3 v0; float3 v1; float3 v2;
+            get_triangle(face_v, vx, vy, vz, f, v0, v1, v2);
+            float3 cp = closest_point_on_triangle(point, v0, v1, v2);
+            float d2 = length_squared(cp - point);
+            if (d2 < best_dist_sq) {
+                best_dist_sq = d2;
+                out_face = f;
             }
         }
-    }
+    )
 
     return sqrt(best_dist_sq);
 }
@@ -237,40 +272,23 @@ static float bvh_inside_outside_gpu(float3 point,
     /* Count ray crossings */
     uint crossings = 0;
 
-    uint stack[BVH_STACK_SIZE];
-    int sp = 0;
-    stack[sp++] = 0;
-
-    while (sp > 0) {
-        uint idx = stack[--sp];
-        if (idx >= node_count) continue;
-
-        const device GpuBVHNode& node = nodes[idx];
-
-        float3 box_min = float3(node.bbox_min_x, node.bbox_min_y, node.bbox_min_z);
-        float3 box_max = float3(node.bbox_max_x, node.bbox_max_y, node.bbox_max_z);
-
+    BVH_TRAVERSE(nodes, node_count,
+        /* BOUNDS_CHECK: prune if ray misses AABB */
+        float3 box_min; float3 box_max;
+        bvh_node_aabb(_node, box_min, box_max);
         if (!ray_aabb_intersect(point, inv_dir, box_min, box_max)) continue;
-
-        if (node.left == node.right) {
-            /* Leaf: test all triangles */
-            for (uint i = 0; i < node.face_count; i++) {
-                uint f = bvh_face_indices[node.face_start + i];
-                float3 v0, v1, v2;
-                get_triangle(face_v, vx, vy, vz, f, v0, v1, v2);
-
-                float t;
-                if (ray_triangle_intersect(point, dir, v0, v1, v2, t)) {
-                    crossings++;
-                }
-            }
-        } else {
-            if (sp < BVH_STACK_SIZE - 1) {
-                stack[sp++] = node.right;
-                stack[sp++] = node.left;
+    ,
+        /* LEAF_ACTION: count ray-triangle intersections */
+        for (uint i = 0; i < _node.face_count; i++) {
+            uint f = bvh_face_indices[_node.face_start + i];
+            float3 v0; float3 v1; float3 v2;
+            get_triangle(face_v, vx, vy, vz, f, v0, v1, v2);
+            float t;
+            if (ray_triangle_intersect(point, dir, v0, v1, v2, t)) {
+                crossings++;
             }
         }
-    }
+    )
 
     return (crossings & 1) ? -1.0f : 1.0f;
 }
@@ -303,39 +321,24 @@ static float bvh_inside_outside_robust_gpu(float3 point,
         float3 inv_dir = 1.0f / dir;
 
         uint crossings = 0;
-        uint stack[BVH_STACK_SIZE];
-        int sp = 0;
-        stack[sp++] = 0;
 
-        while (sp > 0) {
-            uint idx = stack[--sp];
-            if (idx >= node_count) continue;
-
-            const device GpuBVHNode& node = nodes[idx];
-
-            float3 box_min = float3(node.bbox_min_x, node.bbox_min_y, node.bbox_min_z);
-            float3 box_max = float3(node.bbox_max_x, node.bbox_max_y, node.bbox_max_z);
-
+        BVH_TRAVERSE(nodes, node_count,
+            /* BOUNDS_CHECK: prune if ray misses AABB */
+            float3 box_min; float3 box_max;
+            bvh_node_aabb(_node, box_min, box_max);
             if (!ray_aabb_intersect(point, inv_dir, box_min, box_max)) continue;
-
-            if (node.left == node.right) {
-                for (uint i = 0; i < node.face_count; i++) {
-                    uint f = bvh_face_indices[node.face_start + i];
-                    float3 v0, v1, v2;
-                    get_triangle(face_v, vx, vy, vz, f, v0, v1, v2);
-
-                    float t;
-                    if (ray_triangle_intersect(point, dir, v0, v1, v2, t)) {
-                        crossings++;
-                    }
-                }
-            } else {
-                if (sp < BVH_STACK_SIZE - 1) {
-                    stack[sp++] = node.right;
-                    stack[sp++] = node.left;
+        ,
+            /* LEAF_ACTION: count ray-triangle intersections */
+            for (uint i = 0; i < _node.face_count; i++) {
+                uint f = bvh_face_indices[_node.face_start + i];
+                float3 v0; float3 v1; float3 v2;
+                get_triangle(face_v, vx, vy, vz, f, v0, v1, v2);
+                float t;
+                if (ray_triangle_intersect(point, dir, v0, v1, v2, t)) {
+                    crossings++;
                 }
             }
-        }
+        )
 
         if (crossings & 1) inside_votes++;
     }
@@ -345,6 +348,9 @@ static float bvh_inside_outside_robust_gpu(float3 point,
 
 /* ============================================================================
  * SDF Quantization (matches CPU sdf_quantize)
+ *
+ * C truncation maps near-zero SDF to int8=0. A post-voxelization sweep on
+ * CPU eliminates phantom zeros to prevent false raymarcher hits.
  * ============================================================================ */
 
 static inline char sdf_quantize_gpu(float sdf, float inv_sdf_scale) {
@@ -470,7 +476,7 @@ kernel void sdf_voxelize_surface(
             sdf_quantize_gpu(signed_dist, params.inv_sdf_scale);
 
         /* Material from closest face */
-        if (params.preserve_materials && closest_face != UINT_MAX && signed_dist < 0.0f) {
+        if (params.preserve_materials && closest_face != UINT_MAX && signed_dist < params.voxel_size * 0.5f) {
             output_mat[brick_out_base + voxel_idx] = face_mat[closest_face];
         } else {
             output_mat[brick_out_base + voxel_idx] = 0;

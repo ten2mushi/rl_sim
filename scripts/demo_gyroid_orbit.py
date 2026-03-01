@@ -2,14 +2,14 @@
 # NOTE: Run all scripts via the poetry environment:
 #   cd rl_engine && PYTHONPATH=.. poetry run python scripts/demo_gyroid_orbit.py
 # Rebuild the C binding first if needed:
-#   cd rl_engine && poetry run pip install -e .
+#   cd rl_engine && ./install.sh
 """
 Gyroid Orbit Demo: Drone cameras orbit around a gyroid_cube.obj world.
 
-Runs N parallel environments (each with 1 drone) through an identical circular
-orbit, collecting RGB + depth + position + velocity observations.  All envs
-are stepped together in one engine call, so N envs cost roughly the same wall
-time as 1.
+Runs N parallel environments (each with 1 drone) through a 3-plane circular
+orbit (XY, XZ, YZ), collecting RGB + depth + position + velocity observations.
+All envs are stepped together in one engine call, so N envs cost roughly the
+same wall time as 1.
 
 Supports CPU-only, GPU-only, or side-by-side benchmarking.
 
@@ -33,18 +33,94 @@ rl_engine_dir = os.path.dirname(script_dir)
 if rl_engine_dir not in sys.path:
     sys.path.insert(0, rl_engine_dir)
 
-from drone import DroneEnv
+from robot import RobotEnv
 
 
-def look_at_origin_quat(theta):
+# Orbit plane definitions: (position_func, up_hint)
+# Each position_func takes (radius, theta) and returns (x, y, z)
+ORBIT_PLANES = [
+    ("XY", lambda r, t: (r * math.cos(t), r * math.sin(t), 0.0), (0, 0, 1)),
+    ("XZ", lambda r, t: (r * math.cos(t), 0.0, r * math.sin(t)), (0, 1, 0)),
+    ("YZ", lambda r, t: (0.0, r * math.cos(t), r * math.sin(t)), (1, 0, 0)),
+]
+
+
+def look_at_origin_quat_3d(position, up_hint):
     """Compute quaternion (w,x,y,z) pointing body +X toward the origin.
 
-    The drone is at angle `theta` on the orbit circle.
-    To look at the origin, rotate by (theta + pi) about Z.
+    Works for any orbit plane. Builds a rotation matrix from:
+      fwd   = normalize(-position)   -- body +X toward origin
+      right = normalize(cross(up_hint, fwd))  -- body +Y
+      up    = cross(fwd, right)      -- body +Z
+
+    Extracts quaternion via Shepperd's method.
     """
-    alpha = theta + math.pi
-    half = alpha / 2.0
-    return (math.cos(half), 0.0, 0.0, math.sin(half))
+    px, py, pz = position
+    ux, uy, uz = up_hint
+
+    # Forward: toward origin
+    d = math.sqrt(px * px + py * py + pz * pz)
+    if d < 1e-12:
+        return (1.0, 0.0, 0.0, 0.0)
+    fx, fy, fz = -px / d, -py / d, -pz / d
+
+    # Right: cross(up_hint, fwd)
+    rx = uy * fz - uz * fy
+    ry = uz * fx - ux * fz
+    rz = ux * fy - uy * fx
+    rd = math.sqrt(rx * rx + ry * ry + rz * rz)
+    if rd < 1e-12:
+        return (1.0, 0.0, 0.0, 0.0)
+    rx, ry, rz = rx / rd, ry / rd, rz / rd
+
+    # Up: cross(fwd, right)
+    upx = fy * rz - fz * ry
+    upy = fz * rx - fx * rz
+    upz = fx * ry - fy * rx
+
+    # Rotation matrix columns: R = [fwd | right | up]
+    # R[0][0]=fx, R[1][0]=fy, R[2][0]=fz  (column 0 = fwd)
+    # R[0][1]=rx, R[1][1]=ry, R[2][1]=rz  (column 1 = right)
+    # R[0][2]=upx,R[1][2]=upy,R[2][2]=upz (column 2 = up)
+    # So row-wise: R = [[fx, rx, upx],
+    #                    [fy, ry, upy],
+    #                    [fz, rz, upz]]
+    m00, m01, m02 = fx, rx, upx
+    m10, m11, m12 = fy, ry, upy
+    m20, m21, m22 = fz, rz, upz
+
+    # Shepperd's method for rotation matrix -> quaternion
+    tr = m00 + m11 + m22
+    if tr > 0:
+        s = 2.0 * math.sqrt(tr + 1.0)
+        w = 0.25 * s
+        x = (m21 - m12) / s
+        y = (m02 - m20) / s
+        z = (m10 - m01) / s
+    elif m00 > m11 and m00 > m22:
+        s = 2.0 * math.sqrt(1.0 + m00 - m11 - m22)
+        w = (m21 - m12) / s
+        x = 0.25 * s
+        y = (m01 + m10) / s
+        z = (m02 + m20) / s
+    elif m11 > m22:
+        s = 2.0 * math.sqrt(1.0 + m11 - m00 - m22)
+        w = (m02 - m20) / s
+        x = (m01 + m10) / s
+        y = 0.25 * s
+        z = (m12 + m21) / s
+    else:
+        s = 2.0 * math.sqrt(1.0 + m22 - m00 - m11)
+        w = (m10 - m01) / s
+        x = (m02 + m20) / s
+        y = (m12 + m21) / s
+        z = 0.25 * s
+
+    # Normalize
+    qd = math.sqrt(w * w + x * x + y * y + z * z)
+    if qd < 1e-12:
+        return (1.0, 0.0, 0.0, 0.0)
+    return (w / qd, x / qd, y / qd, z / qd)
 
 
 def quat_rotate_vec(qw, qx, qy, qz, vx, vy, vz):
@@ -57,6 +133,66 @@ def quat_rotate_vec(qw, qx, qy, qz, vx, vy, vz):
     ry = vy + qw * ty + (qz * tx - qx * tz)
     rz = vz + qw * tz + (qx * ty - qy * tx)
     return rx, ry, rz
+
+
+def render_depth_frame(depth_img, plt):
+    """Render a single depth frame with inferno colormap + sky masking.
+
+    Returns an RGBA numpy array (H, W, 4) in uint8.
+    """
+    import matplotlib.colors as mcolors  # noqa: F401
+
+    sky_mask = depth_img >= 0.999
+    hit_vals = depth_img[~sky_mask]
+    if len(hit_vals) > 0:
+        d_min_hit = float(hit_vals.min())
+        d_max_hit = float(hit_vals.max())
+    else:
+        d_min_hit, d_max_hit = 0.0, 1.0
+
+    cmap = plt.cm.inferno.copy()
+    # Normalize hits to [0, 1] range for colormap
+    if d_max_hit > d_min_hit:
+        norm_img = (depth_img - d_min_hit) / (d_max_hit - d_min_hit)
+    else:
+        norm_img = np.zeros_like(depth_img)
+    rgba = cmap(norm_img)  # (H, W, 4) float in [0, 1]
+    # Sky pixels -> sky blue
+    rgba[sky_mask] = [0.5, 0.7, 0.9, 1.0]
+    return (rgba * 255).astype(np.uint8)
+
+
+def render_env_gifs(env_dir, rgb_frames, depth_frames, orbit_frames, plt):
+    """Generate animated GIFs for RGB and depth orbit sequences."""
+    try:
+        from PIL import Image
+    except ImportError:
+        print("    Pillow not available, skipping GIF generation")
+        return
+
+    duration = max(50, 5000 // max(1, orbit_frames))
+
+    # RGB GIF
+    rgb_pil = []
+    for f in rgb_frames:
+        img_uint8 = (np.clip(f, 0, 1) * 255).astype(np.uint8)
+        rgb_pil.append(Image.fromarray(img_uint8))
+    if rgb_pil:
+        rgb_path = os.path.join(env_dir, "rgb_orbit.gif")
+        rgb_pil[0].save(rgb_path, save_all=True, append_images=rgb_pil[1:],
+                        duration=duration, loop=0)
+        print(f"    {rgb_path}")
+
+    # Depth GIF
+    depth_pil = []
+    for f in depth_frames:
+        rgba = render_depth_frame(f, plt)
+        depth_pil.append(Image.fromarray(rgba[:, :, :3]))  # Drop alpha for GIF
+    if depth_pil:
+        depth_path = os.path.join(env_dir, "depth_orbit.gif")
+        depth_pil[0].save(depth_path, save_all=True, append_images=depth_pil[1:],
+                          duration=duration, loop=0)
+        print(f"    {depth_path}")
 
 
 def render_env_dashboards(env_dir, env_idx, resolution, orbit_radius,
@@ -117,8 +253,20 @@ def render_env_dashboards(env_dir, env_idx, resolution, orbit_radius,
 
         # Right: Depth camera
         ax_depth = fig.add_subplot(133)
-        im = ax_depth.imshow(depth_frames[fi], cmap="viridis", vmin=0, vmax=1)
-        ax_depth.set_title(f"Depth (range [{depth_stats[fi][0]:.2f}, {depth_stats[fi][1]:.2f}])")
+        depth_display = depth_frames[fi].copy()
+        sky_mask = depth_display >= 0.999
+        hit_vals = depth_display[~sky_mask]
+        if len(hit_vals) > 0:
+            d_min_hit = float(hit_vals.min())
+            d_max_hit = float(hit_vals.max())
+        else:
+            d_min_hit, d_max_hit = 0.0, 1.0
+        import matplotlib.colors as mcolors  # noqa: F401
+        cmap = plt.cm.inferno.copy()
+        cmap.set_bad(color=(0.5, 0.7, 0.9))
+        depth_masked = np.ma.masked_where(sky_mask, depth_display)
+        im = ax_depth.imshow(depth_masked, cmap=cmap, vmin=d_min_hit, vmax=d_max_hit)
+        ax_depth.set_title(f"Depth (hits [{d_min_hit:.2f}, {d_max_hit:.2f}])")
         ax_depth.axis("off")
         plt.colorbar(im, ax=ax_depth, fraction=0.046, pad=0.04)
 
@@ -127,31 +275,42 @@ def render_env_dashboards(env_dir, env_idx, resolution, orbit_radius,
         fig.savefig(os.path.join(env_dir, f"frame_{fi:04d}.png"), dpi=120)
         plt.close(fig)
 
-    # Overview: depth statistics over time
-    fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+    # Overview: depth statistics + 3D trajectory
+    fig = plt.figure(figsize=(14, 5))
 
     stats_arr = np.array(depth_stats)
-    axes[0].plot(stats_arr[:, 0], label="min", alpha=0.8)
-    axes[0].plot(stats_arr[:, 1], label="max", alpha=0.8)
-    axes[0].plot(stats_arr[:, 2], label="mean", alpha=0.8)
-    axes[0].set_xlabel("Frame")
-    axes[0].set_ylabel("Depth value")
-    axes[0].set_title("Depth Statistics Over Orbit")
-    axes[0].legend()
-    axes[0].grid(True, alpha=0.3)
+    ax_stats = fig.add_subplot(121)
+    ax_stats.plot(stats_arr[:, 0], label="min", alpha=0.8)
+    ax_stats.plot(stats_arr[:, 1], label="max", alpha=0.8)
+    ax_stats.plot(stats_arr[:, 2], label="mean", alpha=0.8)
+    ax_stats.set_xlabel("Frame")
+    ax_stats.set_ylabel("Depth value")
+    ax_stats.set_title("Depth Statistics Over Orbit")
+    ax_stats.legend()
+    ax_stats.grid(True, alpha=0.3)
 
-    # Top-down trajectory
-    axes[1].plot(positions_arr[:, 0], positions_arr[:, 1], "b-", alpha=0.6)
-    axes[1].scatter(positions_arr[0, 0], positions_arr[0, 1], color="green",
-                    s=80, zorder=5, label="Start")
-    axes[1].scatter(0, 0, color="orange", s=100, zorder=5, marker="*",
-                    label="Origin (gyroid)")
-    axes[1].set_xlabel("X")
-    axes[1].set_ylabel("Y")
-    axes[1].set_title("Orbit Trajectory (top-down)")
-    axes[1].set_aspect("equal")
-    axes[1].legend()
-    axes[1].grid(True, alpha=0.3)
+    # 3D trajectory overview with plane labels
+    ax3d = fig.add_subplot(122, projection="3d")
+    n = len(positions_arr)
+    seg = n // 3
+    colors = ["tab:blue", "tab:orange", "tab:green"]
+    labels = ["XY plane", "XZ plane", "YZ plane"]
+    for i, (c, lbl) in enumerate(zip(colors, labels)):
+        s = i * seg
+        e = (i + 1) * seg if i < 2 else n
+        ax3d.plot(positions_arr[s:e, 0], positions_arr[s:e, 1],
+                  positions_arr[s:e, 2], color=c, alpha=0.7, linewidth=1.2, label=lbl)
+    ax3d.scatter(*positions_arr[0], color="green", s=80, zorder=5, label="Start")
+    ax3d.scatter(0, 0, 0, color="orange", s=100, zorder=5, marker="*", label="Origin")
+    ax3d.set_xlabel("X")
+    ax3d.set_ylabel("Y")
+    ax3d.set_zlabel("Z")
+    ax3d.set_title("3-Plane Orbit Trajectory")
+    lim = orbit_radius * 1.3
+    ax3d.set_xlim(-lim, lim)
+    ax3d.set_ylim(-lim, lim)
+    ax3d.set_zlim(-lim, lim)
+    ax3d.legend(fontsize=8)
 
     fig.suptitle(f"Env {env_idx} - Overview", fontsize=14)
     fig.tight_layout()
@@ -159,11 +318,11 @@ def render_env_dashboards(env_dir, env_idx, resolution, orbit_radius,
     plt.close(fig)
 
 
-def create_env(num_envs, resolution, orbit_radius, orbit_height,
+def create_env(num_envs, resolution, orbit_radius,
                camera_fov, camera_far, voxel_size, obs_dim,
                use_gpu_voxelization=True, config_path=None,
                add_imu=False):
-    """Create a DroneEnv configured for the gyroid orbit demo."""
+    """Create a RobotEnv configured for the gyroid orbit demo."""
     obj_path = os.path.join(rl_engine_dir, "input", "from_utils", "gyroid_cube.obj")
     if not os.path.exists(obj_path):
         print(f"ERROR: Gyroid OBJ not found at {obj_path}")
@@ -173,7 +332,7 @@ def create_env(num_envs, resolution, orbit_radius, orbit_height,
 
     kwargs = dict(
         num_envs=num_envs,
-        drones_per_env=1,
+        agents_per_env=1,
         obj_path=obj_path,
         camera_width=resolution,
         camera_height=resolution,
@@ -184,8 +343,8 @@ def create_env(num_envs, resolution, orbit_radius, orbit_height,
         add_imu_sensor=add_imu,
         voxel_size=voxel_size,
         obs_dim=obs_dim,
-        spawn_min=(orbit_radius - 1.0, -1.0, orbit_height - 1.0),
-        spawn_max=(orbit_radius + 1.0,  1.0, orbit_height + 1.0),
+        spawn_min=(orbit_radius - 1.0, -1.0, -1.0),
+        spawn_max=(orbit_radius + 1.0,  1.0,  1.0),
         termination_min=(-wb, -wb, -wb),
         termination_max=( wb,  wb,  wb),
         world_min=(-wb, -wb, -wb),
@@ -196,13 +355,16 @@ def create_env(num_envs, resolution, orbit_radius, orbit_height,
     if config_path is not None:
         kwargs["config_path"] = config_path
 
-    env = DroneEnv(**kwargs)
+    env = RobotEnv(**kwargs)
     return env
 
 
 def run_orbit_loop(env, num_envs, resolution, orbit_frames, orbit_radius,
-                   orbit_height, collect_frames=True):
-    """Run the orbit loop, returning timing and optionally frame data.
+                   collect_frames=True):
+    """Run the 3-plane orbit loop, returning timing and optionally frame data.
+
+    Splits orbit_frames into 3 equal segments (XY, XZ, YZ), each doing a
+    full 360-degree circle.
 
     Returns:
         (elapsed_ms, positions, orientations, all_rgb, all_depth, all_depth_stats)
@@ -217,18 +379,32 @@ def run_orbit_loop(env, num_envs, resolution, orbit_frames, orbit_radius,
     all_depth = [[] for _ in range(num_envs)]
     all_depth_stats = [[] for _ in range(num_envs)]
 
+    seg = orbit_frames // 3
+
     t_start = time.perf_counter()
 
     for step in range(orbit_frames):
-        theta = 2.0 * math.pi * step / orbit_frames
-        px = orbit_radius * math.cos(theta)
-        py = orbit_radius * math.sin(theta)
-        pz = orbit_height
+        # Determine which plane segment we're in
+        if step < seg:
+            plane_idx = 0
+            local_step = step
+            local_total = seg
+        elif step < 2 * seg:
+            plane_idx = 1
+            local_step = step - seg
+            local_total = seg
+        else:
+            plane_idx = 2
+            local_step = step - 2 * seg
+            local_total = orbit_frames - 2 * seg  # handles remainder
 
-        qw, qx, qy, qz = look_at_origin_quat(theta)
+        _, pos_fn, up_hint = ORBIT_PLANES[plane_idx]
+        theta = 2.0 * math.pi * local_step / local_total
+        px, py, pz = pos_fn(orbit_radius, theta)
+        qw, qx, qy, qz = look_at_origin_quat_3d((px, py, pz), up_hint)
 
         for e in range(num_envs):
-            env.set_drone_state(e, (px, py, pz), (qw, qx, qy, qz))
+            env.set_agent_state(e, (px, py, pz), (qw, qx, qy, qz))
 
         env.step_sensors()
 
@@ -256,16 +432,19 @@ def run_orbit_loop(env, num_envs, resolution, orbit_frames, orbit_radius,
 
 
 def run_orbit(num_envs=1, resolution=16, orbit_frames=120, orbit_radius=15.0,
-              orbit_height=0.0, camera_fov=1.5708, camera_far=20.0,
-              voxel_size=0.25, output_dir=None, mode="auto", warmup=10,
+              camera_fov=1.5708, camera_far=20.0,
+              voxel_size=0.1, output_dir=None, mode="auto", warmup=10,
               no_viz=False, gpu_voxelization=True, config_path=None,
               add_imu=False):
-    """Run the orbit demo across N parallel environments.
+    """Run the 3-plane orbit demo across N parallel environments.
 
     Gyroid cube spans +/-10m.  A circular orbit at radius r puts the drone
     at (r/sqrt2, r/sqrt2) at 45 deg -- to stay fully outside the cube at all
     angles we need r > 10*sqrt2 ~ 14.14m.  Default radius 15m gives ~0.9m
     clearance at the worst-case diagonal.
+
+    The orbit is split into 3 segments (XY, XZ, YZ planes), each sweeping
+    a full 360 degrees.
 
     mode: "cpu", "gpu", "auto" (use whatever engine decides), or "both" (benchmark)
     gpu_voxelization: Use GPU for OBJ voxelization Phase 3 (default: True)
@@ -282,9 +461,11 @@ def run_orbit(num_envs=1, resolution=16, orbit_frames=120, orbit_radius=15.0,
     imu_dim = 6 if add_imu else 0
     obs_dim = rgb_dim + depth_dim + pos_dim + vel_dim + imu_dim
 
+    seg = orbit_frames // 3
     print(f"Environments: {num_envs}")
     print(f"Resolution:   {resolution}x{resolution}")
-    print(f"Orbit:        radius={orbit_radius}m, height={orbit_height}m, frames={orbit_frames}")
+    print(f"Orbit:        radius={orbit_radius}m, frames={orbit_frames} "
+          f"({seg} XY + {seg} XZ + {orbit_frames - 2*seg} YZ)")
     print(f"Voxel size:   {voxel_size}m")
     print(f"Mode:         {mode}")
     if config_path:
@@ -296,7 +477,7 @@ def run_orbit(num_envs=1, resolution=16, orbit_frames=120, orbit_radius=15.0,
           (f" + IMU:{imu_dim}" if imu_dim else "") + ")")
 
     t_load = time.perf_counter()
-    env = create_env(num_envs, resolution, orbit_radius, orbit_height,
+    env = create_env(num_envs, resolution, orbit_radius,
                      camera_fov, camera_far, voxel_size, obs_dim,
                      use_gpu_voxelization=gpu_voxelization,
                      config_path=config_path, add_imu=add_imu)
@@ -322,21 +503,21 @@ def run_orbit(num_envs=1, resolution=16, orbit_frames=120, orbit_radius=15.0,
         else:
             print(f"\n--- Warmup ({warmup} frames) ---")
             run_orbit_loop(env, num_envs, resolution, warmup,
-                           orbit_radius, orbit_height, collect_frames=False)
+                           orbit_radius, collect_frames=False)
 
             # GPU run
             env.set_gpu_enabled(True)
             print(f"\n--- GPU benchmark ({orbit_frames} frames) ---")
             gpu_ms, *_ = run_orbit_loop(
                 env, num_envs, resolution, orbit_frames,
-                orbit_radius, orbit_height, collect_frames=False)
+                orbit_radius, collect_frames=False)
 
             # CPU run
             env.set_gpu_enabled(False)
             print(f"--- CPU benchmark ({orbit_frames} frames) ---")
             cpu_ms, *_ = run_orbit_loop(
                 env, num_envs, resolution, orbit_frames,
-                orbit_radius, orbit_height, collect_frames=False)
+                orbit_radius, collect_frames=False)
 
             # Restore GPU for viz pass
             env.set_gpu_enabled(True)
@@ -358,7 +539,7 @@ def run_orbit(num_envs=1, resolution=16, orbit_frames=120, orbit_radius=15.0,
                 print(f"\nCollecting frames for visualization (GPU)...")
                 _, positions, orientations, all_rgb, all_depth, all_depth_stats = \
                     run_orbit_loop(env, num_envs, resolution, orbit_frames,
-                                   orbit_radius, orbit_height, collect_frames=True)
+                                   orbit_radius, collect_frames=True)
                 env.close()
                 _generate_viz(output_dir, num_envs, resolution, orbit_radius,
                               positions, orientations, all_rgb, all_depth,
@@ -383,12 +564,12 @@ def run_orbit(num_envs=1, resolution=16, orbit_frames=120, orbit_radius=15.0,
     # Warmup
     if warmup > 0:
         run_orbit_loop(env, num_envs, resolution, warmup,
-                       orbit_radius, orbit_height, collect_frames=False)
+                       orbit_radius, collect_frames=False)
 
     # Timed run with frame collection
     elapsed_ms, positions, orientations, all_rgb, all_depth, all_depth_stats = \
         run_orbit_loop(env, num_envs, resolution, orbit_frames,
-                       orbit_radius, orbit_height, collect_frames=not no_viz)
+                       orbit_radius, collect_frames=not no_viz)
 
     per_frame = elapsed_ms / orbit_frames
     print(f"\n{active_mode} total: {elapsed_ms:.1f}ms  ({per_frame:.3f}ms/frame)")
@@ -404,7 +585,15 @@ def run_orbit(num_envs=1, resolution=16, orbit_frames=120, orbit_radius=15.0,
 def _generate_viz(output_dir, num_envs, resolution, orbit_radius,
                   positions, orientations, all_rgb, all_depth,
                   all_depth_stats, orbit_frames):
-    """Generate per-env dashboard PNGs."""
+    """Generate per-env dashboard PNGs and animated GIFs."""
+    try:
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+    except ImportError:
+        print("matplotlib not available, skipping visualization")
+        return
+
     env_dirs = []
     for e in range(num_envs):
         d = os.path.join(output_dir, f"env_{e}")
@@ -421,13 +610,18 @@ def _generate_viz(output_dir, num_envs, resolution, orbit_radius,
             orbit_frames,
         )
 
+    print(f"\nGenerating animated GIFs...")
+    for e in range(num_envs):
+        print(f"  env_{e}/")
+        render_env_gifs(env_dirs[e], all_rgb[e], all_depth[e], orbit_frames, plt)
+
     print(f"\nDone! Output in {output_dir}/")
     for e in range(num_envs):
         print(f"  env_{e}/  ({len(os.listdir(env_dirs[e]))} files)")
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Gyroid Orbit Demo")
+    parser = argparse.ArgumentParser(description="Gyroid 3-Plane Orbit Demo")
     parser.add_argument("--num-envs", type=int, default=1,
                         help="Number of parallel environments (default: 1)")
     parser.add_argument("--resolution", type=int, default=16,
@@ -436,10 +630,8 @@ if __name__ == "__main__":
                         help="Number of orbit frames (default: 120)")
     parser.add_argument("--radius", type=float, default=15.0,
                         help="Orbit radius in meters (default: 15.0, min safe ~ 14.14)")
-    parser.add_argument("--height", type=float, default=0.0,
-                        help="Orbit height Z (default: 0.0)")
-    parser.add_argument("--voxel-size", type=float, default=0.25,
-                        help="SDF voxel size (default: 0.25)")
+    parser.add_argument("--voxel-size", type=float, default=0.1,
+                        help="SDF voxel size (default: 0.1)")
     parser.add_argument("--output", type=str, default=None,
                         help="Output directory (default: rl_engine/orbit_output)")
     parser.add_argument("--mode", choices=["cpu", "gpu", "auto", "both"], default="auto",
@@ -461,7 +653,6 @@ if __name__ == "__main__":
         resolution=args.resolution,
         orbit_frames=args.frames,
         orbit_radius=args.radius,
-        orbit_height=args.height,
         voxel_size=args.voxel_size,
         output_dir=args.output,
         mode=args.mode,

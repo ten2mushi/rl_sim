@@ -378,6 +378,9 @@ struct ThreadPool {
 
     /* Thread-local data via pthread_key */
     pthread_key_t thread_id_key;
+
+    /* Per-thread worker context (pool pointer + thread ID), 16 bytes each */
+    alignas(8) uint8_t _worker_ctx[THREADING_MAX_THREADS * 16];
 };
 
 /**
@@ -415,12 +418,6 @@ bool threadpool_submit_batch(ThreadPool* pool, const WorkItem* items, uint32_t c
  * @param pool The thread pool
  */
 void threadpool_wait(ThreadPool* pool);
-
-/**
- * Barrier synchronization across all workers
- * @param pool The thread pool
- */
-void threadpool_barrier(ThreadPool* pool);
 
 /**
  * Get number of worker threads
@@ -510,18 +507,18 @@ void scheduler_configure(Scheduler* sched, uint32_t steal_threshold, uint32_t mi
 
 /**
  * Schedule physics work with static partitioning
- * Each thread processes drone_count/num_threads drones
+ * Each thread processes agent_count/num_threads drones
  *
  * @param sched       The scheduler
  * @param physics_fn  Physics function to execute
  * @param physics_data Data to pass to physics function
- * @param drone_count Number of drones to process
+ * @param agent_count Number of drones to process
  */
 void scheduler_physics(
     Scheduler* sched,
     WorkFunction physics_fn,
     void* physics_data,
-    uint32_t drone_count
+    uint32_t agent_count
 );
 
 /**

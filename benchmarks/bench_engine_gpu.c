@@ -1,7 +1,7 @@
 /**
  * GPU-Enabled Engine Benchmarks
  *
- * End-to-end benchmarks of BatchDroneEngine with GPU sensor acceleration.
+ * End-to-end benchmarks of BatchEngine with GPU sensor acceleration.
  * Tests all 6 profiles in two modes: GPU active vs CPU fallback.
  * Shows per-phase breakdown and total step time.
  */
@@ -32,12 +32,12 @@ static const char* profile_names[] = {
     "MINIMAL", "LIGHT", "NAVIGATION", "VISION", "FULL", "STRESS"
 };
 
-static EngineConfig make_profile_config(EngineProfile profile, uint32_t total_drones) {
+static EngineConfig make_profile_config(EngineProfile profile, uint32_t total_agents) {
     EngineConfig config = engine_config_default();
-    config.drones_per_env = 16;
-    config.num_envs = total_drones / config.drones_per_env;
+    config.agents_per_env = 16;
+    config.num_envs = total_agents / config.agents_per_env;
     if (config.num_envs == 0) config.num_envs = 1;
-    config.total_drones = config.num_envs * config.drones_per_env;
+    config.total_agents = config.num_envs * config.agents_per_env;
     config.num_threads = 0;
     config.seed = 42;
 
@@ -119,7 +119,7 @@ static EngineConfig make_profile_config(EngineProfile profile, uint32_t total_dr
 
 typedef struct ProfileResult {
     const char* name;
-    uint32_t    drone_count;
+    uint32_t    agent_count;
     double      gpu_step_ms;
     double      cpu_step_ms;
     double      gpu_physics_ms;
@@ -134,16 +134,16 @@ typedef struct ProfileResult {
  * Run a profile in both modes
  * ============================================================================ */
 
-static ProfileResult bench_profile(EngineProfile profile, uint32_t num_drones,
+static ProfileResult bench_profile(EngineProfile profile, uint32_t num_agents,
                                      uint32_t warmup, uint32_t iterations) {
     ProfileResult result = {0};
     result.name = profile_names[profile];
-    result.drone_count = num_drones;
+    result.agent_count = num_agents;
 
-    EngineConfig cfg = make_profile_config(profile, num_drones);
+    EngineConfig cfg = make_profile_config(profile, num_agents);
     char error[ENGINE_ERROR_MSG_SIZE];
 
-    BatchDroneEngine* engine = engine_create(&cfg, error);
+    BatchEngine* engine = engine_create(&cfg, error);
     if (!engine) {
         fprintf(stderr, "  Failed: %s\n", error);
         return result;
@@ -220,7 +220,7 @@ static void print_profile_header(void) {
 
 static void print_profile_row(const ProfileResult* r) {
     printf("%-14s %7u %9.3f %9.3f %8.1fx | %8.3f %8.3f %8.3f %8.3f %8.3f\n",
-           r->name, r->drone_count,
+           r->name, r->agent_count,
            r->cpu_step_ms, r->gpu_step_ms, r->speedup,
            r->gpu_physics_ms, r->gpu_collision_ms,
            r->gpu_sensor_ms, r->gpu_sensor_gpu_ms, r->gpu_reward_ms);
@@ -249,9 +249,9 @@ int main(int argc, char** argv) {
     }
     printf("\n");
 
-    uint32_t drone_count = 1024;
-    if (cli.num_drone_counts > 0) {
-        drone_count = cli.drone_counts[0];
+    uint32_t agent_count = 1024;
+    if (cli.num_agent_counts > 0) {
+        agent_count = cli.agent_counts[0];
     }
     uint32_t warmup = cli.warmup > 0 ? cli.warmup : 10;
     uint32_t iters = cli.iterations > 0 ? cli.iterations : 50;
@@ -260,12 +260,12 @@ int main(int argc, char** argv) {
      * All Profiles at Fixed Drone Count
      * ==================================================================== */
 
-    printf("=== All Profiles (%u drones, %u iters) ===\n\n", drone_count, iters);
+    printf("=== All Profiles (%u drones, %u iters) ===\n\n", agent_count, iters);
     print_profile_header();
 
     ProfileResult all_results[PROFILE_COUNT];
     for (int p = 0; p < PROFILE_COUNT; p++) {
-        all_results[p] = bench_profile((EngineProfile)p, drone_count, warmup, iters);
+        all_results[p] = bench_profile((EngineProfile)p, agent_count, warmup, iters);
         print_profile_row(&all_results[p]);
     }
 

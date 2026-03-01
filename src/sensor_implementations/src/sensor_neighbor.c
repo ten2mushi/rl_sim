@@ -17,13 +17,14 @@
 #include <string.h>
 #include <math.h>
 
+/* Default neighbor count used when impl is NULL */
+#define NEIGHBOR_DEFAULT_K 5
+
 /* ============================================================================
  * Neighbor Sensor Implementation
  * ============================================================================ */
 
 static void neighbor_init(Sensor* sensor, const SensorConfig* config, Arena* arena) {
-    (void)arena;
-
     NeighborImpl* impl = arena_alloc_type(arena, NeighborImpl);
     if (impl == NULL) {
         sensor->impl = NULL;
@@ -40,7 +41,7 @@ static void neighbor_init(Sensor* sensor, const SensorConfig* config, Arena* are
 
 static size_t neighbor_get_output_size(const Sensor* sensor) {
     NeighborImpl* impl = (NeighborImpl*)sensor->impl;
-    if (impl == NULL) return 5 * 4;  /* Default K=5 */
+    if (impl == NULL) return NEIGHBOR_DEFAULT_K * 4;
     return impl->k * 4;  /* dx, dy, dz, distance per neighbor */
 }
 
@@ -51,7 +52,7 @@ static const char* neighbor_get_output_dtype(const Sensor* sensor) {
 
 static uint32_t neighbor_get_output_shape(const Sensor* sensor, uint32_t* shape) {
     NeighborImpl* impl = (NeighborImpl*)sensor->impl;
-    shape[0] = impl ? impl->k : 5;
+    shape[0] = impl ? impl->k : NEIGHBOR_DEFAULT_K;
     shape[1] = 4;
     return 2;  /* 2D tensor [K, 4] */
 }
@@ -59,13 +60,13 @@ static uint32_t neighbor_get_output_shape(const Sensor* sensor, uint32_t* shape)
 static void neighbor_batch_sample(Sensor* sensor, const SensorContext* ctx, float* output_buffer) {
     NeighborImpl* impl = (NeighborImpl*)sensor->impl;
     if (impl == NULL) {
-        memset(output_buffer, 0, ctx->drone_count * 5 * 4 * sizeof(float));
+        memset(output_buffer, 0, ctx->agent_count * NEIGHBOR_DEFAULT_K * 4 * sizeof(float));
         return;
     }
 
-    const DroneStateSOA* drones = ctx->drones;
-    const uint32_t* indices = ctx->drone_indices;
-    uint32_t count = ctx->drone_count;
+    const RigidBodyStateSOA* drones = ctx->agents;
+    const uint32_t* indices = ctx->agent_indices;
+    uint32_t count = ctx->agent_count;
     const struct CollisionSystem* collision = ctx->collision;
     uint32_t k = impl->k;
     float max_range = impl->max_range;
@@ -197,9 +198,9 @@ static void neighbor_batch_sample(Sensor* sensor, const SensorContext* ctx, floa
     }
 }
 
-static void neighbor_reset(Sensor* sensor, uint32_t drone_index) {
+static void neighbor_reset(Sensor* sensor, uint32_t agent_index) {
     (void)sensor;
-    (void)drone_index;
+    (void)agent_index;
 }
 
 static void neighbor_destroy(Sensor* sensor) {

@@ -1,20 +1,20 @@
 """
-DroneEnv - High-Performance Vectorized Drone Swarm Environment
+RobotEnv - High-Performance Vectorized Robot Swarm Environment
 
 PufferLib-compatible environment wrapper for the C simulation engine.
 Provides zero-copy observation/action buffers for maximum performance.
 
 Features:
-- Vectorized environments with configurable drone counts
+- Vectorized environments with configurable agent counts
 - 10 sensor types including 3D LiDAR and depth cameras
-- Box action space for 4 motor commands per drone
+- Box action space for 4 motor commands per agent
 - Configurable via TOML files or programmatic API
 
 Usage:
-    from rl_engine import DroneEnv
+    from rl_engine import RobotEnv
 
     # Create environment
-    env = DroneEnv(num_envs=64, drones_per_env=16)
+    env = RobotEnv(num_envs=64, agents_per_env=16)
 
     # Reset to get initial observations
     obs, info = env.reset()
@@ -37,7 +37,7 @@ try:
     from rl_engine import binding
 except ImportError:
     # Fallback: load the .so directly to avoid circular import when
-    # drone.py is imported as a standalone module (e.g. from scripts/)
+    # robot.py is imported as a standalone module (e.g. from scripts/)
     import importlib.util
     import pathlib
 
@@ -52,25 +52,26 @@ except ImportError:
     _spec.loader.exec_module(binding)
 
 
-class DroneEnv(pufferlib.PufferEnv):
-    """High-performance vectorized drone swarm RL environment.
+class RobotEnv(pufferlib.PufferEnv):
+    """High-performance vectorized robot swarm RL environment.
 
     This environment wraps a C simulation engine providing batch physics
-    simulation of quadcopter drones with various sensor configurations.
+    simulation of robotic agents with various sensor configurations.
 
     Args:
+        platform: Platform type string (default: "quadcopter")
         num_envs: Number of parallel environments (default: 64)
-        drones_per_env: Drones per environment (default: 16)
+        agents_per_env: Agents per environment (default: 16)
         config_path: Path to TOML configuration file (optional)
         render_mode: Render mode ("human" or None, default: None)
         report_interval: Steps between log aggregation (default: 1024)
         buf: Pre-allocated buffer dict (for async training, default: None)
         seed: Random seed for reproducibility (default: 0)
         obs_dim: Observation dimension override (default: auto from config)
-        action_dim: Action dimension (default: 4 for quadcopter)
+        action_dim: Action dimension override (default: auto from platform)
 
     Attributes:
-        num_agents: Total number of agents (num_envs * drones_per_env)
+        num_agents: Total number of agents (num_envs * agents_per_env)
         single_observation_space: Gymnasium Box space for single agent
         single_action_space: Gymnasium Box space for single agent
         observations: Shared observation buffer [num_agents, obs_dim]
@@ -80,29 +81,36 @@ class DroneEnv(pufferlib.PufferEnv):
         truncations: Shared truncation flags [num_agents]
 
     Example:
-        >>> env = DroneEnv(num_envs=4, drones_per_env=4)
+        >>> env = RobotEnv(num_envs=4, agents_per_env=4)
         >>> obs, _ = env.reset()
         >>> print(f"Observation shape: {obs.shape}")
         Observation shape: (16, 26)
     """
 
+    # Platform type -> action dimension mapping
+    _PLATFORM_ACTION_DIMS = {
+        "quadcopter": 4,
+        "diff_drive": 2,
+    }
+
     def __init__(
         self,
+        platform: str = "quadcopter",
         num_envs: int = 64,
-        drones_per_env: int = 16,
+        agents_per_env: int = 16,
         config_path: str = None,
         render_mode: str = None,
         report_interval: int = 1024,
         buf: dict = None,
         seed: int = 0,
         obs_dim: int = None,
-        action_dim: int = 4,
+        action_dim: int = None,
         obj_path: str = None,
         spawn_min: tuple = None,
         spawn_max: tuple = None,
         termination_min: tuple = None,
         termination_max: tuple = None,
-        drone_radius: float = None,
+        collision_radius: float = None,
         air_density: float = None,
         enable_ground_effect: bool = None,
         enable_drag: bool = None,
@@ -123,16 +131,21 @@ class DroneEnv(pufferlib.PufferEnv):
         max_bricks: int = None,
         use_gpu_voxelization: bool = None,
     ):
+        self.platform = platform
         self.num_envs = num_envs
-        self.drones_per_env = drones_per_env
+        self.agents_per_env = agents_per_env
         self.config_path = config_path
         self.render_mode = render_mode
         self.report_interval = report_interval
         self._seed = seed
         self.tick = 0
 
+        # Auto-detect action_dim from platform if not specified
+        if action_dim is None:
+            action_dim = self._PLATFORM_ACTION_DIMS.get(platform, 4)
+
         # World/physics kwargs to pass through to binding
-        self._engine_kwargs = {}
+        self._engine_kwargs = {"platform": platform}
         if obj_path is not None:
             self._engine_kwargs["obj_path"] = obj_path
         if spawn_min is not None and spawn_max is not None:
@@ -141,8 +154,8 @@ class DroneEnv(pufferlib.PufferEnv):
         if termination_min is not None and termination_max is not None:
             self._engine_kwargs["termination_min"] = termination_min
             self._engine_kwargs["termination_max"] = termination_max
-        if drone_radius is not None:
-            self._engine_kwargs["drone_radius"] = drone_radius
+        if collision_radius is not None:
+            self._engine_kwargs["collision_radius"] = collision_radius
         if air_density is not None:
             self._engine_kwargs["air_density"] = air_density
         if enable_ground_effect is not None:
@@ -184,7 +197,7 @@ class DroneEnv(pufferlib.PufferEnv):
             self._engine_kwargs["add_imu_sensor"] = True
 
         # Total number of agents across all environments
-        self.num_agents = num_envs * drones_per_env
+        self.num_agents = num_envs * agents_per_env
 
         # Determine observation dimension
         if obs_dim is None:
@@ -226,8 +239,10 @@ class DroneEnv(pufferlib.PufferEnv):
         # Call parent constructor (allocates buffers if buf is None)
         super().__init__(buf)
 
-        # Ensure actions are float32 (PufferLib may default to float64)
-        self.actions = self.actions.astype(np.float32)
+        # Verify actions buffer is float32 (must not copy — shared with C engine)
+        assert self.actions.dtype == np.float32, (
+            f"Expected float32 actions buffer, got {self.actions.dtype}"
+        )
 
         # Initialize C environments
         self._init_c_envs()
@@ -237,8 +252,8 @@ class DroneEnv(pufferlib.PufferEnv):
         c_envs = []
 
         for i in range(self.num_envs):
-            start_idx = i * self.drones_per_env
-            end_idx = (i + 1) * self.drones_per_env
+            start_idx = i * self.agents_per_env
+            end_idx = (i + 1) * self.agents_per_env
 
             # Get slices of shared buffers for this environment
             obs_slice = self.observations[start_idx:end_idx]
@@ -250,7 +265,7 @@ class DroneEnv(pufferlib.PufferEnv):
             # Initialize C environment with buffer slices
             kwargs = {
                 "num_envs": 1,  # Each C env handles 1 sub-environment
-                "drones_per_env": self.drones_per_env,
+                "agents_per_env": self.agents_per_env,
                 "seed": self._seed + i,
             }
 
@@ -281,6 +296,15 @@ class DroneEnv(pufferlib.PufferEnv):
                 f"obs_dim mismatch: Python expected {self._obs_dim} but engine "
                 f"reports {engine_obs_dim}. Pass obs_dim={engine_obs_dim} or "
                 f"configure sensors to match."
+            )
+
+        # Validate action_dim matches engine's actual dimension
+        engine_action_dim = binding.get_action_dim(c_envs[0])
+        if engine_action_dim != self._action_dim:
+            raise ValueError(
+                f"action_dim mismatch: Python expected {self._action_dim} but "
+                f"engine reports {engine_action_dim} for platform "
+                f"'{self.platform}'. Pass action_dim={engine_action_dim}."
             )
 
         # Vectorize all environments
@@ -354,34 +378,34 @@ class DroneEnv(pufferlib.PufferEnv):
 
     # ---- New methods for state teleportation and sensor-only stepping ----
 
-    def set_drone_state(self, drone_idx, position, orientation):
-        """Teleport a drone to a given position and orientation.
+    def set_agent_state(self, agent_idx, position, orientation):
+        """Teleport an agent to a given position and orientation.
 
         Args:
-            drone_idx: Global drone index (across all envs)
+            agent_idx: Global agent index (across all envs)
             position: (x, y, z) tuple
             orientation: (w, x, y, z) quaternion tuple
         """
-        env_i = drone_idx // self.drones_per_env
-        local_idx = drone_idx % self.drones_per_env
+        env_i = agent_idx // self.agents_per_env
+        local_idx = agent_idx % self.agents_per_env
         handle = self._c_env_handles[env_i]
         px, py, pz = position
         qw, qx, qy, qz = orientation
-        binding.set_drone_state(handle, local_idx, px, py, pz, qw, qx, qy, qz)
+        binding.set_agent_state(handle, local_idx, px, py, pz, qw, qx, qy, qz)
 
-    def get_drone_state(self, drone_idx):
-        """Get the state of a drone.
+    def get_agent_state(self, agent_idx):
+        """Get the state of an agent.
 
         Args:
-            drone_idx: Global drone index
+            agent_idx: Global agent index
 
         Returns:
             dict with 'position', 'orientation', 'velocity', 'angular_velocity'
         """
-        env_i = drone_idx // self.drones_per_env
-        local_idx = drone_idx % self.drones_per_env
+        env_i = agent_idx // self.agents_per_env
+        local_idx = agent_idx % self.agents_per_env
         handle = self._c_env_handles[env_i]
-        return binding.get_drone_state(handle, local_idx)
+        return binding.get_agent_state(handle, local_idx)
 
     def step_sensors(self):
         """Run sensor-only step across all environments.
@@ -395,7 +419,7 @@ class DroneEnv(pufferlib.PufferEnv):
         """Get the actual observation dimension from the C engine.
 
         Returns:
-            int: Number of floats per drone observation
+            int: Number of floats per agent observation
         """
         return binding.get_obs_dim(self._c_env_handles[0])
 
@@ -410,6 +434,10 @@ class DroneEnv(pufferlib.PufferEnv):
         """
         for handle in self._c_env_handles:
             binding.set_gpu_enabled(handle, int(enabled))
+
+    def debug_world(self):
+        """Return diagnostic info about the world brick map."""
+        return binding.debug_world(self._c_env_handles[0])
 
     def is_gpu_enabled(self):
         """Check if GPU sensor acceleration is currently active.
@@ -432,7 +460,7 @@ def test_performance(timeout: float = 10.0, atn_cache: int = 1024):
     """
     import time
 
-    env = DroneEnv(num_envs=100, drones_per_env=16)
+    env = RobotEnv(num_envs=100, agents_per_env=16)
     env.reset()
     tick = 0
 

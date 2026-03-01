@@ -22,15 +22,8 @@
 
 static void imu_init(Sensor* sensor, const SensorConfig* config, Arena* arena) {
     (void)config;
-    /* Allocate implementation data */
-    IMUImpl* impl = arena_alloc_type(arena, IMUImpl);
-    if (impl == NULL) {
-        sensor->impl = NULL;
-        return;
-    }
-
-    impl->_reserved = 0;
-    sensor->impl = impl;
+    (void)arena;
+    sensor->impl = NULL;
 }
 
 static size_t imu_get_output_size(const Sensor* sensor) {
@@ -50,16 +43,11 @@ static uint32_t imu_get_output_shape(const Sensor* sensor, uint32_t* shape) {
 }
 
 static void imu_batch_sample(Sensor* sensor, const SensorContext* ctx, float* output_buffer) {
-    IMUImpl* impl = (IMUImpl*)sensor->impl;
-    if (impl == NULL) {
-        /* Fill with zeros if not properly initialized */
-        memset(output_buffer, 0, ctx->drone_count * 6 * sizeof(float));
-        return;
-    }
+    (void)sensor;
 
-    const DroneStateSOA* drones = ctx->drones;
-    const uint32_t* indices = ctx->drone_indices;
-    uint32_t count = ctx->drone_count;
+    const RigidBodyStateSOA* drones = ctx->agents;
+    const uint32_t* indices = ctx->agent_indices;
+    uint32_t count = ctx->agent_count;
 
     /* Gravity vector in world frame (Z-up convention) */
     Vec3 gravity_world = VEC3(0.0f, 0.0f, 9.81f);
@@ -99,9 +87,9 @@ static void imu_batch_sample(Sensor* sensor, const SensorContext* ctx, float* ou
     }
 }
 
-static void imu_reset(Sensor* sensor, uint32_t drone_index) {
+static void imu_reset(Sensor* sensor, uint32_t agent_index) {
     (void)sensor;
-    (void)drone_index;
+    (void)agent_index;
     /* No per-drone state to reset (noise handled by pipeline) */
 }
 

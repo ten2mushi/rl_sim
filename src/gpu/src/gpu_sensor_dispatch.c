@@ -117,14 +117,15 @@ GpuSensorSlot* gpu_sensor_context_find_slot(struct GpuSensorContext* ctx,
 GpuKernel* gpu_slot_kernel(GpuSensorSlot* slot);
 GpuBuffer* gpu_slot_ray_buffer(GpuSensorSlot* slot);
 GpuBuffer* gpu_slot_output_buffer(GpuSensorSlot* slot);
-GpuBuffer* gpu_slot_drone_indices(GpuSensorSlot* slot);
+GpuBuffer* gpu_slot_agent_indices(GpuSensorSlot* slot);
 uint32_t gpu_slot_image_width(GpuSensorSlot* slot);
 uint32_t gpu_slot_image_height(GpuSensorSlot* slot);
 uint32_t gpu_slot_floats_per_pixel(GpuSensorSlot* slot);
+uint32_t gpu_slot_output_mode(GpuSensorSlot* slot);
 void gpu_slot_set_dispatch_info(GpuSensorSlot* slot, uint32_t sensor_idx,
-                                 uint32_t drone_count);
+                                 uint32_t agent_count);
 uint32_t gpu_slot_dispatch_sensor_idx(GpuSensorSlot* slot);
-uint32_t gpu_slot_dispatch_drone_count(GpuSensorSlot* slot);
+uint32_t gpu_slot_dispatch_agent_count(GpuSensorSlot* slot);
 bool gpu_slot_is_initialized(GpuSensorSlot* slot);
 uint32_t gpu_sensor_context_slot_count(struct GpuSensorContext* ctx);
 GpuSensorSlot* gpu_sensor_context_slot_at(struct GpuSensorContext* ctx, uint32_t i);
@@ -136,7 +137,7 @@ GpuResult gpu_dispatch_raymarch(struct GpuSensorContext* ctx,
                                 GpuKernel* kernel,
                                 GpuBuffer* ray_table_buf,
                                 GpuBuffer* output_buf,
-                                GpuBuffer* drone_idx_buf,
+                                GpuBuffer* agent_idx_buf,
                                 const WorldBrickMap* world,
                                 RaymarchParams rp) {
     GpuCommandQueue* queue = gpu_sensor_context_queue(ctx);
@@ -163,13 +164,13 @@ GpuResult gpu_dispatch_raymarch(struct GpuSensorContext* ctx,
     gpu_kernel_set_buffer(kernel, 9, poses->quat_z);
     gpu_kernel_set_buffer(kernel, 10, ray_table_buf);
     gpu_kernel_set_buffer(kernel, 11, output_buf);
-    gpu_kernel_set_buffer(kernel, 12, drone_idx_buf);
+    gpu_kernel_set_buffer(kernel, 12, agent_idx_buf);
 
     /* Set constants */
     gpu_kernel_set_constant(kernel, 0, &wp, sizeof(WorldParams));
     gpu_kernel_set_constant(kernel, 1, &rp, sizeof(RaymarchParams));
 
-    /* Dispatch: grid = (width, height, drone_count), group = (8, 8, 1) */
+    /* Dispatch: grid = (width, height, agent_count), group = (8, 8, 1) */
     uint32_t group_x = 8;
     uint32_t group_y = 8;
     uint32_t group_z = 1;
@@ -177,7 +178,7 @@ GpuResult gpu_dispatch_raymarch(struct GpuSensorContext* ctx,
     /* Round up grid to multiple of group size */
     uint32_t grid_x = ((rp.image_width + group_x - 1) / group_x) * group_x;
     uint32_t grid_y = ((rp.image_height + group_y - 1) / group_y) * group_y;
-    uint32_t grid_z = rp.drone_count;
+    uint32_t grid_z = rp.agent_count;
 
     return gpu_queue_dispatch(queue, kernel,
                               grid_x, grid_y, grid_z,
@@ -191,7 +192,7 @@ GpuResult gpu_dispatch_raymarch(struct GpuSensorContext* ctx,
 static RaymarchParams build_raymarch_params(const Sensor* sensor,
                                              uint32_t width, uint32_t height,
                                              uint32_t output_mode,
-                                             uint32_t drone_count) {
+                                             uint32_t agent_count) {
     RaymarchParams rp;
 
     switch (sensor->type) {
@@ -230,7 +231,7 @@ static RaymarchParams build_raymarch_params(const Sensor* sensor,
 
     rp.image_width = width;
     rp.image_height = height;
-    rp.drone_count = drone_count;
+    rp.agent_count = agent_count;
     return rp;
 }
 
@@ -282,7 +283,7 @@ void sensor_implementations_register_gpu(SensorRegistry* registry) {
 int32_t gpu_sensors_dispatch(struct GpuSensorContext* gpu_ctx,
                               SensorSystem* sys,
                               const struct WorldBrickMap* world,
-                              uint32_t drone_count) {
+                              uint32_t agent_count) {
     if (gpu_ctx == NULL || sys == NULL) return GPU_ERROR_INVALID_ARG;
 
     for (uint32_t s = 0; s < sys->sensor_count; s++) {
@@ -294,11 +295,11 @@ int32_t gpu_sensors_dispatch(struct GpuSensorContext* gpu_ctx,
         if (slot == NULL || !gpu_slot_is_initialized(slot)) continue;
 
         /* Build drone list for this sensor */
-        uint32_t* indices = (uint32_t*)gpu_buffer_map(gpu_slot_drone_indices(slot));
+        uint32_t* indices = (uint32_t*)gpu_buffer_map(gpu_slot_agent_indices(slot));
         if (indices == NULL) continue;
 
         uint32_t count = 0;
-        for (uint32_t d = 0; d < drone_count && d < sys->max_drones; d++) {
+        for (uint32_t d = 0; d < agent_count && d < sys->max_agents; d++) {
             uint32_t attach_count = sys->attachment_counts[d];
             uint32_t base_idx = d * MAX_SENSORS_PER_DRONE;
             for (uint32_t a = 0; a < attach_count; a++) {
@@ -317,22 +318,16 @@ int32_t gpu_sensors_dispatch(struct GpuSensorContext* gpu_ctx,
         /* Build RaymarchParams */
         uint32_t width = gpu_slot_image_width(slot);
         uint32_t height = gpu_slot_image_height(slot);
-        uint32_t fpp = gpu_slot_floats_per_pixel(slot);
-        uint32_t output_mode;
-        if (fpp == 3) output_mode = OUTPUT_MODE_RGB;
-        else if (sensor->type == SENSOR_TYPE_CAMERA_DEPTH) output_mode = OUTPUT_MODE_DEPTH;
-        else if (sensor->type == SENSOR_TYPE_CAMERA_SEGMENTATION) output_mode = OUTPUT_MODE_MATERIAL;
-        else output_mode = OUTPUT_MODE_DISTANCE;
 
         RaymarchParams rp = build_raymarch_params(sensor, width, height,
-                                                   output_mode, count);
+                                                   gpu_slot_output_mode(slot), count);
 
         /* Dispatch (async, returns immediately) */
         GpuResult r = gpu_dispatch_raymarch(gpu_ctx,
                                              gpu_slot_kernel(slot),
                                              gpu_slot_ray_buffer(slot),
                                              gpu_slot_output_buffer(slot),
-                                             gpu_slot_drone_indices(slot),
+                                             gpu_slot_agent_indices(slot),
                                              world, rp);
         if (r != GPU_SUCCESS) return r;
     }
@@ -349,9 +344,9 @@ int32_t gpu_sensors_wait(struct GpuSensorContext* gpu_ctx) {
 
 int32_t gpu_sensors_scatter_results(struct GpuSensorContext* gpu_ctx,
                                      SensorSystem* sys,
-                                     uint32_t drone_count) {
+                                     uint32_t agent_count) {
     if (gpu_ctx == NULL || sys == NULL) return GPU_ERROR_INVALID_ARG;
-    (void)drone_count;
+    (void)agent_count;
 
     uint32_t num_slots = gpu_sensor_context_slot_count(gpu_ctx);
 
@@ -359,7 +354,7 @@ int32_t gpu_sensors_scatter_results(struct GpuSensorContext* gpu_ctx,
         GpuSensorSlot* slot = gpu_sensor_context_slot_at(gpu_ctx, i);
         if (!gpu_slot_is_initialized(slot)) continue;
 
-        uint32_t count = gpu_slot_dispatch_drone_count(slot);
+        uint32_t count = gpu_slot_dispatch_agent_count(slot);
         if (count == 0) continue;
 
         uint32_t s = gpu_slot_dispatch_sensor_idx(slot);
@@ -370,21 +365,21 @@ int32_t gpu_sensors_scatter_results(struct GpuSensorContext* gpu_ctx,
 
         /* Map GPU output and drone list */
         float* gpu_output = (float*)gpu_buffer_map(gpu_slot_output_buffer(slot));
-        uint32_t* drone_list = (uint32_t*)gpu_buffer_map(gpu_slot_drone_indices(slot));
+        uint32_t* drone_list = (uint32_t*)gpu_buffer_map(gpu_slot_agent_indices(slot));
         if (gpu_output == NULL || drone_list == NULL) continue;
 
         /* Scatter to per-drone observation buffers */
         for (uint32_t j = 0; j < count; j++) {
-            uint32_t drone_idx = drone_list[j];
-            if (drone_idx >= sys->max_drones) continue;
+            uint32_t agent_idx = drone_list[j];
+            if (agent_idx >= sys->max_agents) continue;
 
-            uint32_t base_idx = drone_idx * MAX_SENSORS_PER_DRONE;
-            uint32_t attach_count = sys->attachment_counts[drone_idx];
+            uint32_t base_idx = agent_idx * MAX_SENSORS_PER_DRONE;
+            uint32_t attach_count = sys->attachment_counts[agent_idx];
 
             for (uint32_t a = 0; a < attach_count; a++) {
                 if (sys->attachments[base_idx + a].sensor_idx == s) {
                     float* dst = sys->observation_buffer +
-                                 drone_idx * sys->obs_dim +
+                                 agent_idx * sys->obs_dim +
                                  sys->attachments[base_idx + a].output_offset;
                     memcpy(dst, gpu_output + j * output_size,
                            output_size * sizeof(float));
@@ -398,62 +393,6 @@ int32_t gpu_sensors_scatter_results(struct GpuSensorContext* gpu_ctx,
     }
 
     return GPU_SUCCESS;
-}
-
-#else /* !GPU_AVAILABLE */
-
-/* ============================================================================
- * CPU Fallback Stubs
- * ============================================================================ */
-
-#include "sensor_system.h"
-
-void sensor_implementations_register_gpu(SensorRegistry* registry) {
-    (void)registry;
-}
-
-struct GpuSensorContext* gpu_sensor_context_create(uint32_t max_drones) {
-    (void)max_drones;
-    return NULL;
-}
-
-void gpu_sensor_context_destroy(struct GpuSensorContext* ctx) {
-    (void)ctx;
-}
-
-int32_t gpu_sensor_context_sync_frame(struct GpuSensorContext* ctx,
-                                       const struct WorldBrickMap* world,
-                                       const struct DroneStateSOA* drones,
-                                       uint32_t drone_count) {
-    (void)ctx; (void)world; (void)drones; (void)drone_count;
-    return -8;  /* GPU_ERROR_BACKEND */
-}
-
-int32_t gpu_sensor_context_init_sensor(struct GpuSensorContext* ctx,
-                                        const Sensor* sensor,
-                                        uint32_t drone_count) {
-    (void)ctx; (void)sensor; (void)drone_count;
-    return -8;
-}
-
-int32_t gpu_sensors_dispatch(struct GpuSensorContext* gpu_ctx,
-                              SensorSystem* sys,
-                              const struct WorldBrickMap* world,
-                              uint32_t drone_count) {
-    (void)gpu_ctx; (void)sys; (void)world; (void)drone_count;
-    return -8;
-}
-
-int32_t gpu_sensors_wait(struct GpuSensorContext* gpu_ctx) {
-    (void)gpu_ctx;
-    return -8;
-}
-
-int32_t gpu_sensors_scatter_results(struct GpuSensorContext* gpu_ctx,
-                                     SensorSystem* sys,
-                                     uint32_t drone_count) {
-    (void)gpu_ctx; (void)sys; (void)drone_count;
-    return -8;
 }
 
 #endif /* GPU_AVAILABLE */

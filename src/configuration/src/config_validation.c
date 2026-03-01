@@ -8,6 +8,8 @@
  */
 
 #include "configuration.h"
+#include "platform_quadcopter.h"
+#include "platform_diff_drive.h"
 #include <string.h>
 #include <math.h>
 
@@ -28,11 +30,11 @@
     } while(0)
 
 /* ============================================================================
- * Drone Validation
+ * Platform Validation
  * ============================================================================ */
 
-int config_validate_drone(const DroneConfig* config,
-                          ConfigError* errors, uint32_t max_errors) {
+int config_validate_platform(const PlatformConfig* config,
+                              ConfigError* errors, uint32_t max_errors) {
     if (!config || !errors) return 0;
 
     uint32_t err_count = 0;
@@ -40,78 +42,44 @@ int config_validate_drone(const DroneConfig* config,
     /* Mass must be positive */
     if (config->mass <= 0.0f) {
         ADD_ERROR(errors, err_count, max_errors,
-                  "drone.mass", "Mass must be positive");
-    }
-
-    /* Arm length must be positive */
-    if (config->arm_length <= 0.0f) {
-        ADD_ERROR(errors, err_count, max_errors,
-                  "drone.arm_length", "Arm length must be positive");
+                  "platform.mass", "Mass must be positive");
     }
 
     /* Inertia tensor must be positive */
     if (config->ixx <= 0.0f) {
         ADD_ERROR(errors, err_count, max_errors,
-                  "drone.ixx", "Moment of inertia ixx must be positive");
+                  "platform.ixx", "Moment of inertia ixx must be positive");
     }
     if (config->iyy <= 0.0f) {
         ADD_ERROR(errors, err_count, max_errors,
-                  "drone.iyy", "Moment of inertia iyy must be positive");
+                  "platform.iyy", "Moment of inertia iyy must be positive");
     }
     if (config->izz <= 0.0f) {
         ADD_ERROR(errors, err_count, max_errors,
-                  "drone.izz", "Moment of inertia izz must be positive");
-    }
-
-    /* Thrust coefficient must be positive */
-    if (config->k_thrust <= 0.0f) {
-        ADD_ERROR(errors, err_count, max_errors,
-                  "drone.k_thrust", "Thrust coefficient must be positive");
-    }
-
-    /* Motor time constant must be positive */
-    if (config->motor_tau <= 0.0f) {
-        ADD_ERROR(errors, err_count, max_errors,
-                  "drone.motor_tau", "Motor time constant must be positive");
-    }
-
-    /* Max RPM must be positive */
-    if (config->max_rpm <= 0.0f) {
-        ADD_ERROR(errors, err_count, max_errors,
-                  "drone.max_rpm", "Max RPM must be positive");
+                  "platform.izz", "Moment of inertia izz must be positive");
     }
 
     /* Collision radius must be positive */
     if (config->collision_radius <= 0.0f) {
         ADD_ERROR(errors, err_count, max_errors,
-                  "drone.collision_radius", "Collision radius must be positive");
-    }
-
-    /* Drag coefficients must be non-negative */
-    if (config->k_drag < 0.0f) {
-        ADD_ERROR(errors, err_count, max_errors,
-                  "drone.k_drag", "Drag coefficient must be non-negative");
-    }
-    if (config->k_drag_angular < 0.0f) {
-        ADD_ERROR(errors, err_count, max_errors,
-                  "drone.k_drag_angular", "Angular drag coefficient must be non-negative");
+                  "platform.collision_radius", "Collision radius must be positive");
     }
 
     /* Velocity limits must be positive */
     if (config->max_velocity <= 0.0f) {
         ADD_ERROR(errors, err_count, max_errors,
-                  "drone.max_velocity", "Max velocity must be positive");
+                  "platform.max_velocity", "Max velocity must be positive");
     }
     if (config->max_angular_velocity <= 0.0f) {
         ADD_ERROR(errors, err_count, max_errors,
-                  "drone.max_angular_velocity", "Max angular velocity must be positive");
+                  "platform.max_angular_velocity", "Max angular velocity must be positive");
     }
 
     /* Color values should be in [0, 1] */
     for (int i = 0; i < 3; i++) {
         if (config->color[i] < 0.0f || config->color[i] > 1.0f) {
             ADD_ERROR(errors, err_count, max_errors,
-                      "drone.color", "Color values must be in range [0, 1]");
+                      "platform.color", "Color values must be in range [0, 1]");
             break;
         }
     }
@@ -119,7 +87,62 @@ int config_validate_drone(const DroneConfig* config,
     /* Scale must be positive */
     if (config->scale <= 0.0f) {
         ADD_ERROR(errors, err_count, max_errors,
-                  "drone.scale", "Scale must be positive");
+                  "platform.scale", "Scale must be positive");
+    }
+
+    /* Quadcopter-specific validation */
+    if (strcmp(config->type, "quadcopter") == 0 && config->platform_specific) {
+        const QuadcopterConfig* quad = (const QuadcopterConfig*)config->platform_specific;
+
+        if (quad->arm_length <= 0.0f) {
+            ADD_ERROR(errors, err_count, max_errors,
+                      "platform.quadcopter.arm_length", "Arm length must be positive");
+        }
+
+        if (quad->k_thrust <= 0.0f) {
+            ADD_ERROR(errors, err_count, max_errors,
+                      "platform.quadcopter.k_thrust", "Thrust coefficient must be positive");
+        }
+
+        if (quad->motor_tau <= 0.0f) {
+            ADD_ERROR(errors, err_count, max_errors,
+                      "platform.quadcopter.motor_tau", "Motor time constant must be positive");
+        }
+
+        if (quad->max_rpm <= 0.0f) {
+            ADD_ERROR(errors, err_count, max_errors,
+                      "platform.quadcopter.max_rpm", "Max RPM must be positive");
+        }
+
+        /* Drag coefficients must be non-negative */
+        if (quad->k_drag < 0.0f) {
+            ADD_ERROR(errors, err_count, max_errors,
+                      "platform.quadcopter.k_drag", "Drag coefficient must be non-negative");
+        }
+        if (quad->k_ang_damp < 0.0f) {
+            ADD_ERROR(errors, err_count, max_errors,
+                      "platform.quadcopter.k_drag_angular", "Angular drag coefficient must be non-negative");
+        }
+    }
+
+    /* Diff-drive-specific validation */
+    if (strcmp(config->type, "diff_drive") == 0 && config->platform_specific) {
+        const DiffDriveConfig* dd = (const DiffDriveConfig*)config->platform_specific;
+
+        if (dd->wheel_radius <= 0.0f) {
+            ADD_ERROR(errors, err_count, max_errors,
+                      "platform.diff_drive.wheel_radius", "Wheel radius must be positive");
+        }
+
+        if (dd->axle_length <= 0.0f) {
+            ADD_ERROR(errors, err_count, max_errors,
+                      "platform.diff_drive.axle_length", "Axle length must be positive");
+        }
+
+        if (dd->max_wheel_vel <= 0.0f) {
+            ADD_ERROR(errors, err_count, max_errors,
+                      "platform.diff_drive.max_wheel_vel", "Max wheel velocity must be positive");
+        }
     }
 
     return (int)err_count;
@@ -141,7 +164,7 @@ int config_validate_environment(const EnvironmentConfig* config,
                   "environment.num_envs", "num_envs must be > 0");
     }
 
-    /* drones_per_env can be zero (empty environments) but typically > 0 */
+    /* agents_per_env can be zero (empty environments) but typically > 0 */
     /* No validation needed */
 
     /* World size must be positive */
@@ -286,16 +309,7 @@ int config_validate_sensors(const SensorConfigEntry* sensors, uint32_t count,
         const SensorConfigEntry* s = &sensors[i];
 
         /* Check sensor type is recognized */
-        if (strcmp(s->type, "imu") != 0 &&
-            strcmp(s->type, "tof") != 0 &&
-            strcmp(s->type, "lidar_2d") != 0 &&
-            strcmp(s->type, "lidar_3d") != 0 &&
-            strcmp(s->type, "camera_rgb") != 0 &&
-            strcmp(s->type, "camera_depth") != 0 &&
-            strcmp(s->type, "camera_segmentation") != 0 &&
-            strcmp(s->type, "position") != 0 &&
-            strcmp(s->type, "velocity") != 0 &&
-            strcmp(s->type, "neighbor") != 0) {
+        if (!is_valid_sensor_type(s->type)) {
             char msg[CONFIG_ERROR_MSG_MAX];
             snprintf(msg, sizeof(msg), "Unknown sensor type: %s", s->type);
             ADD_ERROR(errors, err_count, max_errors, "sensors.type", msg);
@@ -374,10 +388,10 @@ int config_validate(const Config* config,
     uint32_t total_errors = 0;
 
     /* Validate each section */
-    int drone_errors = config_validate_drone(&config->drone,
-                                             errors + total_errors,
-                                             max_errors - total_errors);
-    total_errors += (uint32_t)drone_errors;
+    int platform_errors = config_validate_platform(&config->platform,
+                                                    errors + total_errors,
+                                                    max_errors - total_errors);
+    total_errors += (uint32_t)platform_errors;
 
     if (total_errors < max_errors) {
         int physics_errors = config_validate_physics(&config->physics,

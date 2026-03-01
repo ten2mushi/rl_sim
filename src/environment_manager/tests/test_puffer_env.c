@@ -25,12 +25,12 @@
  * ============================================================================ */
 
 /** Create a small PufferEnv for testing */
-static PufferEnv* create_test_env(uint32_t num_envs, uint32_t drones_per_env,
+static PufferEnv* create_test_env(uint32_t num_envs, uint32_t agents_per_env,
                                    uint64_t seed, char* error) {
     EngineConfig config = engine_config_default();
     config.num_envs = num_envs;
-    config.drones_per_env = drones_per_env;
-    config.total_drones = num_envs * drones_per_env;
+    config.agents_per_env = agents_per_env;
+    config.total_agents = num_envs * agents_per_env;
     config.seed = seed;
     return puffer_env_create_from_config(&config, error);
 }
@@ -78,7 +78,7 @@ TEST(create_null_path_uses_defaults) {
     PufferEnv* env = puffer_env_create(NULL);
     ASSERT_NOT_NULL(env);
     ASSERT_NOT_NULL(env->engine);
-    /* Default: 64 envs, 16 drones_per_env */
+    /* Default: 64 envs, 16 agents_per_env */
     ASSERT_EQ(env->num_envs, 64);
     ASSERT_EQ(env->num_agents, 16);
     puffer_env_close(env);
@@ -102,7 +102,7 @@ TEST(fields_correct_after_create) {
     /* Dimensions match config */
     ASSERT_EQ(env->num_envs, 2);
     ASSERT_EQ(env->num_agents, 8);
-    ASSERT_EQ(env->action_size, ENGINE_ACTION_DIM);  /* 4 for quadcopter */
+    ASSERT_EQ(env->action_size, 4);  /* 4 for quadcopter */
     ASSERT_TRUE(env->obs_size > 0);
 
     /* Buffer aliases are set */
@@ -224,7 +224,7 @@ TEST(space_queries_null_safe) {
  *
  * BUG DETECTED: sensor system's obs_dim is 256 (max_obs_dim passed at creation),
  * but the external buffer (engine->observations) is sized for engine->obs_dim=15.
- * sensor_system_reset() does memset(obs_buffer, 0, max_drones * 256 * 4) = 4096 bytes,
+ * sensor_system_reset() does memset(obs_buffer, 0, max_agents * 256 * 4) = 4096 bytes,
  * but the buffer is only 256 bytes (4 drones * 15 floats * 4 bytes, rounded to 32).
  *
  * Expected: sensor_system.obs_dim == engine->obs_dim
@@ -250,22 +250,22 @@ TEST(sensor_obs_dim_matches_engine_obs_dim) {
  *
  * BUG DETECTED: The allocated observations buffer is too small for
  * sensor_system operations. The buffer must be at least
- * max_drones * sensor_obs_dim * sizeof(float) bytes.
+ * max_agents * sensor_obs_dim * sizeof(float) bytes.
  *
- * Expected: buffer size >= max_drones * sensor_obs_dim * sizeof(float)
- * Actual: buffer size = max_drones * engine_obs_dim * sizeof(float) (much smaller) */
+ * Expected: buffer size >= max_agents * sensor_obs_dim * sizeof(float)
+ * Actual: buffer size = max_agents * engine_obs_dim * sizeof(float) (much smaller) */
 TEST(obs_buffer_sufficient_for_sensor_system) {
     char error[ENGINE_ERROR_MSG_SIZE] = {0};
     PufferEnv* env = create_test_env(1, 4, 42, error);
     ASSERT_NOT_NULL(env);
 
     /* Calculate what sensor_system needs vs what engine allocated */
-    uint32_t total_drones = env->engine->config.total_drones;
+    uint32_t total_agents = env->engine->config.total_agents;
     size_t sensor_stride = env->engine->sensors->obs_dim;
-    size_t needed = total_drones * sensor_stride * sizeof(float);
+    size_t needed = total_agents * sensor_stride * sizeof(float);
 
     size_t engine_obs_dim = env->engine->obs_dim;
-    size_t allocated = ((total_drones * engine_obs_dim * sizeof(float)) + 31) & ~(size_t)31;
+    size_t allocated = ((total_agents * engine_obs_dim * sizeof(float)) + 31) & ~(size_t)31;
 
     printf("\n    [DIAG] Sensor system needs %zu bytes, engine allocated %zu bytes\n",
            needed, allocated);
@@ -302,7 +302,7 @@ TEST(engine_pointer_survives_single_reset) {
     ASSERT_NOT_NULL(env);
     ASSERT_NOT_NULL(env->engine);
 
-    BatchDroneEngine* saved = env->engine;
+    BatchEngine* saved = env->engine;
 
     puffer_env_reset(env);
 
@@ -322,7 +322,7 @@ TEST(engine_pointer_survives_multiple_resets) {
     PufferEnv* env = create_test_env(1, 4, 42, error);
     ASSERT_NOT_NULL(env);
 
-    BatchDroneEngine* saved = env->engine;
+    BatchEngine* saved = env->engine;
 
     for (int i = 0; i < 10; i++) {
         puffer_env_reset(env);
@@ -350,7 +350,7 @@ TEST(engine_pointer_survives_single_step) {
     PufferEnv* env = create_test_env(1, 4, 42, error);
     ASSERT_NOT_NULL(env);
 
-    BatchDroneEngine* saved = env->engine;
+    BatchEngine* saved = env->engine;
     puffer_env_reset(env);
 
     /* If reset already corrupted env->engine, we cannot proceed */
@@ -374,7 +374,7 @@ TEST(engine_pointer_survives_many_steps) {
     PufferEnv* env = create_test_env(1, 4, 42, error);
     ASSERT_NOT_NULL(env);
 
-    BatchDroneEngine* saved = env->engine;
+    BatchEngine* saved = env->engine;
     puffer_env_reset(env);
 
     if (env->engine == NULL) {
@@ -412,7 +412,7 @@ TEST(observations_populated_after_reset) {
 
     /* At least some observation should be non-zero (position sensor) */
     int has_nonzero = 0;
-    uint32_t total = env->engine->config.total_drones * env->engine->obs_dim;
+    uint32_t total = env->engine->config.total_agents * env->engine->obs_dim;
     for (uint32_t i = 0; i < total; i++) {
         if (env->engine->observations[i] != 0.0f) {
             has_nonzero = 1;
@@ -520,7 +520,7 @@ TEST(multi_env_independent_engines) {
  * is corrupted (env[1] has a separate arena). */
 TEST(reset_one_does_not_corrupt_another) {
     PufferEnv* envs[2] = {0};
-    BatchDroneEngine* saved[2] = {0};
+    BatchEngine* saved[2] = {0};
 
     for (int i = 0; i < 2; i++) {
         char error[ENGINE_ERROR_MSG_SIZE] = {0};
@@ -602,7 +602,7 @@ TEST(overflow_reaches_puffer_env) {
     uintptr_t obs_start = (uintptr_t)env->engine->observations;
     uintptr_t env_start = (uintptr_t)env;
 
-    size_t sensor_memset_size = (size_t)env->engine->sensors->max_drones *
+    size_t sensor_memset_size = (size_t)env->engine->sensors->max_agents *
                                  env->engine->sensors->obs_dim * sizeof(float);
 
     uintptr_t memset_end = obs_start + sensor_memset_size;
@@ -620,7 +620,7 @@ TEST(overflow_reaches_puffer_env) {
     }
 
     /* If the sensor obs_dim equals engine obs_dim, memset should NOT reach PufferEnv */
-    size_t correct_memset = (size_t)env->engine->config.total_drones *
+    size_t correct_memset = (size_t)env->engine->config.total_agents *
                              env->engine->obs_dim * sizeof(float);
     uintptr_t correct_end = obs_start + correct_memset;
 

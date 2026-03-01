@@ -1,8 +1,8 @@
 /**
- * PufferLib Binding for Drone RL Engine
+ * PufferLib Binding for Robot RL Engine
  *
  * This file implements the C extension binding layer that connects the
- * high-performance drone simulation engine to PufferLib's Python interface.
+ * high-performance robot simulation engine to PufferLib's Python interface.
  *
  * Key Features:
  * - Zero-copy observation/action buffers shared with Python/NumPy
@@ -12,7 +12,7 @@
  * Usage:
  *   from rl_engine import binding
  *   env = binding.env_init(obs, actions, rewards, terminals, truncations, seed,
- *                          num_envs=4, drones_per_env=16, config_path="config.toml")
+ *                          num_envs=4, agents_per_env=16, config_path="config.toml")
  */
 
 #include <Python.h>
@@ -22,8 +22,10 @@
 
 /* Include rl_engine headers */
 #include "environment_manager.h"
+#include "platform.h"
 #include "sensor_implementations.h"
 #include "sensor_system.h"
+#include "world_brick_map.h"
 
 /* ============================================================================
  * Log Structure (MUST be all floats, 'n' MUST be last)
@@ -42,10 +44,10 @@ typedef struct Log {
 } Log;
 
 /* ============================================================================
- * DroneEnv Structure
+ * RobotEnv Structure
  * ============================================================================ */
 
-typedef struct DroneEnv {
+typedef struct RobotEnv {
     /* REQUIRED: Log MUST be first field for PufferLib aggregation */
     Log log;
 
@@ -54,14 +56,15 @@ typedef struct DroneEnv {
     float* actions;
     float* rewards;
     unsigned char* terminals;
+    unsigned char* truncations;
 
     /* Engine handle */
     PufferEnv* puffer_env;
 
     /* Configuration */
     int num_envs;
-    int drones_per_env;
-    int total_drones;
+    int agents_per_env;
+    int total_agents;
     int tick;
 
     /* Per-episode tracking (for logging) */
@@ -70,10 +73,10 @@ typedef struct DroneEnv {
 
     /* Saved GPU context when GPU is temporarily disabled */
     struct GpuSensorContext* saved_gpu_ctx;
-} DroneEnv;
+} RobotEnv;
 
 /* Define Env type for env_binding.h template */
-#define Env DroneEnv
+#define Env RobotEnv
 
 /* ============================================================================
  * Core Functions (called by env_binding.h)
@@ -82,41 +85,41 @@ typedef struct DroneEnv {
 /**
  * Reset environment to initial state
  */
-static void c_reset(DroneEnv* env) {
+static void c_reset(RobotEnv* env) {
     if (env == NULL || env->puffer_env == NULL) return;
 
     env->tick = 0;
     puffer_env_reset(env->puffer_env);
 
     /* Copy engine observations to numpy buffer after reset */
-    BatchDroneEngine* engine = env->puffer_env->engine;
+    BatchEngine* engine = env->puffer_env->engine;
     if (engine != NULL && engine->observations != NULL && env->observations != NULL) {
         memcpy(env->observations, engine->observations,
-               (size_t)env->total_drones * engine->obs_dim * sizeof(float));
+               (size_t)env->total_agents * engine->obs_dim * sizeof(float));
     }
 
     /* Reset episode tracking */
     if (env->episode_returns) {
-        memset(env->episode_returns, 0, env->total_drones * sizeof(float));
+        memset(env->episode_returns, 0, env->total_agents * sizeof(float));
     }
     if (env->episode_lengths) {
-        memset(env->episode_lengths, 0, env->total_drones * sizeof(int));
+        memset(env->episode_lengths, 0, env->total_agents * sizeof(int));
     }
 }
 
 /**
  * Step environment forward by one timestep
  */
-static void c_step(DroneEnv* env) {
+static void c_step(RobotEnv* env) {
     if (env == NULL || env->puffer_env == NULL) return;
 
     env->tick++;
 
     /* Copy actions from numpy buffer to engine before stepping */
-    BatchDroneEngine* engine = env->puffer_env->engine;
+    BatchEngine* engine = env->puffer_env->engine;
     if (engine != NULL && env->actions != NULL && engine->actions != NULL) {
         memcpy(engine->actions, env->actions,
-               (size_t)env->total_drones * engine->action_dim * sizeof(float));
+               (size_t)env->total_agents * engine->action_dim * sizeof(float));
     }
 
     /* Step the underlying engine */
@@ -126,20 +129,24 @@ static void c_step(DroneEnv* env) {
     if (engine != NULL) {
         if (engine->observations != NULL && env->observations != NULL) {
             memcpy(env->observations, engine->observations,
-                   (size_t)env->total_drones * engine->obs_dim * sizeof(float));
+                   (size_t)env->total_agents * engine->obs_dim * sizeof(float));
         }
         if (engine->rewards_buffer != NULL && env->rewards != NULL) {
             memcpy(env->rewards, engine->rewards_buffer,
-                   (size_t)env->total_drones * sizeof(float));
+                   (size_t)env->total_agents * sizeof(float));
         }
         if (engine->dones != NULL && env->terminals != NULL) {
             memcpy(env->terminals, engine->dones,
-                   (size_t)env->total_drones * sizeof(unsigned char));
+                   (size_t)env->total_agents * sizeof(unsigned char));
+        }
+        if (engine->truncations != NULL && env->truncations != NULL) {
+            memcpy(env->truncations, engine->truncations,
+                   (size_t)env->total_agents * sizeof(unsigned char));
         }
     }
 
     /* Update episode tracking and logging */
-    for (int i = 0; i < env->total_drones; i++) {
+    for (int i = 0; i < env->total_agents; i++) {
         /* Accumulate episode return */
         if (env->episode_returns) {
             env->episode_returns[i] += env->rewards[i];
@@ -148,8 +155,8 @@ static void c_step(DroneEnv* env) {
             env->episode_lengths[i]++;
         }
 
-        /* Check for episode termination */
-        if (env->terminals[i]) {
+        /* Check for episode termination or truncation */
+        if (env->terminals[i] || (env->truncations && env->truncations[i])) {
             /* Record episode stats to log */
             if (env->episode_returns) {
                 env->log.episode_return += env->episode_returns[i];
@@ -190,7 +197,7 @@ static void c_step(DroneEnv* env) {
 /**
  * Render environment (currently a no-op, placeholder for future visualization)
  */
-static void c_render(DroneEnv* env) {
+static void c_render(RobotEnv* env) {
     if (env == NULL || env->puffer_env == NULL) return;
     puffer_env_render(env->puffer_env, "human");
 }
@@ -198,7 +205,7 @@ static void c_render(DroneEnv* env) {
 /**
  * Close and cleanup environment resources
  */
-static void c_close(DroneEnv* env) {
+static void c_close(RobotEnv* env) {
     if (env == NULL) return;
 
     /* Restore GPU context before closing so engine_destroy can clean it up */
@@ -233,23 +240,30 @@ static void c_close(DroneEnv* env) {
 /**
  * Initialize environment from Python keyword arguments
  */
-static int my_init(DroneEnv* env, PyObject* args, PyObject* kwargs) {
+static int my_init(RobotEnv* env, PyObject* args, PyObject* kwargs) {
     /* Extract configuration from kwargs */
     PyObject* num_envs_obj = PyDict_GetItemString(kwargs, "num_envs");
-    PyObject* drones_per_env_obj = PyDict_GetItemString(kwargs, "drones_per_env");
+    PyObject* agents_per_env_obj = PyDict_GetItemString(kwargs, "agents_per_env");
     PyObject* config_path_obj = PyDict_GetItemString(kwargs, "config_path");
     PyObject* seed_obj = PyDict_GetItemString(kwargs, "seed");
 
     /* Set defaults */
     env->num_envs = num_envs_obj ? (int)PyLong_AsLong(num_envs_obj) : 64;
-    env->drones_per_env = drones_per_env_obj ? (int)PyLong_AsLong(drones_per_env_obj) : 16;
-    env->total_drones = env->num_envs * env->drones_per_env;
+    env->agents_per_env = agents_per_env_obj ? (int)PyLong_AsLong(agents_per_env_obj) : 16;
+    env->total_agents = env->num_envs * env->agents_per_env;
     env->tick = 0;
 
     /* Get config path if provided */
     const char* config_path = NULL;
     if (config_path_obj && PyUnicode_Check(config_path_obj)) {
         config_path = PyUnicode_AsUTF8(config_path_obj);
+    }
+
+    /* Parse platform type (default: quadcopter) */
+    const char* platform_name = "quadcopter";
+    PyObject* platform_obj = PyDict_GetItemString(kwargs, "platform");
+    if (platform_obj && PyUnicode_Check(platform_obj)) {
+        platform_name = PyUnicode_AsUTF8(platform_obj);
     }
 
     /* Create engine config — TOML first (if provided), then kwargs override */
@@ -265,12 +279,22 @@ static int my_init(DroneEnv* env, PyObject* args, PyObject* kwargs) {
 
     /* Kwargs override TOML values (or set defaults if no TOML) */
     config.num_envs = (uint32_t)env->num_envs;
-    config.drones_per_env = (uint32_t)env->drones_per_env;
-    config.total_drones = (uint32_t)env->total_drones;
+    config.agents_per_env = (uint32_t)env->agents_per_env;
+    config.total_agents = (uint32_t)env->total_agents;
 
     if (seed_obj) {
         config.seed = (uint64_t)PyLong_AsUnsignedLongLong(seed_obj);
     }
+
+    /* Lookup platform vtable */
+    PlatformRegistry registry;
+    platform_registry_init(&registry);
+    const PlatformVTable* vtable = platform_registry_find(&registry, platform_name);
+    if (vtable == NULL) {
+        PyErr_Format(PyExc_ValueError, "Unknown platform: '%s'", platform_name);
+        return -1;
+    }
+    config.platform_vtable = vtable;
 
     /* Parse OBJ file path */
     PyObject* obj_path_obj = PyDict_GetItemString(kwargs, "obj_path");
@@ -292,6 +316,7 @@ static int my_init(DroneEnv* env, PyObject* args, PyObject* kwargs) {
     if (max_bricks_obj) config.max_bricks = (uint32_t)PyLong_AsUnsignedLong(max_bricks_obj);
 
     PyObject* world_min_obj = PyDict_GetItemString(kwargs, "world_min");
+    PyObject* world_max_obj = PyDict_GetItemString(kwargs, "world_max");
     if (world_min_obj && PyTuple_Check(world_min_obj) && PyTuple_Size(world_min_obj) == 3) {
         config.world_min = (Vec3){
             (float)PyFloat_AsDouble(PyTuple_GetItem(world_min_obj, 0)),
@@ -299,9 +324,8 @@ static int my_init(DroneEnv* env, PyObject* args, PyObject* kwargs) {
             (float)PyFloat_AsDouble(PyTuple_GetItem(world_min_obj, 2)),
             0.0f
         };
+        config.use_custom_bounds = true;
     }
-
-    PyObject* world_max_obj = PyDict_GetItemString(kwargs, "world_max");
     if (world_max_obj && PyTuple_Check(world_max_obj) && PyTuple_Size(world_max_obj) == 3) {
         config.world_max = (Vec3){
             (float)PyFloat_AsDouble(PyTuple_GetItem(world_max_obj, 0)),
@@ -309,6 +333,7 @@ static int my_init(DroneEnv* env, PyObject* args, PyObject* kwargs) {
             (float)PyFloat_AsDouble(PyTuple_GetItem(world_max_obj, 2)),
             0.0f
         };
+        config.use_custom_bounds = true;
     }
 
     /* Parse spawn region */
@@ -350,8 +375,8 @@ static int my_init(DroneEnv* env, PyObject* args, PyObject* kwargs) {
     }
 
     /* Parse physics tunables */
-    PyObject* drone_radius_obj = PyDict_GetItemString(kwargs, "drone_radius");
-    if (drone_radius_obj) config.drone_radius = (float)PyFloat_AsDouble(drone_radius_obj);
+    PyObject* collision_radius_obj = PyDict_GetItemString(kwargs, "collision_radius");
+    if (collision_radius_obj) config.collision_radius = (float)PyFloat_AsDouble(collision_radius_obj);
 
     PyObject* air_density_obj = PyDict_GetItemString(kwargs, "air_density");
     if (air_density_obj) config.air_density = (float)PyFloat_AsDouble(air_density_obj);
@@ -442,7 +467,7 @@ static int my_init(DroneEnv* env, PyObject* args, PyObject* kwargs) {
     }
 
     /* Verify buffer compatibility */
-    BatchDroneEngine* engine = env->puffer_env->engine;
+    BatchEngine* engine = env->puffer_env->engine;
     if (engine == NULL) {
         PyErr_SetString(PyExc_RuntimeError, "Engine is NULL");
         return -1;
@@ -453,8 +478,8 @@ static int my_init(DroneEnv* env, PyObject* args, PyObject* kwargs) {
     /* The engine's buffers are 32-byte aligned */
 
     /* Allocate episode tracking arrays */
-    env->episode_returns = (float*)calloc(env->total_drones, sizeof(float));
-    env->episode_lengths = (int*)calloc(env->total_drones, sizeof(int));
+    env->episode_returns = (float*)calloc(env->total_agents, sizeof(float));
+    env->episode_lengths = (int*)calloc(env->total_agents, sizeof(int));
 
     if (!env->episode_returns || !env->episode_lengths) {
         PyErr_SetString(PyExc_MemoryError, "Failed to allocate episode tracking arrays");
@@ -489,79 +514,81 @@ static int my_log(PyObject* dict, Log* log) {
 }
 
 /* ============================================================================
- * Custom Python Methods (set_drone_state, get_drone_state, step_sensors, get_obs_dim)
+ * Custom Python Methods (set_agent_state, get_agent_state, step_sensors, etc.)
  * ============================================================================ */
 
 /**
- * set_drone_state(env_handle, drone_idx, px, py, pz, qw, qx, qy, qz)
- * Teleport a drone: set position and orientation, zero velocities.
+ * set_agent_state(env_handle, agent_idx, px, py, pz, qw, qx, qy, qz)
+ * Teleport an agent: set position and orientation, zero velocities.
  */
-static PyObject* py_set_drone_state(PyObject* self, PyObject* args) {
+static PyObject* py_set_agent_state(PyObject* self, PyObject* args) {
     PyObject* handle_obj;
-    int drone_idx;
+    int agent_idx;
     float px, py, pz, qw, qx, qy, qz;
 
-    if (!PyArg_ParseTuple(args, "Oifffffff", &handle_obj, &drone_idx,
+    if (!PyArg_ParseTuple(args, "Oifffffff", &handle_obj, &agent_idx,
                           &px, &py, &pz, &qw, &qx, &qy, &qz)) {
         return NULL;
     }
 
-    DroneEnv* env = (DroneEnv*)PyLong_AsVoidPtr(handle_obj);
+    RobotEnv* env = (RobotEnv*)PyLong_AsVoidPtr(handle_obj);
     if (env == NULL || env->puffer_env == NULL || env->puffer_env->engine == NULL) {
         PyErr_SetString(PyExc_RuntimeError, "Invalid environment handle");
         return NULL;
     }
 
-    BatchDroneEngine* engine = env->puffer_env->engine;
-    uint32_t idx = (uint32_t)drone_idx;
+    BatchEngine* engine = env->puffer_env->engine;
+    uint32_t idx = (uint32_t)agent_idx;
 
-    if (idx >= engine->config.total_drones) {
-        PyErr_SetString(PyExc_IndexError, "drone_idx out of range");
+    if (idx >= engine->config.total_agents) {
+        PyErr_SetString(PyExc_IndexError, "agent_idx out of range");
         return NULL;
     }
 
+    RigidBodyStateSOA* rb = &engine->states->rigid_body;
+
     /* Set position */
-    engine->states->pos_x[idx] = px;
-    engine->states->pos_y[idx] = py;
-    engine->states->pos_z[idx] = pz;
+    rb->pos_x[idx] = px;
+    rb->pos_y[idx] = py;
+    rb->pos_z[idx] = pz;
 
     /* Set orientation */
-    engine->states->quat_w[idx] = qw;
-    engine->states->quat_x[idx] = qx;
-    engine->states->quat_y[idx] = qy;
-    engine->states->quat_z[idx] = qz;
+    rb->quat_w[idx] = qw;
+    rb->quat_x[idx] = qx;
+    rb->quat_y[idx] = qy;
+    rb->quat_z[idx] = qz;
 
     /* Zero velocities (teleportation = no momentum) */
-    engine->states->vel_x[idx] = 0.0f;
-    engine->states->vel_y[idx] = 0.0f;
-    engine->states->vel_z[idx] = 0.0f;
-    engine->states->omega_x[idx] = 0.0f;
-    engine->states->omega_y[idx] = 0.0f;
-    engine->states->omega_z[idx] = 0.0f;
+    rb->vel_x[idx] = 0.0f;
+    rb->vel_y[idx] = 0.0f;
+    rb->vel_z[idx] = 0.0f;
+    rb->omega_x[idx] = 0.0f;
+    rb->omega_y[idx] = 0.0f;
+    rb->omega_z[idx] = 0.0f;
 
     Py_RETURN_NONE;
 }
 
 /**
- * get_drone_state(env_handle, drone_idx) -> dict
+ * get_agent_state(env_handle, agent_idx) -> dict
  */
-static PyObject* py_get_drone_state(PyObject* self, PyObject* args) {
+static PyObject* py_get_agent_state(PyObject* self, PyObject* args) {
     PyObject* handle_obj;
-    int drone_idx;
+    int agent_idx;
 
-    if (!PyArg_ParseTuple(args, "Oi", &handle_obj, &drone_idx)) {
+    if (!PyArg_ParseTuple(args, "Oi", &handle_obj, &agent_idx)) {
         return NULL;
     }
 
-    DroneEnv* env = (DroneEnv*)PyLong_AsVoidPtr(handle_obj);
+    RobotEnv* env = (RobotEnv*)PyLong_AsVoidPtr(handle_obj);
     if (env == NULL || env->puffer_env == NULL || env->puffer_env->engine == NULL) {
         PyErr_SetString(PyExc_RuntimeError, "Invalid environment handle");
         return NULL;
     }
 
-    BatchDroneEngine* engine = env->puffer_env->engine;
-    DroneStateQuery query;
-    engine_get_drone_state(engine, (uint32_t)drone_idx, &query);
+    BatchEngine* engine = env->puffer_env->engine;
+    AgentStateQuery query;
+    engine_get_agent_state(engine, (uint32_t)agent_idx, &query);
 
     PyObject* dict = PyDict_New();
     PyObject* pos = Py_BuildValue("(fff)", query.position.x, query.position.y, query.position.z);
@@ -596,13 +623,13 @@ static PyObject* py_step_sensors(PyObject* self, PyObject* args) {
         return NULL;
     }
 
-    DroneEnv* env = (DroneEnv*)PyLong_AsVoidPtr(handle_obj);
+    RobotEnv* env = (RobotEnv*)PyLong_AsVoidPtr(handle_obj);
     if (env == NULL || env->puffer_env == NULL || env->puffer_env->engine == NULL) {
         PyErr_SetString(PyExc_RuntimeError, "Invalid environment handle");
         return NULL;
     }
 
-    BatchDroneEngine* engine = env->puffer_env->engine;
+    BatchEngine* engine = env->puffer_env->engine;
 
     /* Run sensor sampling (dispatches GPU async + samples CPU-only sensors) */
     engine_step_sensors(engine);
@@ -611,19 +638,19 @@ static PyObject* py_step_sensors(PyObject* self, PyObject* args) {
     if (engine->gpu_sensor_ctx != NULL) {
         gpu_sensors_wait(engine->gpu_sensor_ctx);
         gpu_sensors_scatter_results(engine->gpu_sensor_ctx, engine->sensors,
-                                     engine->config.total_drones);
+                                     engine->config.total_agents);
     }
 
     /* Copy sensor system observations to engine->observations */
     float* sensor_obs = sensor_system_get_observations(engine->sensors);
     if (sensor_obs != NULL && engine->observations != NULL) {
         memcpy(engine->observations, sensor_obs,
-               (size_t)engine->config.total_drones * engine->obs_dim * sizeof(float));
+               (size_t)engine->config.total_agents * engine->obs_dim * sizeof(float));
     }
 
     /* Copy engine observations to numpy buffer */
     if (engine->observations != NULL && env->observations != NULL) {
-        size_t obs_bytes = (size_t)engine->config.total_drones * engine->obs_dim * sizeof(float);
+        size_t obs_bytes = (size_t)engine->config.total_agents * engine->obs_dim * sizeof(float);
         memcpy(env->observations, engine->observations, obs_bytes);
     }
 
@@ -644,13 +671,13 @@ static PyObject* py_set_gpu_enabled(PyObject* self, PyObject* args) {
         return NULL;
     }
 
-    DroneEnv* env = (DroneEnv*)PyLong_AsVoidPtr(handle_obj);
+    RobotEnv* env = (RobotEnv*)PyLong_AsVoidPtr(handle_obj);
     if (env == NULL || env->puffer_env == NULL || env->puffer_env->engine == NULL) {
         PyErr_SetString(PyExc_RuntimeError, "Invalid environment handle");
         return NULL;
     }
 
-    BatchDroneEngine* engine = env->puffer_env->engine;
+    BatchEngine* engine = env->puffer_env->engine;
 
     if (enabled) {
         /* Restore saved GPU context if we previously disabled it */
@@ -679,7 +706,7 @@ static PyObject* py_is_gpu_enabled(PyObject* self, PyObject* args) {
         return NULL;
     }
 
-    DroneEnv* env = (DroneEnv*)PyLong_AsVoidPtr(handle_obj);
+    RobotEnv* env = (RobotEnv*)PyLong_AsVoidPtr(handle_obj);
     if (env == NULL || env->puffer_env == NULL || env->puffer_env->engine == NULL) {
         PyErr_SetString(PyExc_RuntimeError, "Invalid environment handle");
         return NULL;
@@ -701,13 +728,32 @@ static PyObject* py_get_obs_dim(PyObject* self, PyObject* args) {
         return NULL;
     }
 
-    DroneEnv* env = (DroneEnv*)PyLong_AsVoidPtr(handle_obj);
+    RobotEnv* env = (RobotEnv*)PyLong_AsVoidPtr(handle_obj);
     if (env == NULL || env->puffer_env == NULL || env->puffer_env->engine == NULL) {
         PyErr_SetString(PyExc_RuntimeError, "Invalid environment handle");
         return NULL;
     }
 
     return PyLong_FromLong((long)env->puffer_env->engine->obs_dim);
+}
+
+/**
+ * get_action_dim(env_handle) -> int
+ */
+static PyObject* py_get_action_dim(PyObject* self, PyObject* args) {
+    PyObject* handle_obj;
+
+    if (!PyArg_ParseTuple(args, "O", &handle_obj)) {
+        return NULL;
+    }
+
+    RobotEnv* env = (RobotEnv*)PyLong_AsVoidPtr(handle_obj);
+    if (env == NULL || env->puffer_env == NULL || env->puffer_env->engine == NULL) {
+        PyErr_SetString(PyExc_RuntimeError, "Invalid environment handle");
+        return NULL;
+    }
+
+    return PyLong_FromLong((long)env->puffer_env->engine->action_dim);
 }
 
 /* ============================================================================
@@ -724,14 +770,85 @@ static PyObject* py_get_obs_dim(PyObject* self, PyObject* args) {
  * These functions call c_reset, c_step, c_render, c_close defined above.
  */
 
+/**
+ * debug_world(env_handle) -> dict
+ * Returns diagnostic info about the world brick map.
+ */
+static PyObject* py_debug_world(PyObject* self, PyObject* args) {
+    (void)self;
+    PyObject* handle_obj;
+    if (!PyArg_ParseTuple(args, "O", &handle_obj)) return NULL;
+
+    RobotEnv* env = (RobotEnv*)PyLong_AsVoidPtr(handle_obj);
+    if (env == NULL || env->puffer_env == NULL || env->puffer_env->engine == NULL) {
+        PyErr_SetString(PyExc_RuntimeError, "Invalid environment handle");
+        return NULL;
+    }
+
+    BatchEngine* engine = env->puffer_env->engine;
+    const WorldBrickMap* w = engine->world;
+
+    PyObject* d = PyDict_New();
+    if (w == NULL) {
+        PyDict_SetItemString(d, "world_is_null", Py_True);
+        return d;
+    }
+    PyDict_SetItemString(d, "world_is_null", Py_False);
+    PyDict_SetItemString(d, "grid_x", PyLong_FromLong(w->grid_x));
+    PyDict_SetItemString(d, "grid_y", PyLong_FromLong(w->grid_y));
+    PyDict_SetItemString(d, "grid_z", PyLong_FromLong(w->grid_z));
+    PyDict_SetItemString(d, "voxel_size", PyFloat_FromDouble(w->voxel_size));
+    PyDict_SetItemString(d, "sdf_scale", PyFloat_FromDouble(w->sdf_scale));
+    PyDict_SetItemString(d, "atlas_count", PyLong_FromLong(w->atlas_count));
+    PyDict_SetItemString(d, "max_bricks", PyLong_FromLong(w->max_bricks));
+
+    /* Count non-empty bricks */
+    uint32_t total_bricks = w->grid_x * w->grid_y * w->grid_z;
+    uint32_t empty = 0, surface = 0, uniform_in = 0, uniform_out = 0;
+    for (uint32_t i = 0; i < total_bricks; i++) {
+        int32_t idx = w->brick_indices[i];
+        if (idx == BRICK_EMPTY_INDEX) empty++;
+        else if (idx == BRICK_UNIFORM_INSIDE) uniform_in++;
+        else if (idx == BRICK_UNIFORM_OUTSIDE) uniform_out++;
+        else surface++;
+    }
+    PyDict_SetItemString(d, "total_grid_slots", PyLong_FromLong(total_bricks));
+    PyDict_SetItemString(d, "empty_bricks", PyLong_FromLong(empty));
+    PyDict_SetItemString(d, "surface_bricks", PyLong_FromLong(surface));
+    PyDict_SetItemString(d, "uniform_inside", PyLong_FromLong(uniform_in));
+    PyDict_SetItemString(d, "uniform_outside", PyLong_FromLong(uniform_out));
+
+    /* Query SDF at a few test points */
+    Vec3 p0 = VEC3(0, 0, 0);
+    Vec3 p1 = VEC3(5, 0, 0);
+    Vec3 p2 = VEC3(10, 0, 0);
+    Vec3 p3 = VEC3(15, 0, 0);
+    PyDict_SetItemString(d, "sdf_at_origin", PyFloat_FromDouble(world_sdf_query(w, p0)));
+    PyDict_SetItemString(d, "sdf_at_5_0_0", PyFloat_FromDouble(world_sdf_query(w, p1)));
+    PyDict_SetItemString(d, "sdf_at_10_0_0", PyFloat_FromDouble(world_sdf_query(w, p2)));
+    PyDict_SetItemString(d, "sdf_at_15_0_0", PyFloat_FromDouble(world_sdf_query(w, p3)));
+
+    /* World bounds */
+    PyDict_SetItemString(d, "world_min_x", PyFloat_FromDouble(w->world_min.x));
+    PyDict_SetItemString(d, "world_min_y", PyFloat_FromDouble(w->world_min.y));
+    PyDict_SetItemString(d, "world_min_z", PyFloat_FromDouble(w->world_min.z));
+    PyDict_SetItemString(d, "world_max_x", PyFloat_FromDouble(w->world_max.x));
+    PyDict_SetItemString(d, "world_max_y", PyFloat_FromDouble(w->world_max.y));
+    PyDict_SetItemString(d, "world_max_z", PyFloat_FromDouble(w->world_max.z));
+
+    return d;
+}
+
 /* Define MY_METHODS before including env_binding.h */
 #define MY_METHODS \
-    {"set_drone_state", py_set_drone_state, METH_VARARGS, "Teleport drone"}, \
-    {"get_drone_state", py_get_drone_state, METH_VARARGS, "Get drone state"}, \
+    {"set_agent_state", py_set_agent_state, METH_VARARGS, "Teleport agent"}, \
+    {"get_agent_state", py_get_agent_state, METH_VARARGS, "Get agent state"}, \
     {"step_sensors", py_step_sensors, METH_VARARGS, "Step sensors only"}, \
     {"get_obs_dim", py_get_obs_dim, METH_VARARGS, "Get obs dimension"}, \
+    {"get_action_dim", py_get_action_dim, METH_VARARGS, "Get action dimension"}, \
     {"set_gpu_enabled", py_set_gpu_enabled, METH_VARARGS, "Enable/disable GPU sensors"}, \
-    {"is_gpu_enabled", py_is_gpu_enabled, METH_VARARGS, "Check if GPU sensors enabled"}
+    {"is_gpu_enabled", py_is_gpu_enabled, METH_VARARGS, "Check if GPU sensors enabled"}, \
+    {"debug_world", py_debug_world, METH_VARARGS, "Debug world state"}
 
 /* Path relative to PufferLib source */
 #include "env_binding.h"

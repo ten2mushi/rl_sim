@@ -88,14 +88,16 @@ endif()
 add_subdirectory(src/foundation)
 
 # Layer 1: Depends on foundation only
+add_subdirectory(src/rigid_body_state)
 add_subdirectory(src/drone_state)
 add_subdirectory(src/threading)
 add_subdirectory(src/world_brick_map)
 add_subdirectory(src/gpu)
 
-# Layer 2: Depends on foundation + drone_state
+# Layer 2: Depends on foundation + drone_state + rigid_body_state
 add_subdirectory(src/physics)
 add_subdirectory(src/sensor_system)
+add_subdirectory(src/platform)
 
 # Layer 3: Depends on foundation + drone_state + world_brick_map
 add_subdirectory(src/collision_system)
@@ -122,8 +124,10 @@ if(BUILD_UNIFIED_LIBRARY)
     # Collect all source files from each module
     file(GLOB_RECURSE DRONERL_SOURCES
         "src/foundation/src/*.c"
+        "src/rigid_body_state/src/*.c"
         "src/drone_state/src/*.c"
         "src/physics/src/*.c"
+        "src/platform/src/*.c"
         "src/world_brick_map/src/*.c"
         "src/collision_system/src/*.c"
         "src/sensor_system/src/*.c"
@@ -149,8 +153,10 @@ if(BUILD_UNIFIED_LIBRARY)
     target_include_directories(dronerl_static PUBLIC
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src/foundation/include>
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src/rigid_body_state/include>
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src/drone_state/include>
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src/physics/include>
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src/platform/include>
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src/world_brick_map/include>
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src/collision_system/include>
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src/sensor_system/include>
@@ -210,7 +216,7 @@ if(BUILD_TESTING)
     add_executable(test_sensor_system
         src/sensor_system/tests/test_sensor_system.c)
     target_link_libraries(test_sensor_system PRIVATE
-        sensor_system sensor_implementations)
+        sensor_system sensor_implementations platform)
     if(UNIX AND NOT APPLE)
         target_link_libraries(test_sensor_system PRIVATE m)
     endif()
@@ -233,13 +239,26 @@ if(BUILD_TESTING)
             -Wall -Wextra -g -O0 -DFOUNDATION_DEBUG)
     endif()
     add_test(NAME test_noise COMMAND test_noise)
+
+    add_executable(test_noise_deep
+        src/sensor_system/tests/test_noise_deep.c)
+    target_link_libraries(test_noise_deep PRIVATE sensor_system)
+    if(UNIX AND NOT APPLE)
+        target_link_libraries(test_noise_deep PRIVATE m)
+    endif()
+    target_compile_features(test_noise_deep PRIVATE c_std_11)
+    if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
+        target_compile_options(test_noise_deep PRIVATE
+            -Wall -Wextra -g -O0 -DFOUNDATION_DEBUG)
+    endif()
+    add_test(NAME test_noise_deep COMMAND test_noise_deep)
 endif()
 
 if(BUILD_BENCHMARKS)
     add_executable(bench_sensor_system
         src/sensor_system/tests/bench_sensor_system.c)
     target_link_libraries(bench_sensor_system PRIVATE
-        sensor_system sensor_implementations)
+        sensor_system sensor_implementations platform)
     if(UNIX AND NOT APPLE)
         target_link_libraries(bench_sensor_system PRIVATE m)
     endif()

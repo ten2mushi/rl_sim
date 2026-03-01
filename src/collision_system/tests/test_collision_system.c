@@ -34,13 +34,13 @@
 /**
  * Create test drone states with specified positions
  */
-static DroneStateSOA* create_test_states(Arena* arena, uint32_t count) {
-    DroneStateSOA* states = drone_state_create(arena, count);
+static RigidBodyStateSOA* create_test_states(Arena* arena, uint32_t count) {
+    RigidBodyStateSOA* states = rigid_body_state_create(arena, count);
     if (states == NULL) return NULL;
 
     /* Initialize to default positions */
     for (uint32_t i = 0; i < count; i++) {
-        drone_state_init(states, i);
+        states->quat_w[i] = 1.0f;
     }
     states->count = count;
 
@@ -50,12 +50,12 @@ static DroneStateSOA* create_test_states(Arena* arena, uint32_t count) {
 /**
  * Create test drone params with specified masses
  */
-static DroneParamsSOA* create_test_params(Arena* arena, uint32_t count, float mass) {
-    DroneParamsSOA* params = drone_params_create(arena, count);
+static RigidBodyParamsSOA* create_test_params(Arena* arena, uint32_t count, float mass) {
+    RigidBodyParamsSOA* params = rigid_body_params_create(arena, count);
     if (params == NULL) return NULL;
 
     for (uint32_t i = 0; i < count; i++) {
-        drone_params_init(params, i);
+        rigid_body_params_init(params, i);
         params->mass[i] = mass;
     }
     params->count = count;
@@ -140,7 +140,7 @@ TEST(spatial_hash_insert_single) {
 
     spatial_hash_insert(grid, 42, 5.5f, 3.2f, 1.8f);
     ASSERT_EQ(grid->entry_count, 1);
-    ASSERT_EQ(grid->entries[0].drone_index, 42);
+    ASSERT_EQ(grid->entries[0].agent_index, 42);
 
     arena_destroy(arena);
     return 0;
@@ -317,8 +317,8 @@ TEST(collision_create_basic) {
     ASSERT_NOT_NULL(sys->drone_world_collision);
     ASSERT_NOT_NULL(sys->penetration_depth);
     ASSERT_NOT_NULL(sys->collision_normals);
-    ASSERT_EQ(sys->max_drones, 1024);
-    ASSERT_FLOAT_EQ(sys->drone_radius, 0.1f);
+    ASSERT_EQ(sys->max_agents, 1024);
+    ASSERT_FLOAT_EQ(sys->collision_radius, 0.1f);
 
     arena_destroy(arena);
     return 0;
@@ -342,7 +342,7 @@ TEST(collision_create_capacity_1024) {
     Arena* arena = arena_create(2 * 1024 * 1024);
     CollisionSystem* sys = collision_create(arena, 1024, 0.1f, 1.0f);
     ASSERT_NOT_NULL(sys);
-    ASSERT_EQ(sys->max_drones, 1024);
+    ASSERT_EQ(sys->max_agents, 1024);
     ASSERT_EQ(sys->max_pairs, 2048);
 
     arena_destroy(arena);
@@ -383,7 +383,7 @@ TEST(build_hash_empty) {
 TEST(build_hash_single_drone) {
     Arena* arena = arena_create(2 * 1024 * 1024);
     CollisionSystem* sys = collision_create(arena, 1024, 0.1f, 1.0f);
-    DroneStateSOA* states = create_test_states(arena, 1);
+    RigidBodyStateSOA* states = create_test_states(arena, 1);
 
     states->pos_x[0] = 5.0f;
     states->pos_y[0] = 5.0f;
@@ -399,7 +399,7 @@ TEST(build_hash_single_drone) {
 TEST(build_hash_clustered_drones) {
     Arena* arena = arena_create(2 * 1024 * 1024);
     CollisionSystem* sys = collision_create(arena, 1024, 0.1f, 1.0f);
-    DroneStateSOA* states = create_test_states(arena, 100);
+    RigidBodyStateSOA* states = create_test_states(arena, 100);
 
     /* All drones at nearly same position */
     for (uint32_t i = 0; i < 100; i++) {
@@ -418,7 +418,7 @@ TEST(build_hash_clustered_drones) {
 TEST(build_hash_scattered_drones) {
     Arena* arena = arena_create(2 * 1024 * 1024);
     CollisionSystem* sys = collision_create(arena, 1024, 0.1f, 1.0f);
-    DroneStateSOA* states = create_test_states(arena, 100);
+    RigidBodyStateSOA* states = create_test_states(arena, 100);
 
     /* Drones scattered across large area */
     for (uint32_t i = 0; i < 100; i++) {
@@ -437,7 +437,7 @@ TEST(build_hash_scattered_drones) {
 TEST(build_hash_1024_drones) {
     Arena* arena = arena_create(4 * 1024 * 1024);
     CollisionSystem* sys = collision_create(arena, 1024, 0.1f, 1.0f);
-    DroneStateSOA* states = create_test_states(arena, 1024);
+    RigidBodyStateSOA* states = create_test_states(arena, 1024);
 
     for (uint32_t i = 0; i < 1024; i++) {
         states->pos_x[i] = (float)(i % 32);
@@ -459,7 +459,7 @@ TEST(build_hash_1024_drones) {
 TEST(detect_dd_no_collisions) {
     Arena* arena = arena_create(4 * 1024 * 1024);
     CollisionSystem* sys = collision_create(arena, 1024, 0.1f, 1.0f);
-    DroneStateSOA* states = create_test_states(arena, 10);
+    RigidBodyStateSOA* states = create_test_states(arena, 10);
 
     /* Drones far apart (5 meters between each) */
     for (uint32_t i = 0; i < 10; i++) {
@@ -480,7 +480,7 @@ TEST(detect_dd_no_collisions) {
 TEST(detect_dd_single_collision) {
     Arena* arena = arena_create(4 * 1024 * 1024);
     CollisionSystem* sys = collision_create(arena, 1024, 0.1f, 1.0f);
-    DroneStateSOA* states = create_test_states(arena, 2);
+    RigidBodyStateSOA* states = create_test_states(arena, 2);
 
     /* Two drones overlapping */
     states->pos_x[0] = 0.0f; states->pos_y[0] = 0.0f; states->pos_z[0] = 0.0f;
@@ -500,7 +500,7 @@ TEST(detect_dd_single_collision) {
 TEST(detect_dd_multiple_collisions) {
     Arena* arena = arena_create(4 * 1024 * 1024);
     CollisionSystem* sys = collision_create(arena, 1024, 0.1f, 1.0f);
-    DroneStateSOA* states = create_test_states(arena, 4);
+    RigidBodyStateSOA* states = create_test_states(arena, 4);
 
     /* Four drones in a cluster */
     states->pos_x[0] = 0.0f; states->pos_y[0] = 0.0f; states->pos_z[0] = 0.0f;
@@ -521,7 +521,7 @@ TEST(detect_dd_multiple_collisions) {
 TEST(detect_dd_chain_collision) {
     Arena* arena = arena_create(4 * 1024 * 1024);
     CollisionSystem* sys = collision_create(arena, 1024, 0.1f, 1.0f);
-    DroneStateSOA* states = create_test_states(arena, 3);
+    RigidBodyStateSOA* states = create_test_states(arena, 3);
 
     /* A--B--C chain where A touches B, B touches C, but A doesn't touch C */
     states->pos_x[0] = 0.0f; states->pos_y[0] = 0.0f; states->pos_z[0] = 0.0f;
@@ -540,7 +540,7 @@ TEST(detect_dd_chain_collision) {
 TEST(detect_dd_pair_ordering) {
     Arena* arena = arena_create(4 * 1024 * 1024);
     CollisionSystem* sys = collision_create(arena, 1024, 0.1f, 1.0f);
-    DroneStateSOA* states = create_test_states(arena, 10);
+    RigidBodyStateSOA* states = create_test_states(arena, 10);
 
     /* Create several collisions with mixed indices */
     states->pos_x[5] = 0.0f; states->pos_y[5] = 0.0f; states->pos_z[5] = 0.0f;
@@ -574,7 +574,7 @@ TEST(detect_dd_pair_ordering) {
 TEST(detect_dd_pair_count) {
     Arena* arena = arena_create(4 * 1024 * 1024);
     CollisionSystem* sys = collision_create(arena, 1024, 0.1f, 1.0f);
-    DroneStateSOA* states = create_test_states(arena, 5);
+    RigidBodyStateSOA* states = create_test_states(arena, 5);
 
     /* Create exactly 2 collision pairs */
     states->pos_x[0] = 0.0f; states->pos_y[0] = 0.0f; states->pos_z[0] = 0.0f;
@@ -595,7 +595,7 @@ TEST(detect_dd_pair_count) {
 TEST(detect_dd_touching) {
     Arena* arena = arena_create(4 * 1024 * 1024);
     CollisionSystem* sys = collision_create(arena, 1024, 0.1f, 1.0f);
-    DroneStateSOA* states = create_test_states(arena, 2);
+    RigidBodyStateSOA* states = create_test_states(arena, 2);
 
     /* Drones at exactly 2r distance (radius = 0.1, so distance = 0.2) */
     states->pos_x[0] = 0.0f; states->pos_y[0] = 0.0f; states->pos_z[0] = 0.0f;
@@ -623,7 +623,7 @@ TEST(detect_dd_touching) {
 TEST(detect_dd_self_no_collision) {
     Arena* arena = arena_create(4 * 1024 * 1024);
     CollisionSystem* sys = collision_create(arena, 1024, 0.1f, 1.0f);
-    DroneStateSOA* states = create_test_states(arena, 1);
+    RigidBodyStateSOA* states = create_test_states(arena, 1);
 
     states->pos_x[0] = 0.0f;
     states->pos_y[0] = 0.0f;
@@ -645,7 +645,7 @@ TEST(detect_dd_self_no_collision) {
 TEST(detect_world_empty_world) {
     Arena* arena = arena_create(4 * 1024 * 1024);
     CollisionSystem* sys = collision_create(arena, 1024, 0.1f, 1.0f);
-    DroneStateSOA* states = create_test_states(arena, 10);
+    RigidBodyStateSOA* states = create_test_states(arena, 10);
 
     /* Calling with NULL world should be safe */
     collision_detect_drone_world(sys, states, NULL, 10);
@@ -772,7 +772,7 @@ TEST(detect_world_ground_collision) {
 TEST(detect_all_ordering) {
     Arena* arena = arena_create(4 * 1024 * 1024);
     CollisionSystem* sys = collision_create(arena, 1024, 0.1f, 1.0f);
-    DroneStateSOA* states = create_test_states(arena, 10);
+    RigidBodyStateSOA* states = create_test_states(arena, 10);
 
     /* Set up some colliding drones */
     states->pos_x[0] = 0.0f; states->pos_y[0] = 0.0f; states->pos_z[0] = 0.0f;
@@ -789,7 +789,7 @@ TEST(detect_all_ordering) {
 TEST(detect_all_resets_previous) {
     Arena* arena = arena_create(4 * 1024 * 1024);
     CollisionSystem* sys = collision_create(arena, 1024, 0.1f, 1.0f);
-    DroneStateSOA* states = create_test_states(arena, 10);
+    RigidBodyStateSOA* states = create_test_states(arena, 10);
 
     /* Initialize all drone positions to be spread out, with 0 and 1 colliding */
     for (uint32_t i = 0; i < 10; i++) {
@@ -818,7 +818,7 @@ TEST(detect_all_resets_previous) {
 TEST(detect_all_independence) {
     Arena* arena = arena_create(4 * 1024 * 1024);
     CollisionSystem* sys = collision_create(arena, 1024, 0.1f, 1.0f);
-    DroneStateSOA* states = create_test_states(arena, 10);
+    RigidBodyStateSOA* states = create_test_states(arena, 10);
 
     /* Two drones colliding, rest spread out */
     states->pos_x[0] = 0.0f; states->pos_y[0] = 0.0f; states->pos_z[0] = 0.0f;
@@ -845,7 +845,7 @@ TEST(detect_all_independence) {
 TEST(response_world_position_correction) {
     Arena* arena = arena_create(4 * 1024 * 1024);
     CollisionSystem* sys = collision_create(arena, 1024, 0.1f, 1.0f);
-    DroneStateSOA* states = create_test_states(arena, 1);
+    RigidBodyStateSOA* states = create_test_states(arena, 1);
 
     /* Set up drone colliding with ground */
     states->pos_x[0] = 0.0f;
@@ -869,7 +869,7 @@ TEST(response_world_position_correction) {
 TEST(response_world_velocity_reflection) {
     Arena* arena = arena_create(4 * 1024 * 1024);
     CollisionSystem* sys = collision_create(arena, 1024, 0.1f, 1.0f);
-    DroneStateSOA* states = create_test_states(arena, 1);
+    RigidBodyStateSOA* states = create_test_states(arena, 1);
 
     /* Set up drone moving into ground */
     states->vel_x[0] = 0.0f;
@@ -892,7 +892,7 @@ TEST(response_world_velocity_reflection) {
 TEST(response_world_restitution_0) {
     Arena* arena = arena_create(4 * 1024 * 1024);
     CollisionSystem* sys = collision_create(arena, 1024, 0.1f, 1.0f);
-    DroneStateSOA* states = create_test_states(arena, 1);
+    RigidBodyStateSOA* states = create_test_states(arena, 1);
 
     /* Moving into surface */
     states->vel_x[0] = 0.0f;
@@ -915,7 +915,7 @@ TEST(response_world_restitution_0) {
 TEST(response_world_restitution_1) {
     Arena* arena = arena_create(4 * 1024 * 1024);
     CollisionSystem* sys = collision_create(arena, 1024, 0.1f, 1.0f);
-    DroneStateSOA* states = create_test_states(arena, 1);
+    RigidBodyStateSOA* states = create_test_states(arena, 1);
 
     /* Moving into surface */
     states->vel_x[0] = 0.0f;
@@ -938,7 +938,7 @@ TEST(response_world_restitution_1) {
 TEST(response_world_only_into_surface) {
     Arena* arena = arena_create(4 * 1024 * 1024);
     CollisionSystem* sys = collision_create(arena, 1024, 0.1f, 1.0f);
-    DroneStateSOA* states = create_test_states(arena, 1);
+    RigidBodyStateSOA* states = create_test_states(arena, 1);
 
     /* Moving away from surface */
     states->vel_x[0] = 0.0f;
@@ -962,7 +962,7 @@ TEST(response_world_only_into_surface) {
 TEST(response_world_preserves_non_colliding) {
     Arena* arena = arena_create(4 * 1024 * 1024);
     CollisionSystem* sys = collision_create(arena, 1024, 0.1f, 1.0f);
-    DroneStateSOA* states = create_test_states(arena, 2);
+    RigidBodyStateSOA* states = create_test_states(arena, 2);
 
     /* Drone 0: colliding */
     states->vel_z[0] = -5.0f;
@@ -995,8 +995,8 @@ TEST(response_world_preserves_non_colliding) {
 TEST(response_dd_separation) {
     Arena* arena = arena_create(4 * 1024 * 1024);
     CollisionSystem* sys = collision_create(arena, 1024, 0.1f, 1.0f);
-    DroneStateSOA* states = create_test_states(arena, 2);
-    DroneParamsSOA* params = create_test_params(arena, 2, 1.0f);
+    RigidBodyStateSOA* states = create_test_states(arena, 2);
+    RigidBodyParamsSOA* params = create_test_params(arena, 2, 1.0f);
 
     /* Two overlapping drones */
     states->pos_x[0] = 0.0f; states->pos_y[0] = 0.0f; states->pos_z[0] = 0.0f;
@@ -1016,8 +1016,8 @@ TEST(response_dd_separation) {
 TEST(response_dd_mass_weighted) {
     Arena* arena = arena_create(4 * 1024 * 1024);
     CollisionSystem* sys = collision_create(arena, 1024, 0.1f, 1.0f);
-    DroneStateSOA* states = create_test_states(arena, 2);
-    DroneParamsSOA* params = create_test_params(arena, 2, 1.0f);
+    RigidBodyStateSOA* states = create_test_states(arena, 2);
+    RigidBodyParamsSOA* params = create_test_params(arena, 2, 1.0f);
 
     /* Drone 0: heavy, Drone 1: light */
     params->mass[0] = 10.0f;
@@ -1045,8 +1045,8 @@ TEST(response_dd_mass_weighted) {
 TEST(response_dd_equal_mass) {
     Arena* arena = arena_create(4 * 1024 * 1024);
     CollisionSystem* sys = collision_create(arena, 1024, 0.1f, 1.0f);
-    DroneStateSOA* states = create_test_states(arena, 2);
-    DroneParamsSOA* params = create_test_params(arena, 2, 1.0f);
+    RigidBodyStateSOA* states = create_test_states(arena, 2);
+    RigidBodyParamsSOA* params = create_test_params(arena, 2, 1.0f);
 
     /* Equal mass drones */
     params->mass[0] = 1.0f;
@@ -1071,8 +1071,8 @@ TEST(response_dd_equal_mass) {
 TEST(response_dd_velocity_exchange) {
     Arena* arena = arena_create(4 * 1024 * 1024);
     CollisionSystem* sys = collision_create(arena, 1024, 0.1f, 1.0f);
-    DroneStateSOA* states = create_test_states(arena, 2);
-    DroneParamsSOA* params = create_test_params(arena, 2, 1.0f);
+    RigidBodyStateSOA* states = create_test_states(arena, 2);
+    RigidBodyParamsSOA* params = create_test_params(arena, 2, 1.0f);
 
     /* Drone 0 moving toward drone 1 */
     states->pos_x[0] = 0.0f; states->pos_y[0] = 0.0f; states->pos_z[0] = 0.0f;
@@ -1096,8 +1096,8 @@ TEST(response_dd_restitution) {
     /* Test with restitution = 0 */
     {
         CollisionSystem* sys = collision_create(arena, 1024, 0.1f, 1.0f);
-        DroneStateSOA* states = create_test_states(arena, 2);
-        DroneParamsSOA* params = create_test_params(arena, 2, 1.0f);
+        RigidBodyStateSOA* states = create_test_states(arena, 2);
+        RigidBodyParamsSOA* params = create_test_params(arena, 2, 1.0f);
 
         states->pos_x[0] = 0.0f; states->pos_y[0] = 0.0f; states->pos_z[0] = 0.0f;
         states->pos_x[1] = 0.15f; states->pos_y[1] = 0.0f; states->pos_z[1] = 0.0f;
@@ -1119,8 +1119,8 @@ TEST(response_dd_restitution) {
 TEST(response_dd_head_on) {
     Arena* arena = arena_create(4 * 1024 * 1024);
     CollisionSystem* sys = collision_create(arena, 1024, 0.1f, 1.0f);
-    DroneStateSOA* states = create_test_states(arena, 2);
-    DroneParamsSOA* params = create_test_params(arena, 2, 1.0f);
+    RigidBodyStateSOA* states = create_test_states(arena, 2);
+    RigidBodyParamsSOA* params = create_test_params(arena, 2, 1.0f);
 
     /* Head-on collision */
     states->pos_x[0] = 0.0f; states->pos_y[0] = 0.0f; states->pos_z[0] = 0.0f;
@@ -1145,8 +1145,8 @@ TEST(response_dd_head_on) {
 TEST(response_dd_glancing) {
     Arena* arena = arena_create(4 * 1024 * 1024);
     CollisionSystem* sys = collision_create(arena, 1024, 0.1f, 1.0f);
-    DroneStateSOA* states = create_test_states(arena, 2);
-    DroneParamsSOA* params = create_test_params(arena, 2, 1.0f);
+    RigidBodyStateSOA* states = create_test_states(arena, 2);
+    RigidBodyParamsSOA* params = create_test_params(arena, 2, 1.0f);
 
     /* Glancing collision - drones moving perpendicular to collision normal */
     states->pos_x[0] = 0.0f; states->pos_y[0] = 0.0f; states->pos_z[0] = 0.0f;
@@ -1171,7 +1171,7 @@ TEST(response_dd_glancing) {
 TEST(knn_single_neighbor) {
     Arena* arena = arena_create(4 * 1024 * 1024);
     CollisionSystem* sys = collision_create(arena, 1024, 0.1f, 1.0f);
-    DroneStateSOA* states = create_test_states(arena, 10);
+    RigidBodyStateSOA* states = create_test_states(arena, 10);
 
     /* Spread out drones with 0.5m spacing (within single cell) */
     for (uint32_t i = 0; i < 10; i++) {
@@ -1201,7 +1201,7 @@ TEST(knn_single_neighbor) {
 TEST(knn_k_neighbors) {
     Arena* arena = arena_create(4 * 1024 * 1024);
     CollisionSystem* sys = collision_create(arena, 1024, 0.1f, 1.0f);
-    DroneStateSOA* states = create_test_states(arena, 10);
+    RigidBodyStateSOA* states = create_test_states(arena, 10);
 
     /* Spread out drones along X axis */
     for (uint32_t i = 0; i < 10; i++) {
@@ -1229,7 +1229,7 @@ TEST(knn_k_neighbors) {
 TEST(knn_fewer_than_k) {
     Arena* arena = arena_create(4 * 1024 * 1024);
     CollisionSystem* sys = collision_create(arena, 1024, 0.1f, 1.0f);
-    DroneStateSOA* states = create_test_states(arena, 2);
+    RigidBodyStateSOA* states = create_test_states(arena, 2);
 
     states->pos_x[0] = 0.0f; states->pos_y[0] = 0.0f; states->pos_z[0] = 0.0f;
     states->pos_x[1] = 1.0f; states->pos_y[1] = 0.0f; states->pos_z[1] = 0.0f;
@@ -1253,7 +1253,7 @@ TEST(knn_fewer_than_k) {
 TEST(knn_sorted_by_distance) {
     Arena* arena = arena_create(4 * 1024 * 1024);
     CollisionSystem* sys = collision_create(arena, 1024, 0.1f, 1.0f);
-    DroneStateSOA* states = create_test_states(arena, 10);
+    RigidBodyStateSOA* states = create_test_states(arena, 10);
 
     /* Various positions */
     states->pos_x[0] = 5.0f; states->pos_y[0] = 0.0f; states->pos_z[0] = 0.0f;
@@ -1288,7 +1288,7 @@ TEST(knn_sorted_by_distance) {
 TEST(knn_excludes_query_point) {
     Arena* arena = arena_create(4 * 1024 * 1024);
     CollisionSystem* sys = collision_create(arena, 1024, 0.1f, 1.0f);
-    DroneStateSOA* states = create_test_states(arena, 3);
+    RigidBodyStateSOA* states = create_test_states(arena, 3);
 
     /* Three drones */
     states->pos_x[0] = 0.0f; states->pos_y[0] = 0.0f; states->pos_z[0] = 0.0f;
@@ -1322,7 +1322,7 @@ TEST(knn_excludes_query_point) {
 TEST(knn_batch_correctness) {
     Arena* arena = arena_create(4 * 1024 * 1024);
     CollisionSystem* sys = collision_create(arena, 1024, 0.1f, 1.0f);
-    DroneStateSOA* states = create_test_states(arena, 10);
+    RigidBodyStateSOA* states = create_test_states(arena, 10);
 
     for (uint32_t i = 0; i < 10; i++) {
         states->pos_x[i] = (float)i;
@@ -1419,7 +1419,7 @@ TEST(get_pair_finds_collision) {
 
 TEST(check_pair_colliding) {
     Arena* arena = arena_create(4 * 1024 * 1024);
-    DroneStateSOA* states = create_test_states(arena, 2);
+    RigidBodyStateSOA* states = create_test_states(arena, 2);
 
     states->pos_x[0] = 0.0f; states->pos_y[0] = 0.0f; states->pos_z[0] = 0.0f;
     states->pos_x[1] = 0.1f; states->pos_y[1] = 0.0f; states->pos_z[1] = 0.0f;
@@ -1434,7 +1434,7 @@ TEST(check_pair_colliding) {
 
 TEST(check_pair_not_colliding) {
     Arena* arena = arena_create(4 * 1024 * 1024);
-    DroneStateSOA* states = create_test_states(arena, 2);
+    RigidBodyStateSOA* states = create_test_states(arena, 2);
 
     states->pos_x[0] = 0.0f; states->pos_y[0] = 0.0f; states->pos_z[0] = 0.0f;
     states->pos_x[1] = 5.0f; states->pos_y[1] = 0.0f; states->pos_z[1] = 0.0f;
@@ -1449,7 +1449,7 @@ TEST(check_pair_not_colliding) {
 
 TEST(compute_normal_direction) {
     Arena* arena = arena_create(4 * 1024 * 1024);
-    DroneStateSOA* states = create_test_states(arena, 2);
+    RigidBodyStateSOA* states = create_test_states(arena, 2);
 
     states->pos_x[0] = 0.0f; states->pos_y[0] = 0.0f; states->pos_z[0] = 0.0f;
     states->pos_x[1] = 1.0f; states->pos_y[1] = 0.0f; states->pos_z[1] = 0.0f;
@@ -1467,7 +1467,7 @@ TEST(compute_normal_direction) {
 
 TEST(compute_normal_unit_length) {
     Arena* arena = arena_create(4 * 1024 * 1024);
-    DroneStateSOA* states = create_test_states(arena, 2);
+    RigidBodyStateSOA* states = create_test_states(arena, 2);
 
     states->pos_x[0] = 0.0f; states->pos_y[0] = 0.0f; states->pos_z[0] = 0.0f;
     states->pos_x[1] = 3.0f; states->pos_y[1] = 4.0f; states->pos_z[1] = 0.0f;
@@ -1491,7 +1491,7 @@ TEST(edge_zero_radius) {
     /* Zero radius should still create a valid system */
     CollisionSystem* sys = collision_create(arena, 1024, 0.0f, 1.0f);
     ASSERT_NOT_NULL(sys);
-    ASSERT_FLOAT_EQ(sys->drone_radius, 0.0f);
+    ASSERT_FLOAT_EQ(sys->collision_radius, 0.0f);
 
     arena_destroy(arena);
     return 0;
@@ -1502,7 +1502,7 @@ TEST(edge_very_large_cell) {
     CollisionSystem* sys = collision_create(arena, 1024, 0.1f, 1000.0f);
     ASSERT_NOT_NULL(sys);
 
-    DroneStateSOA* states = create_test_states(arena, 100);
+    RigidBodyStateSOA* states = create_test_states(arena, 100);
     for (uint32_t i = 0; i < 100; i++) {
         states->pos_x[i] = (float)i;
         states->pos_y[i] = 0.0f;
@@ -1527,7 +1527,7 @@ TEST(edge_very_small_cell) {
     CollisionSystem* sys = collision_create(arena, 1024, 0.1f, 0.001f);
     ASSERT_NOT_NULL(sys);
 
-    DroneStateSOA* states = create_test_states(arena, 10);
+    RigidBodyStateSOA* states = create_test_states(arena, 10);
     for (uint32_t i = 0; i < 10; i++) {
         states->pos_x[i] = (float)i;
         states->pos_y[i] = 0.0f;
@@ -1547,8 +1547,8 @@ TEST(edge_very_small_cell) {
 TEST(edge_coincident_drones) {
     Arena* arena = arena_create(4 * 1024 * 1024);
     CollisionSystem* sys = collision_create(arena, 1024, 0.1f, 1.0f);
-    DroneStateSOA* states = create_test_states(arena, 2);
-    DroneParamsSOA* params = create_test_params(arena, 2, 1.0f);
+    RigidBodyStateSOA* states = create_test_states(arena, 2);
+    RigidBodyParamsSOA* params = create_test_params(arena, 2, 1.0f);
 
     /* Two drones at exactly same position */
     states->pos_x[0] = 5.0f; states->pos_y[0] = 5.0f; states->pos_z[0] = 5.0f;
@@ -1574,7 +1574,7 @@ TEST(edge_max_pairs_reached) {
 
     /* Create small system with limited pairs */
     CollisionSystem* sys = collision_create(arena, 100, 0.5f, 1.0f);
-    DroneStateSOA* states = create_test_states(arena, 100);
+    RigidBodyStateSOA* states = create_test_states(arena, 100);
 
     /* All drones at same position - should generate many collisions */
     for (uint32_t i = 0; i < 100; i++) {
@@ -1595,7 +1595,7 @@ TEST(edge_max_pairs_reached) {
 TEST(edge_boundary_positions) {
     Arena* arena = arena_create(4 * 1024 * 1024);
     CollisionSystem* sys = collision_create(arena, 1024, 0.1f, 1.0f);
-    DroneStateSOA* states = create_test_states(arena, 4);
+    RigidBodyStateSOA* states = create_test_states(arena, 4);
 
     /* Drones at extreme positions */
     states->pos_x[0] = -1e6f; states->pos_y[0] = -1e6f; states->pos_z[0] = -1e6f;
@@ -1630,7 +1630,7 @@ TEST(memory_size_calculation) {
 TEST(memory_bounds) {
     Arena* arena = arena_create(4 * 1024 * 1024);
     CollisionSystem* sys = collision_create(arena, 1024, 0.1f, 1.0f);
-    DroneStateSOA* states = create_test_states(arena, 1024);
+    RigidBodyStateSOA* states = create_test_states(arena, 1024);
 
     /* Write to array boundaries */
     sys->drone_world_collision[0] = 1;

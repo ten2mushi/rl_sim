@@ -3,7 +3,7 @@
  *
  * SoA (Structure-of-Arrays) mesh representation with:
  * - Separate x/y/z arrays for SIMD-friendly access
- * - Dynamic growth via arena reallocation
+ * - Pre-allocated capacity (callers must size correctly)
  * - Area-weighted normal computation
  * - Bounding box tracking
  */
@@ -69,85 +69,14 @@ TriangleMesh* mesh_create(Arena* arena, uint32_t vertex_capacity, uint32_t face_
     return mesh;
 }
 
-/**
- * Internal: Grow vertex capacity
- */
-static bool mesh_grow_vertices(TriangleMesh* mesh) {
-    uint32_t new_capacity = mesh->vertex_capacity * 2;
-
-    float* new_vx = arena_alloc_array(mesh->arena, float, new_capacity);
-    float* new_vy = arena_alloc_array(mesh->arena, float, new_capacity);
-    float* new_vz = arena_alloc_array(mesh->arena, float, new_capacity);
-
-    if (!new_vx || !new_vy || !new_vz) {
-        return false;
-    }
-
-    /* Copy existing data */
-    memcpy(new_vx, mesh->vx, mesh->vertex_count * sizeof(float));
-    memcpy(new_vy, mesh->vy, mesh->vertex_count * sizeof(float));
-    memcpy(new_vz, mesh->vz, mesh->vertex_count * sizeof(float));
-
-    mesh->vx = new_vx;
-    mesh->vy = new_vy;
-    mesh->vz = new_vz;
-    mesh->vertex_capacity = new_capacity;
-
-    /* Grow normals if they exist */
-    if (mesh->has_normals) {
-        float* new_nx = arena_alloc_array(mesh->arena, float, new_capacity);
-        float* new_ny = arena_alloc_array(mesh->arena, float, new_capacity);
-        float* new_nz = arena_alloc_array(mesh->arena, float, new_capacity);
-
-        if (!new_nx || !new_ny || !new_nz) {
-            return false;
-        }
-
-        memcpy(new_nx, mesh->nx, mesh->vertex_count * sizeof(float));
-        memcpy(new_ny, mesh->ny, mesh->vertex_count * sizeof(float));
-        memcpy(new_nz, mesh->nz, mesh->vertex_count * sizeof(float));
-
-        mesh->nx = new_nx;
-        mesh->ny = new_ny;
-        mesh->nz = new_nz;
-    }
-
-    return true;
-}
-
-/**
- * Internal: Grow face capacity
- */
-static bool mesh_grow_faces(TriangleMesh* mesh) {
-    uint32_t new_capacity = mesh->face_capacity * 2;
-
-    uint32_t* new_face_v = arena_alloc_array(mesh->arena, uint32_t, new_capacity * 3);
-    uint8_t* new_face_mat = arena_alloc_array(mesh->arena, uint8_t, new_capacity);
-
-    if (!new_face_v || !new_face_mat) {
-        return false;
-    }
-
-    memcpy(new_face_v, mesh->face_v, mesh->face_count * 3 * sizeof(uint32_t));
-    memcpy(new_face_mat, mesh->face_mat, mesh->face_count * sizeof(uint8_t));
-
-    mesh->face_v = new_face_v;
-    mesh->face_mat = new_face_mat;
-    mesh->face_capacity = new_capacity;
-
-    return true;
-}
-
 uint32_t mesh_add_vertex(TriangleMesh* mesh, float x, float y, float z) {
     if (!mesh) {
         return UINT32_MAX;
     }
 
-    /* Grow if needed */
     if (mesh->vertex_count >= mesh->vertex_capacity) {
-        if (!mesh_grow_vertices(mesh)) {
-            return UINT32_MAX;
-        }
+        FOUNDATION_ASSERT(0, "mesh_add_vertex: vertex capacity exceeded (pre-allocate enough)");
+        return UINT32_MAX;
     }
 
     uint32_t idx = mesh->vertex_count++;
@@ -327,11 +256,9 @@ uint32_t mesh_add_face(TriangleMesh* mesh, uint32_t v0, uint32_t v1, uint32_t v2
         return UINT32_MAX;
     }
 
-    /* Grow if needed */
     if (mesh->face_count >= mesh->face_capacity) {
-        if (!mesh_grow_faces(mesh)) {
-            return UINT32_MAX;
-        }
+        FOUNDATION_ASSERT(0, "mesh_add_face: face capacity exceeded (pre-allocate enough)");
+        return UINT32_MAX;
     }
 
     uint32_t idx = mesh->face_count++;

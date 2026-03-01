@@ -1,6 +1,6 @@
 /**
  * @file test_memory_deep.c
- * @brief Deep Memory Management Tests for BatchDroneEngine (60+ tests)
+ * @brief Deep Memory Management Tests for BatchEngine (60+ tests)
  *
  * Comprehensive memory management test suite following the "Tests as definition:
  * the Yoneda way" philosophy. These tests serve as the authoritative specification
@@ -28,6 +28,7 @@
  */
 
 #include "environment_manager.h"
+#include "platform_quadcopter.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -71,11 +72,11 @@ static bool is_aligned(const void* ptr, size_t alignment) {
 /**
  * Create a test engine with specific configuration
  */
-static BatchDroneEngine* create_test_engine(uint32_t num_envs, uint32_t drones_per_env,
+static BatchEngine* create_test_engine(uint32_t num_envs, uint32_t agents_per_env,
                                             size_t persistent_size, size_t frame_size) {
     EngineConfig cfg = engine_config_default();
     cfg.num_envs = num_envs;
-    cfg.drones_per_env = drones_per_env;
+    cfg.agents_per_env = agents_per_env;
     cfg.seed = 42;
     cfg.persistent_arena_size = persistent_size;
     cfg.frame_arena_size = frame_size;
@@ -87,21 +88,21 @@ static BatchDroneEngine* create_test_engine(uint32_t num_envs, uint32_t drones_p
 /**
  * Create a small test engine (16 drones)
  */
-static BatchDroneEngine* create_small_engine(void) {
+static BatchEngine* create_small_engine(void) {
     return create_test_engine(4, 4, 64 * 1024 * 1024, 16 * 1024 * 1024);
 }
 
 /**
  * Create a medium test engine (256 drones)
  */
-static BatchDroneEngine* create_medium_engine(void) {
+static BatchEngine* create_medium_engine(void) {
     return create_test_engine(16, 16, 128 * 1024 * 1024, 32 * 1024 * 1024);
 }
 
 /**
  * Create a large test engine (1024 drones)
  */
-static BatchDroneEngine* create_large_engine(void) {
+static BatchEngine* create_large_engine(void) {
     return create_test_engine(64, 16, 256 * 1024 * 1024, 64 * 1024 * 1024);
 }
 
@@ -455,7 +456,7 @@ TEST(arena_scope_functionality) {
  * Test that frame arena is reset at start of each step
  */
 TEST(frame_arena_reset_at_step_start) {
-    BatchDroneEngine* engine = create_small_engine();
+    BatchEngine* engine = create_small_engine();
     ASSERT_NOT_NULL(engine);
     engine_reset(engine);
 
@@ -481,7 +482,7 @@ TEST(frame_arena_reset_at_step_start) {
  * Test frame arena used counter after physics allocations
  */
 TEST(frame_arena_after_physics) {
-    BatchDroneEngine* engine = create_small_engine();
+    BatchEngine* engine = create_small_engine();
     ASSERT_NOT_NULL(engine);
     engine_reset(engine);
 
@@ -504,7 +505,7 @@ TEST(frame_arena_after_physics) {
  * Test frame arena used counter after collision allocations
  */
 TEST(frame_arena_after_collision) {
-    BatchDroneEngine* engine = create_small_engine();
+    BatchEngine* engine = create_small_engine();
     ASSERT_NOT_NULL(engine);
     engine_reset(engine);
 
@@ -525,7 +526,7 @@ TEST(frame_arena_after_collision) {
  * Test frame arena used counter after sensor allocations
  */
 TEST(frame_arena_after_sensors) {
-    BatchDroneEngine* engine = create_small_engine();
+    BatchEngine* engine = create_small_engine();
     ASSERT_NOT_NULL(engine);
     engine_reset(engine);
 
@@ -546,7 +547,7 @@ TEST(frame_arena_after_sensors) {
  * Test frame arena peak usage tracking
  */
 TEST(frame_arena_peak_usage) {
-    BatchDroneEngine* engine = create_medium_engine();
+    BatchEngine* engine = create_medium_engine();
     ASSERT_NOT_NULL(engine);
     engine_reset(engine);
 
@@ -575,7 +576,7 @@ TEST(frame_arena_peak_usage) {
  * Test that frame arena reset doesn't leak memory
  */
 TEST(frame_arena_reset_no_leak) {
-    BatchDroneEngine* engine = create_small_engine();
+    BatchEngine* engine = create_small_engine();
     ASSERT_NOT_NULL(engine);
     engine_reset(engine);
 
@@ -604,7 +605,7 @@ TEST(frame_arena_reset_no_leak) {
  * Test that multiple steps don't accumulate frame arena usage
  */
 TEST(frame_arena_no_accumulation) {
-    BatchDroneEngine* engine = create_small_engine();
+    BatchEngine* engine = create_small_engine();
     ASSERT_NOT_NULL(engine);
     engine_reset(engine);
 
@@ -630,7 +631,7 @@ TEST(frame_arena_no_accumulation) {
  * Test frame arena survives high-frequency reset cycles
  */
 TEST(frame_arena_high_freq_reset_cycles) {
-    BatchDroneEngine* engine = create_small_engine();
+    BatchEngine* engine = create_small_engine();
     ASSERT_NOT_NULL(engine);
     engine_reset(engine);
 
@@ -652,17 +653,17 @@ TEST(frame_arena_high_freq_reset_cycles) {
  * Test frame arena with varying action patterns
  */
 TEST(frame_arena_varying_actions) {
-    BatchDroneEngine* engine = create_small_engine();
+    BatchEngine* engine = create_small_engine();
     ASSERT_NOT_NULL(engine);
     engine_reset(engine);
 
-    uint32_t total_drones = engine->config.total_drones;
+    uint32_t total_agents = engine->config.total_agents;
     float* actions = engine_get_actions(engine);
 
     /* Run steps with varying action patterns */
     for (int step = 0; step < 100; step++) {
         /* Vary actions each step */
-        for (uint32_t i = 0; i < total_drones * ENGINE_ACTION_DIM; i++) {
+        for (uint32_t i = 0; i < total_agents * engine->action_dim; i++) {
             actions[i] = (float)(step % 10) / 10.0f;
         }
 
@@ -683,7 +684,7 @@ TEST(frame_arena_varying_actions) {
  */
 TEST(frame_arena_boundary_conditions) {
     /* Use small drone count but standard arena sizes */
-    BatchDroneEngine* engine = create_small_engine();
+    BatchEngine* engine = create_small_engine();
     ASSERT_NOT_NULL(engine);
     engine_reset(engine);
 
@@ -711,7 +712,7 @@ TEST(frame_arena_boundary_conditions) {
  * Test persistent arena usage is stable across 1000 steps
  */
 TEST(persistent_arena_stable_1000_steps) {
-    BatchDroneEngine* engine = create_small_engine();
+    BatchEngine* engine = create_small_engine();
     ASSERT_NOT_NULL(engine);
     engine_reset(engine);
 
@@ -736,7 +737,7 @@ TEST(persistent_arena_stable_1000_steps) {
  * Test persistent arena doesn't grow during simulation
  */
 TEST(persistent_arena_no_growth) {
-    BatchDroneEngine* engine = create_medium_engine();
+    BatchEngine* engine = create_medium_engine();
     ASSERT_NOT_NULL(engine);
     engine_reset(engine);
 
@@ -759,11 +760,11 @@ TEST(persistent_arena_no_growth) {
  */
 TEST(persistent_arena_sized_for_drones) {
     /* Test with different drone counts */
-    uint32_t drone_counts[] = {16, 64, 256};
+    uint32_t agent_counts[] = {16, 64, 256};
 
     for (int i = 0; i < 3; i++) {
-        uint32_t drones = drone_counts[i];
-        BatchDroneEngine* engine = create_test_engine(drones, 1,
+        uint32_t drones = agent_counts[i];
+        BatchEngine* engine = create_test_engine(drones, 1,
             128 * 1024 * 1024, 32 * 1024 * 1024);
         ASSERT_NOT_NULL(engine);
 
@@ -783,7 +784,7 @@ TEST(persistent_arena_sized_for_drones) {
  * Test persistent arena survives engine reset
  */
 TEST(persistent_arena_survives_reset) {
-    BatchDroneEngine* engine = create_small_engine();
+    BatchEngine* engine = create_small_engine();
     ASSERT_NOT_NULL(engine);
 
     size_t initial_used = engine->persistent_arena->used;
@@ -816,7 +817,7 @@ TEST(persistent_arena_survives_reset) {
  * Test persistent arena usage consistent across multiple resets
  */
 TEST(persistent_arena_consistent_across_resets) {
-    BatchDroneEngine* engine = create_small_engine();
+    BatchEngine* engine = create_small_engine();
     ASSERT_NOT_NULL(engine);
 
     size_t baseline = engine->persistent_arena->used;
@@ -839,9 +840,9 @@ TEST(persistent_arena_consistent_across_resets) {
 /**
  * Test persistent arena handles maximum drone configurations
  */
-TEST(persistent_arena_max_drones) {
+TEST(persistent_arena_max_agents) {
     /* Test with large drone count */
-    BatchDroneEngine* engine = create_large_engine();  /* 1024 drones */
+    BatchEngine* engine = create_large_engine();  /* 1024 drones */
     ASSERT_NOT_NULL(engine);
 
     /* Verify allocation succeeded */
@@ -866,7 +867,7 @@ TEST(persistent_arena_max_drones) {
  * Test persistent arena allocation order
  */
 TEST(persistent_arena_allocation_order) {
-    BatchDroneEngine* engine = create_small_engine();
+    BatchEngine* engine = create_small_engine();
     ASSERT_NOT_NULL(engine);
 
     /* Verify all major components are allocated and valid */
@@ -893,7 +894,7 @@ TEST(persistent_arena_allocation_order) {
  * Test persistent arena fragmentation (or lack thereof)
  */
 TEST(persistent_arena_no_fragmentation) {
-    BatchDroneEngine* engine = create_small_engine();
+    BatchEngine* engine = create_small_engine();
     ASSERT_NOT_NULL(engine);
 
     /* Bump allocator by design has no fragmentation */
@@ -914,80 +915,80 @@ TEST(persistent_arena_no_fragmentation) {
  * ============================================================================ */
 
 /**
- * Test all 17 DroneStateSOA arrays are 32-byte aligned
+ * Test all 17 PlatformStateSOA arrays are 32-byte aligned
  */
 TEST(drone_state_soa_all_aligned_32) {
-    BatchDroneEngine* engine = create_small_engine();
+    BatchEngine* engine = create_small_engine();
     ASSERT_NOT_NULL(engine);
     ASSERT_NOT_NULL(engine->states);
 
     /* Position arrays */
-    ASSERT_ALIGNED_32(engine->states->pos_x);
-    ASSERT_ALIGNED_32(engine->states->pos_y);
-    ASSERT_ALIGNED_32(engine->states->pos_z);
+    ASSERT_ALIGNED_32(engine->states->rigid_body.pos_x);
+    ASSERT_ALIGNED_32(engine->states->rigid_body.pos_y);
+    ASSERT_ALIGNED_32(engine->states->rigid_body.pos_z);
 
     /* Velocity arrays */
-    ASSERT_ALIGNED_32(engine->states->vel_x);
-    ASSERT_ALIGNED_32(engine->states->vel_y);
-    ASSERT_ALIGNED_32(engine->states->vel_z);
+    ASSERT_ALIGNED_32(engine->states->rigid_body.vel_x);
+    ASSERT_ALIGNED_32(engine->states->rigid_body.vel_y);
+    ASSERT_ALIGNED_32(engine->states->rigid_body.vel_z);
 
     /* Quaternion arrays */
-    ASSERT_ALIGNED_32(engine->states->quat_w);
-    ASSERT_ALIGNED_32(engine->states->quat_x);
-    ASSERT_ALIGNED_32(engine->states->quat_y);
-    ASSERT_ALIGNED_32(engine->states->quat_z);
+    ASSERT_ALIGNED_32(engine->states->rigid_body.quat_w);
+    ASSERT_ALIGNED_32(engine->states->rigid_body.quat_x);
+    ASSERT_ALIGNED_32(engine->states->rigid_body.quat_y);
+    ASSERT_ALIGNED_32(engine->states->rigid_body.quat_z);
 
     /* Angular velocity arrays */
-    ASSERT_ALIGNED_32(engine->states->omega_x);
-    ASSERT_ALIGNED_32(engine->states->omega_y);
-    ASSERT_ALIGNED_32(engine->states->omega_z);
+    ASSERT_ALIGNED_32(engine->states->rigid_body.omega_x);
+    ASSERT_ALIGNED_32(engine->states->rigid_body.omega_y);
+    ASSERT_ALIGNED_32(engine->states->rigid_body.omega_z);
 
     /* Motor RPM arrays */
-    ASSERT_ALIGNED_32(engine->states->rpm_0);
-    ASSERT_ALIGNED_32(engine->states->rpm_1);
-    ASSERT_ALIGNED_32(engine->states->rpm_2);
-    ASSERT_ALIGNED_32(engine->states->rpm_3);
+    ASSERT_ALIGNED_32(engine->states->extension[QUAD_EXT_RPM_0]);
+    ASSERT_ALIGNED_32(engine->states->extension[QUAD_EXT_RPM_1]);
+    ASSERT_ALIGNED_32(engine->states->extension[QUAD_EXT_RPM_2]);
+    ASSERT_ALIGNED_32(engine->states->extension[QUAD_EXT_RPM_3]);
 
     engine_destroy(engine);
     return 0;
 }
 
 /**
- * Test all 15 DroneParamsSOA arrays are 32-byte aligned
+ * Test all 15 PlatformParamsSOA arrays are 32-byte aligned
  */
 TEST(drone_params_soa_all_aligned_32) {
-    BatchDroneEngine* engine = create_small_engine();
+    BatchEngine* engine = create_small_engine();
     ASSERT_NOT_NULL(engine);
     ASSERT_NOT_NULL(engine->params);
 
     /* Mass and inertia */
-    ASSERT_ALIGNED_32(engine->params->mass);
-    ASSERT_ALIGNED_32(engine->params->ixx);
-    ASSERT_ALIGNED_32(engine->params->iyy);
-    ASSERT_ALIGNED_32(engine->params->izz);
+    ASSERT_ALIGNED_32(engine->params->rigid_body.mass);
+    ASSERT_ALIGNED_32(engine->params->rigid_body.ixx);
+    ASSERT_ALIGNED_32(engine->params->rigid_body.iyy);
+    ASSERT_ALIGNED_32(engine->params->rigid_body.izz);
 
     /* Geometry */
-    ASSERT_ALIGNED_32(engine->params->arm_length);
-    ASSERT_ALIGNED_32(engine->params->collision_radius);
+    ASSERT_ALIGNED_32(engine->params->extension[QUAD_PEXT_ARM_LENGTH]);
+    ASSERT_ALIGNED_32(engine->params->rigid_body.collision_radius);
 
     /* Thrust/torque coefficients */
-    ASSERT_ALIGNED_32(engine->params->k_thrust);
-    ASSERT_ALIGNED_32(engine->params->k_torque);
+    ASSERT_ALIGNED_32(engine->params->extension[QUAD_PEXT_K_THRUST]);
+    ASSERT_ALIGNED_32(engine->params->extension[QUAD_PEXT_K_TORQUE]);
 
     /* Damping */
-    ASSERT_ALIGNED_32(engine->params->k_drag);
-    ASSERT_ALIGNED_32(engine->params->k_ang_damp);
+    ASSERT_ALIGNED_32(engine->params->extension[QUAD_PEXT_K_DRAG]);
+    ASSERT_ALIGNED_32(engine->params->extension[QUAD_PEXT_K_ANG_DAMP]);
 
     /* Motor dynamics */
-    ASSERT_ALIGNED_32(engine->params->motor_tau);
-    ASSERT_ALIGNED_32(engine->params->max_rpm);
+    ASSERT_ALIGNED_32(engine->params->extension[QUAD_PEXT_MOTOR_TAU]);
+    ASSERT_ALIGNED_32(engine->params->extension[QUAD_PEXT_MAX_RPM]);
 
     /* Limits */
-    ASSERT_ALIGNED_32(engine->params->max_vel);
-    ASSERT_ALIGNED_32(engine->params->max_omega);
+    ASSERT_ALIGNED_32(engine->params->rigid_body.max_vel);
+    ASSERT_ALIGNED_32(engine->params->rigid_body.max_omega);
 
     /* Environment */
-    ASSERT_ALIGNED_32(engine->params->gravity);
+    ASSERT_ALIGNED_32(engine->params->rigid_body.gravity);
 
     engine_destroy(engine);
     return 0;
@@ -997,7 +998,7 @@ TEST(drone_params_soa_all_aligned_32) {
  * Test observation buffer is 32-byte aligned
  */
 TEST(observation_buffer_aligned_32) {
-    BatchDroneEngine* engine = create_small_engine();
+    BatchEngine* engine = create_small_engine();
     ASSERT_NOT_NULL(engine);
 
     float* obs = engine_get_observations(engine);
@@ -1012,7 +1013,7 @@ TEST(observation_buffer_aligned_32) {
  * Test action buffer is 32-byte aligned
  */
 TEST(action_buffer_aligned_32) {
-    BatchDroneEngine* engine = create_small_engine();
+    BatchEngine* engine = create_small_engine();
     ASSERT_NOT_NULL(engine);
 
     float* actions = engine_get_actions(engine);
@@ -1027,7 +1028,7 @@ TEST(action_buffer_aligned_32) {
  * Test reward buffer is 32-byte aligned
  */
 TEST(reward_buffer_aligned_32) {
-    BatchDroneEngine* engine = create_small_engine();
+    BatchEngine* engine = create_small_engine();
     ASSERT_NOT_NULL(engine);
 
     float* rewards = engine_get_rewards(engine);
@@ -1042,7 +1043,7 @@ TEST(reward_buffer_aligned_32) {
  * Test done/truncation buffers are properly aligned
  */
 TEST(done_truncation_buffers_aligned) {
-    BatchDroneEngine* engine = create_small_engine();
+    BatchEngine* engine = create_small_engine();
     ASSERT_NOT_NULL(engine);
 
     uint8_t* dones = engine_get_dones(engine);
@@ -1063,7 +1064,7 @@ TEST(done_truncation_buffers_aligned) {
  * Test episode tracking buffers are aligned
  */
 TEST(episode_tracking_buffers_aligned) {
-    BatchDroneEngine* engine = create_small_engine();
+    BatchEngine* engine = create_small_engine();
     ASSERT_NOT_NULL(engine);
 
     /* Episode returns and lengths should be 32-byte aligned */
@@ -1079,7 +1080,7 @@ TEST(episode_tracking_buffers_aligned) {
  * Test termination flag buffers are aligned
  */
 TEST(termination_flag_buffers_aligned) {
-    BatchDroneEngine* engine = create_small_engine();
+    BatchEngine* engine = create_small_engine();
     ASSERT_NOT_NULL(engine);
 
     /* Detailed termination flags */
@@ -1101,7 +1102,7 @@ TEST(termination_flag_buffers_aligned) {
  * Test all buffers remain aligned after operations
  */
 TEST(buffers_aligned_after_operations) {
-    BatchDroneEngine* engine = create_small_engine();
+    BatchEngine* engine = create_small_engine();
     ASSERT_NOT_NULL(engine);
     engine_reset(engine);
 
@@ -1124,17 +1125,17 @@ TEST(buffers_aligned_after_operations) {
 /**
  * Test alignment with different drone counts
  */
-TEST(alignment_various_drone_counts) {
+TEST(alignment_various_agent_counts) {
     /* Test alignment with non-power-of-2 drone counts */
     uint32_t counts[] = {7, 15, 33, 100};
 
     for (int i = 0; i < 4; i++) {
-        BatchDroneEngine* engine = create_test_engine(counts[i], 1,
+        BatchEngine* engine = create_test_engine(counts[i], 1,
             64 * 1024 * 1024, 16 * 1024 * 1024);
         if (engine == NULL) continue;  /* Skip if creation fails */
 
         /* Verify alignment even with odd counts */
-        ASSERT_ALIGNED_32(engine->states->pos_x);
+        ASSERT_ALIGNED_32(engine->states->rigid_body.pos_x);
         ASSERT_ALIGNED_32(engine->observations);
         ASSERT_ALIGNED_32(engine->actions);
 
@@ -1148,17 +1149,17 @@ TEST(alignment_various_drone_counts) {
  * Test SoA array sizes match capacity
  */
 TEST(soa_array_sizes_match_capacity) {
-    BatchDroneEngine* engine = create_small_engine();
+    BatchEngine* engine = create_small_engine();
     ASSERT_NOT_NULL(engine);
 
-    uint32_t total_drones = engine->config.total_drones;
+    uint32_t total_agents = engine->config.total_agents;
 
     /* Verify state capacity */
-    ASSERT_EQ(engine->states->capacity, total_drones);
-    ASSERT_EQ(engine->states->count, 0);  /* Or total_drones after init */
+    ASSERT_EQ(engine->states->rigid_body.capacity, total_agents);
+    ASSERT_EQ(engine->states->rigid_body.count, 0);  /* Or total_agents after init */
 
     /* Verify params capacity */
-    ASSERT_EQ(engine->params->capacity, total_drones);
+    ASSERT_EQ(engine->params->rigid_body.capacity, total_agents);
 
     engine_destroy(engine);
     return 0;
@@ -1168,17 +1169,17 @@ TEST(soa_array_sizes_match_capacity) {
  * Test that arrays are contiguous within SoA structure
  */
 TEST(soa_arrays_contiguous) {
-    BatchDroneEngine* engine = create_small_engine();
+    BatchEngine* engine = create_small_engine();
     ASSERT_NOT_NULL(engine);
 
-    uint32_t total_drones = engine->config.total_drones;
+    uint32_t total_agents = engine->config.total_agents;
 
     /* Verify we can access full range of each array */
-    for (uint32_t i = 0; i < total_drones; i++) {
+    for (uint32_t i = 0; i < total_agents; i++) {
         /* Read access to verify no segfault */
-        float px = engine->states->pos_x[i];
-        float vy = engine->states->vel_y[i];
-        float qw = engine->states->quat_w[i];
+        float px = engine->states->rigid_body.pos_x[i];
+        float vy = engine->states->rigid_body.vel_y[i];
+        float qw = engine->states->rigid_body.quat_w[i];
         (void)px; (void)vy; (void)qw;
     }
 
@@ -1194,7 +1195,7 @@ TEST(soa_arrays_contiguous) {
  * Test external buffer pointers are stable across steps
  */
 TEST(buffer_pointers_stable_across_steps) {
-    BatchDroneEngine* engine = create_small_engine();
+    BatchEngine* engine = create_small_engine();
     ASSERT_NOT_NULL(engine);
     engine_reset(engine);
 
@@ -1224,7 +1225,7 @@ TEST(buffer_pointers_stable_across_steps) {
  * Test external buffer pointers are stable across resets
  */
 TEST(buffer_pointers_stable_across_resets) {
-    BatchDroneEngine* engine = create_small_engine();
+    BatchEngine* engine = create_small_engine();
     ASSERT_NOT_NULL(engine);
 
     /* Record initial pointers */
@@ -1251,16 +1252,16 @@ TEST(buffer_pointers_stable_across_resets) {
  * Test buffer sizes match configuration
  */
 TEST(buffer_sizes_match_config) {
-    BatchDroneEngine* engine = create_small_engine();
+    BatchEngine* engine = create_small_engine();
     ASSERT_NOT_NULL(engine);
 
-    uint32_t total_drones = engine->config.total_drones;
+    uint32_t total_agents = engine->config.total_agents;
     uint32_t obs_dim = engine_get_obs_dim(engine);
     uint32_t action_dim = engine_get_action_dim(engine);
 
     /* Verify dimensions */
-    ASSERT_EQ(engine_get_total_drones(engine), total_drones);
-    ASSERT_EQ(action_dim, ENGINE_ACTION_DIM);
+    ASSERT_EQ(engine_get_total_agents(engine), total_agents);
+    ASSERT_EQ(action_dim, engine->action_dim);
     ASSERT_GT(obs_dim, 0);
 
     /* Verify we can access full extent of buffers without crash */
@@ -1268,13 +1269,13 @@ TEST(buffer_sizes_match_config) {
     float* actions = engine_get_actions(engine);
     float* rewards = engine_get_rewards(engine);
 
-    for (uint32_t i = 0; i < total_drones * obs_dim; i++) {
+    for (uint32_t i = 0; i < total_agents * obs_dim; i++) {
         obs[i] = 0.0f;
     }
-    for (uint32_t i = 0; i < total_drones * action_dim; i++) {
+    for (uint32_t i = 0; i < total_agents * action_dim; i++) {
         actions[i] = 0.0f;
     }
-    for (uint32_t i = 0; i < total_drones; i++) {
+    for (uint32_t i = 0; i < total_agents; i++) {
         rewards[i] = 0.0f;
     }
 
@@ -1286,15 +1287,15 @@ TEST(buffer_sizes_match_config) {
  * Test buffer contents survive step operations
  */
 TEST(buffer_contents_survive_step) {
-    BatchDroneEngine* engine = create_small_engine();
+    BatchEngine* engine = create_small_engine();
     ASSERT_NOT_NULL(engine);
     engine_reset(engine);
 
-    uint32_t total_drones = engine->config.total_drones;
+    uint32_t total_agents = engine->config.total_agents;
     float* actions = engine_get_actions(engine);
 
     /* Set specific action pattern */
-    for (uint32_t i = 0; i < total_drones * ENGINE_ACTION_DIM; i++) {
+    for (uint32_t i = 0; i < total_agents * engine->action_dim; i++) {
         actions[i] = 0.5f;
     }
 
@@ -1302,7 +1303,7 @@ TEST(buffer_contents_survive_step) {
     engine_step(engine);
 
     /* Actions buffer should still be accessible (not corrupted) */
-    for (uint32_t i = 0; i < total_drones * ENGINE_ACTION_DIM; i++) {
+    for (uint32_t i = 0; i < total_agents * engine->action_dim; i++) {
         ASSERT_TRUE(isfinite(actions[i]));
     }
 
@@ -1314,27 +1315,27 @@ TEST(buffer_contents_survive_step) {
  * Test buffer zero-initialization on creation
  */
 TEST(buffer_zero_initialized) {
-    BatchDroneEngine* engine = create_small_engine();
+    BatchEngine* engine = create_small_engine();
     ASSERT_NOT_NULL(engine);
 
-    uint32_t total_drones = engine->config.total_drones;
+    uint32_t total_agents = engine->config.total_agents;
     uint32_t obs_dim = engine_get_obs_dim(engine);
 
     /* Check observations are zero (before reset/step) */
     float* obs = engine_get_observations(engine);
-    for (uint32_t i = 0; i < total_drones * obs_dim; i++) {
+    for (uint32_t i = 0; i < total_agents * obs_dim; i++) {
         ASSERT_TRUE(obs[i] == 0.0f);
     }
 
     /* Check actions are zero */
     float* actions = engine_get_actions(engine);
-    for (uint32_t i = 0; i < total_drones * ENGINE_ACTION_DIM; i++) {
+    for (uint32_t i = 0; i < total_agents * engine->action_dim; i++) {
         ASSERT_TRUE(actions[i] == 0.0f);
     }
 
     /* Check dones are zero */
     uint8_t* dones = engine_get_dones(engine);
-    for (uint32_t i = 0; i < total_drones; i++) {
+    for (uint32_t i = 0; i < total_agents; i++) {
         ASSERT_EQ(dones[i], 0);
     }
 
@@ -1346,10 +1347,10 @@ TEST(buffer_zero_initialized) {
  * Test buffer independence (writing one doesn't affect others)
  */
 TEST(buffer_independence) {
-    BatchDroneEngine* engine = create_small_engine();
+    BatchEngine* engine = create_small_engine();
     ASSERT_NOT_NULL(engine);
 
-    uint32_t total_drones = engine->config.total_drones;
+    uint32_t total_agents = engine->config.total_agents;
 
     float* obs = engine_get_observations(engine);
     float* actions = engine_get_actions(engine);
@@ -1357,24 +1358,24 @@ TEST(buffer_independence) {
 
     /* Fill each buffer with distinct pattern */
     uint32_t obs_dim = engine_get_obs_dim(engine);
-    for (uint32_t i = 0; i < total_drones * obs_dim; i++) {
+    for (uint32_t i = 0; i < total_agents * obs_dim; i++) {
         obs[i] = 1.0f;
     }
-    for (uint32_t i = 0; i < total_drones * ENGINE_ACTION_DIM; i++) {
+    for (uint32_t i = 0; i < total_agents * engine->action_dim; i++) {
         actions[i] = 2.0f;
     }
-    for (uint32_t i = 0; i < total_drones; i++) {
+    for (uint32_t i = 0; i < total_agents; i++) {
         rewards[i] = 3.0f;
     }
 
     /* Verify patterns are independent */
-    for (uint32_t i = 0; i < total_drones * obs_dim; i++) {
+    for (uint32_t i = 0; i < total_agents * obs_dim; i++) {
         ASSERT_TRUE(obs[i] == 1.0f);
     }
-    for (uint32_t i = 0; i < total_drones * ENGINE_ACTION_DIM; i++) {
+    for (uint32_t i = 0; i < total_agents * engine->action_dim; i++) {
         ASSERT_TRUE(actions[i] == 2.0f);
     }
-    for (uint32_t i = 0; i < total_drones; i++) {
+    for (uint32_t i = 0; i < total_agents; i++) {
         ASSERT_TRUE(rewards[i] == 3.0f);
     }
 
@@ -1386,19 +1387,19 @@ TEST(buffer_independence) {
  * Test buffer bounds are respected
  */
 TEST(buffer_bounds_respected) {
-    BatchDroneEngine* engine = create_small_engine();
+    BatchEngine* engine = create_small_engine();
     ASSERT_NOT_NULL(engine);
     engine_reset(engine);
 
-    uint32_t total_drones = engine->config.total_drones;
+    uint32_t total_agents = engine->config.total_agents;
     uint32_t obs_dim = engine_get_obs_dim(engine);
 
     /* Write to last valid index */
     float* obs = engine_get_observations(engine);
-    obs[total_drones * obs_dim - 1] = 123.0f;
+    obs[total_agents * obs_dim - 1] = 123.0f;
 
     float* actions = engine_get_actions(engine);
-    actions[total_drones * ENGINE_ACTION_DIM - 1] = 456.0f;
+    actions[total_agents * engine->action_dim - 1] = 456.0f;
 
     /* Run step to verify no buffer overrun issues */
     engine_step(engine);
@@ -1411,11 +1412,11 @@ TEST(buffer_bounds_respected) {
  * Test buffer reuse after auto-reset
  */
 TEST(buffer_reuse_after_autoreset) {
-    BatchDroneEngine* engine = create_small_engine();
+    BatchEngine* engine = create_small_engine();
     ASSERT_NOT_NULL(engine);
     engine_reset(engine);
 
-    uint32_t total_drones = engine->config.total_drones;
+    uint32_t total_agents = engine->config.total_agents;
     float* obs = engine_get_observations(engine);
     float* rewards = engine_get_rewards(engine);
     uint8_t* dones = engine_get_dones(engine);
@@ -1425,7 +1426,7 @@ TEST(buffer_reuse_after_autoreset) {
         engine_step(engine);
 
         /* Check buffers remain valid */
-        for (uint32_t i = 0; i < total_drones; i++) {
+        for (uint32_t i = 0; i < total_agents; i++) {
             ASSERT_TRUE(isfinite(rewards[i]));
             ASSERT_TRUE(dones[i] == 0 || dones[i] == 1);
         }
@@ -1442,25 +1443,25 @@ TEST(buffer_reuse_after_autoreset) {
  * Test action buffer can be written before step
  */
 TEST(action_buffer_writeable_before_step) {
-    BatchDroneEngine* engine = create_small_engine();
+    BatchEngine* engine = create_small_engine();
     ASSERT_NOT_NULL(engine);
     engine_reset(engine);
 
-    uint32_t total_drones = engine->config.total_drones;
+    uint32_t total_agents = engine->config.total_agents;
     float* actions = engine_get_actions(engine);
 
     /* Write action patterns */
-    for (uint32_t d = 0; d < total_drones; d++) {
-        for (uint32_t a = 0; a < ENGINE_ACTION_DIM; a++) {
-            actions[d * ENGINE_ACTION_DIM + a] = 0.25f * (float)a;
+    for (uint32_t d = 0; d < total_agents; d++) {
+        for (uint32_t a = 0; a < engine->action_dim; a++) {
+            actions[d * engine->action_dim + a] = 0.25f * (float)a;
         }
     }
 
     /* Verify writes persisted */
-    for (uint32_t d = 0; d < total_drones; d++) {
-        for (uint32_t a = 0; a < ENGINE_ACTION_DIM; a++) {
+    for (uint32_t d = 0; d < total_agents; d++) {
+        for (uint32_t a = 0; a < engine->action_dim; a++) {
             float expected = 0.25f * (float)a;
-            ASSERT_TRUE(fabsf(actions[d * ENGINE_ACTION_DIM + a] - expected) < 0.001f);
+            ASSERT_TRUE(fabsf(actions[d * engine->action_dim + a] - expected) < 0.001f);
         }
     }
 
@@ -1474,35 +1475,35 @@ TEST(action_buffer_writeable_before_step) {
  * Test observation buffer is updated after step
  */
 TEST(observation_buffer_updated_after_step) {
-    BatchDroneEngine* engine = create_small_engine();
+    BatchEngine* engine = create_small_engine();
     ASSERT_NOT_NULL(engine);
     engine_reset(engine);
 
     float* obs = engine_get_observations(engine);
     uint32_t obs_dim = engine_get_obs_dim(engine);
-    uint32_t total_drones = engine->config.total_drones;
+    uint32_t total_agents = engine->config.total_agents;
 
     /* Record initial observations */
     float initial_sum = 0.0f;
-    for (uint32_t i = 0; i < total_drones * obs_dim && i < 100; i++) {
+    for (uint32_t i = 0; i < total_agents * obs_dim && i < 100; i++) {
         initial_sum += obs[i];
     }
 
     /* Set actions and step */
     float* actions = engine_get_actions(engine);
-    for (uint32_t i = 0; i < total_drones * ENGINE_ACTION_DIM; i++) {
+    for (uint32_t i = 0; i < total_agents * engine->action_dim; i++) {
         actions[i] = 0.5f;
     }
     engine_step(engine);
 
     /* Observations should have been updated (physics changed state) */
     float post_step_sum = 0.0f;
-    for (uint32_t i = 0; i < total_drones * obs_dim && i < 100; i++) {
+    for (uint32_t i = 0; i < total_agents * obs_dim && i < 100; i++) {
         post_step_sum += obs[i];
     }
 
     /* Sum might be different (state changed) - at least observations are valid */
-    for (uint32_t i = 0; i < total_drones * obs_dim; i++) {
+    for (uint32_t i = 0; i < total_agents * obs_dim; i++) {
         ASSERT_TRUE(isfinite(obs[i]));
     }
 
@@ -1520,7 +1521,7 @@ TEST(observation_buffer_updated_after_step) {
 TEST(create_destroy_no_leak) {
     /* Run multiple create/destroy cycles and check system memory is stable */
     for (int i = 0; i < 5; i++) {
-        BatchDroneEngine* engine = create_small_engine();
+        BatchEngine* engine = create_small_engine();
         ASSERT_NOT_NULL(engine);
 
         engine_reset(engine);
@@ -1541,7 +1542,7 @@ TEST(create_destroy_no_leak) {
 TEST(multiple_create_destroy_no_accumulation) {
     /* Perform many cycles */
     for (int i = 0; i < 20; i++) {
-        BatchDroneEngine* engine = create_small_engine();
+        BatchEngine* engine = create_small_engine();
         ASSERT_NOT_NULL(engine);
         engine_destroy(engine);
     }
@@ -1554,7 +1555,7 @@ TEST(multiple_create_destroy_no_accumulation) {
  * Test reset doesn't leak memory
  */
 TEST(reset_no_memory_leak) {
-    BatchDroneEngine* engine = create_small_engine();
+    BatchEngine* engine = create_small_engine();
     ASSERT_NOT_NULL(engine);
 
     size_t baseline = engine->persistent_arena->used;
@@ -1573,7 +1574,7 @@ TEST(reset_no_memory_leak) {
  * Test partial reset doesn't leak memory
  */
 TEST(partial_reset_no_leak) {
-    BatchDroneEngine* engine = create_small_engine();
+    BatchEngine* engine = create_small_engine();
     ASSERT_NOT_NULL(engine);
     engine_reset(engine);
 
@@ -1594,7 +1595,7 @@ TEST(partial_reset_no_leak) {
  * Test auto-reset doesn't leak memory
  */
 TEST(auto_reset_no_leak) {
-    BatchDroneEngine* engine = create_small_engine();
+    BatchEngine* engine = create_small_engine();
     ASSERT_NOT_NULL(engine);
     engine_reset(engine);
 
@@ -1615,7 +1616,7 @@ TEST(auto_reset_no_leak) {
  * Test long-running simulation (10000 steps) doesn't leak
  */
 TEST(long_running_no_leak) {
-    BatchDroneEngine* engine = create_small_engine();
+    BatchEngine* engine = create_small_engine();
     ASSERT_NOT_NULL(engine);
     engine_reset(engine);
 
@@ -1643,7 +1644,7 @@ TEST(long_running_no_leak) {
  * Test subsystem destruction order
  */
 TEST(subsystem_destruction_order) {
-    BatchDroneEngine* engine = create_small_engine();
+    BatchEngine* engine = create_small_engine();
     ASSERT_NOT_NULL(engine);
     engine_reset(engine);
 
@@ -1667,21 +1668,21 @@ TEST(subsystem_destruction_order) {
  * Test hot data (pos/vel/quat/omega) is contiguous in memory
  */
 TEST(hot_data_contiguous) {
-    BatchDroneEngine* engine = create_small_engine();
+    BatchEngine* engine = create_small_engine();
     ASSERT_NOT_NULL(engine);
 
     /* In SoA layout, each array is contiguous by definition */
     /* Verify array base pointers exist and are distinct */
-    ASSERT_NOT_NULL(engine->states->pos_x);
-    ASSERT_NOT_NULL(engine->states->pos_y);
-    ASSERT_NOT_NULL(engine->states->pos_z);
-    ASSERT_NOT_NULL(engine->states->vel_x);
-    ASSERT_NOT_NULL(engine->states->vel_y);
-    ASSERT_NOT_NULL(engine->states->vel_z);
+    ASSERT_NOT_NULL(engine->states->rigid_body.pos_x);
+    ASSERT_NOT_NULL(engine->states->rigid_body.pos_y);
+    ASSERT_NOT_NULL(engine->states->rigid_body.pos_z);
+    ASSERT_NOT_NULL(engine->states->rigid_body.vel_x);
+    ASSERT_NOT_NULL(engine->states->rigid_body.vel_y);
+    ASSERT_NOT_NULL(engine->states->rigid_body.vel_z);
 
     /* Each array is distinct */
-    ASSERT_NE((uintptr_t)engine->states->pos_x, (uintptr_t)engine->states->pos_y);
-    ASSERT_NE((uintptr_t)engine->states->pos_y, (uintptr_t)engine->states->pos_z);
+    ASSERT_NE((uintptr_t)engine->states->rigid_body.pos_x, (uintptr_t)engine->states->rigid_body.pos_y);
+    ASSERT_NE((uintptr_t)engine->states->rigid_body.pos_y, (uintptr_t)engine->states->rigid_body.pos_z);
 
     engine_destroy(engine);
     return 0;
@@ -1691,7 +1692,7 @@ TEST(hot_data_contiguous) {
  * Test cold data is separated from hot data
  */
 TEST(cold_data_separated) {
-    BatchDroneEngine* engine = create_small_engine();
+    BatchEngine* engine = create_small_engine();
     ASSERT_NOT_NULL(engine);
 
     /* States (hot) and params (cold) should be separate allocations */
@@ -1739,10 +1740,10 @@ TEST(per_drone_hot_data_size) {
  * Test stride patterns are cache-friendly
  */
 TEST(stride_patterns_cache_friendly) {
-    BatchDroneEngine* engine = create_small_engine();
+    BatchEngine* engine = create_small_engine();
     ASSERT_NOT_NULL(engine);
 
-    uint32_t total_drones = engine->config.total_drones;
+    uint32_t total_agents = engine->config.total_agents;
 
     /* SoA layout means sequential access to array[i], array[i+1], ...
      * is sequential memory access (stride = sizeof(float) = 4 bytes)
@@ -1750,10 +1751,10 @@ TEST(stride_patterns_cache_friendly) {
 
     /* Verify we can sequentially access all elements */
     float sum = 0.0f;
-    for (uint32_t i = 0; i < total_drones; i++) {
-        sum += engine->states->pos_x[i];  /* Sequential access */
-        sum += engine->states->pos_y[i];
-        sum += engine->states->pos_z[i];
+    for (uint32_t i = 0; i < total_agents; i++) {
+        sum += engine->states->rigid_body.pos_x[i];  /* Sequential access */
+        sum += engine->states->rigid_body.pos_y[i];
+        sum += engine->states->rigid_body.pos_z[i];
     }
     (void)sum;
 
@@ -1767,7 +1768,7 @@ TEST(stride_patterns_cache_friendly) {
  * Test false sharing avoidance (per-thread data separation)
  */
 TEST(false_sharing_avoidance) {
-    BatchDroneEngine* engine = create_small_engine();
+    BatchEngine* engine = create_small_engine();
     ASSERT_NOT_NULL(engine);
 
     /* Verify scheduler/thread pool exists */
@@ -1780,7 +1781,7 @@ TEST(false_sharing_avoidance) {
      */
 
     /* Verify that array base is 32-byte aligned (helps with cache line alignment) */
-    ASSERT_ALIGNED_32(engine->states->pos_x);
+    ASSERT_ALIGNED_32(engine->states->rigid_body.pos_x);
 
     engine_destroy(engine);
     return 0;
@@ -1790,16 +1791,16 @@ TEST(false_sharing_avoidance) {
  * Test memory access patterns are sequential where possible
  */
 TEST(sequential_access_patterns) {
-    BatchDroneEngine* engine = create_small_engine();
+    BatchEngine* engine = create_small_engine();
     ASSERT_NOT_NULL(engine);
 
-    uint32_t total_drones = engine->config.total_drones;
+    uint32_t total_agents = engine->config.total_agents;
 
     /* SoA enables sequential access for SIMD processing */
     /* Test that we can process 8 drones at a time (AVX2) */
-    for (uint32_t i = 0; i + 8 <= total_drones; i += 8) {
+    for (uint32_t i = 0; i + 8 <= total_agents; i += 8) {
         /* Access 8 consecutive floats */
-        float* base = &engine->states->pos_x[i];
+        float* base = &engine->states->rigid_body.pos_x[i];
         /* These 8 floats = 32 bytes fit in a single AVX2 register */
         ASSERT_ALIGNED_32(base);
     }
@@ -1815,12 +1816,12 @@ TEST(sequential_access_patterns) {
 /**
  * Test maximum drone count allocation succeeds
  */
-TEST(max_drone_count_allocation) {
+TEST(max_agent_count_allocation) {
     /* Test with 1024 drones (target configuration) */
-    BatchDroneEngine* engine = create_large_engine();
+    BatchEngine* engine = create_large_engine();
     ASSERT_NOT_NULL(engine);
 
-    ASSERT_EQ(engine->config.total_drones, 1024);
+    ASSERT_EQ(engine->config.total_agents, 1024);
     ASSERT_NOT_NULL(engine->states);
     ASSERT_NOT_NULL(engine->observations);
     ASSERT_NOT_NULL(engine->actions);
@@ -1857,7 +1858,7 @@ TEST(near_max_arena_allocation) {
  */
 TEST(rapid_create_destroy_100) {
     for (int i = 0; i < 100; i++) {
-        BatchDroneEngine* engine = create_small_engine();
+        BatchEngine* engine = create_small_engine();
         ASSERT_NOT_NULL(engine);
         engine_destroy(engine);
     }
@@ -1869,7 +1870,7 @@ TEST(rapid_create_destroy_100) {
  * Test high-frequency step cycles (10000 steps)
  */
 TEST(high_freq_step_10000) {
-    BatchDroneEngine* engine = create_small_engine();
+    BatchEngine* engine = create_small_engine();
     ASSERT_NOT_NULL(engine);
     engine_reset(engine);
 
@@ -1888,17 +1889,17 @@ TEST(high_freq_step_10000) {
  * Test memory stability under varying action patterns
  */
 TEST(memory_stable_varying_actions) {
-    BatchDroneEngine* engine = create_small_engine();
+    BatchEngine* engine = create_small_engine();
     ASSERT_NOT_NULL(engine);
     engine_reset(engine);
 
-    uint32_t total_drones = engine->config.total_drones;
+    uint32_t total_agents = engine->config.total_agents;
     float* actions = engine_get_actions(engine);
     size_t baseline = engine->persistent_arena->used;
 
     /* Vary actions each step */
     for (int step = 0; step < 500; step++) {
-        for (uint32_t i = 0; i < total_drones * ENGINE_ACTION_DIM; i++) {
+        for (uint32_t i = 0; i < total_agents * engine->action_dim; i++) {
             actions[i] = (float)(step % 100) / 100.0f;
         }
         engine_step(engine);
@@ -1914,7 +1915,7 @@ TEST(memory_stable_varying_actions) {
  * Test memory stability with many collisions/resets
  */
 TEST(memory_stable_many_resets) {
-    BatchDroneEngine* engine = create_small_engine();
+    BatchEngine* engine = create_small_engine();
     ASSERT_NOT_NULL(engine);
 
     size_t baseline = engine->persistent_arena->used;
@@ -1971,7 +1972,7 @@ TEST(arena_stress_alternating_sizes) {
  * Test physics step memory usage is bounded
  */
 TEST(physics_step_memory_bounded) {
-    BatchDroneEngine* engine = create_medium_engine();
+    BatchEngine* engine = create_medium_engine();
     ASSERT_NOT_NULL(engine);
     engine_reset(engine);
 
@@ -1997,7 +1998,7 @@ TEST(physics_step_memory_bounded) {
  * Test collision step memory usage is bounded
  */
 TEST(collision_step_memory_bounded) {
-    BatchDroneEngine* engine = create_medium_engine();
+    BatchEngine* engine = create_medium_engine();
     ASSERT_NOT_NULL(engine);
     engine_reset(engine);
 
@@ -2019,7 +2020,7 @@ TEST(collision_step_memory_bounded) {
  * Test sensor step memory usage is bounded
  */
 TEST(sensor_step_memory_bounded) {
-    BatchDroneEngine* engine = create_medium_engine();
+    BatchEngine* engine = create_medium_engine();
     ASSERT_NOT_NULL(engine);
     engine_reset(engine);
 
@@ -2041,7 +2042,7 @@ TEST(sensor_step_memory_bounded) {
  * Test full step memory usage is bounded
  */
 TEST(full_step_memory_bounded) {
-    BatchDroneEngine* engine = create_medium_engine();
+    BatchEngine* engine = create_medium_engine();
     ASSERT_NOT_NULL(engine);
     engine_reset(engine);
 
@@ -2073,7 +2074,7 @@ TEST(memory_scales_with_drones) {
     uint32_t counts[] = {16, 64, 256};
 
     for (int i = 0; i < 3; i++) {
-        BatchDroneEngine* engine = create_test_engine(counts[i], 1,
+        BatchEngine* engine = create_test_engine(counts[i], 1,
             128 * 1024 * 1024, 32 * 1024 * 1024);
         if (engine == NULL) {
             usages[i] = 0;
@@ -2107,7 +2108,7 @@ TEST(memory_scales_with_drones) {
  * Test memory usage independent of step count (no accumulation)
  */
 TEST(memory_independent_of_steps) {
-    BatchDroneEngine* engine = create_small_engine();
+    BatchEngine* engine = create_small_engine();
     ASSERT_NOT_NULL(engine);
     engine_reset(engine);
 
@@ -2161,7 +2162,7 @@ int main(void) {
     RUN_TEST(persistent_arena_sized_for_drones);
     RUN_TEST(persistent_arena_survives_reset);
     RUN_TEST(persistent_arena_consistent_across_resets);
-    RUN_TEST(persistent_arena_max_drones);
+    RUN_TEST(persistent_arena_max_agents);
     RUN_TEST(persistent_arena_allocation_order);
     RUN_TEST(persistent_arena_no_fragmentation);
     RUN_TEST(drone_state_soa_all_aligned_32);
@@ -2173,7 +2174,7 @@ int main(void) {
     RUN_TEST(episode_tracking_buffers_aligned);
     RUN_TEST(termination_flag_buffers_aligned);
     RUN_TEST(buffers_aligned_after_operations);
-    RUN_TEST(alignment_various_drone_counts);
+    RUN_TEST(alignment_various_agent_counts);
     RUN_TEST(soa_array_sizes_match_capacity);
     RUN_TEST(soa_arrays_contiguous);
     RUN_TEST(buffer_pointers_stable_across_steps);
@@ -2199,7 +2200,7 @@ int main(void) {
     RUN_TEST(stride_patterns_cache_friendly);
     RUN_TEST(false_sharing_avoidance);
     RUN_TEST(sequential_access_patterns);
-    RUN_TEST(max_drone_count_allocation);
+    RUN_TEST(max_agent_count_allocation);
     RUN_TEST(near_max_arena_allocation);
     RUN_TEST(rapid_create_destroy_100);
     RUN_TEST(high_freq_step_10000);

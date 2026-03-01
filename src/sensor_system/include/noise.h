@@ -91,8 +91,8 @@ typedef struct NoiseConfig {
  * ============================================================================ */
 
 typedef struct NoiseGroupState {
-    PCG32*   rngs;            /* [max_drones] per-drone independent RNG */
-    float*   drift_state;     /* [max_drones * drift_channels] OU process state */
+    PCG32*   rngs;            /* [max_agents] per-drone independent RNG */
+    float*   drift_state;     /* [max_agents * drift_channels] OU process state */
     uint32_t drift_channels;  /* number of channels with NOISE_BIAS_DRIFT stages */
     uint64_t base_seed;       /* for deterministic reseed */
 } NoiseGroupState;
@@ -100,7 +100,7 @@ typedef struct NoiseGroupState {
 typedef struct NoiseState {
     NoiseGroupState groups[MAX_NOISE_GROUPS];
     uint32_t group_count;
-    uint32_t max_drones;
+    uint32_t max_agents;
 } NoiseState;
 
 /* ============================================================================
@@ -112,17 +112,17 @@ typedef struct NoiseState {
  *
  * @param arena       Persistent arena for allocation
  * @param config      Noise configuration
- * @param max_drones  Maximum number of drones
+ * @param max_agents  Maximum number of drones
  * @param sensor_id   Sensor ID (used to derive unique seeds)
  * @return Allocated NoiseState, or NULL
  */
 NoiseState* noise_state_create(Arena* arena, const NoiseConfig* config,
-                                uint32_t max_drones, uint32_t sensor_id);
+                                uint32_t max_agents, uint32_t sensor_id);
 
 /**
  * Reset noise state for a single drone (reseed RNG, zero drift).
  */
-void noise_state_reset_drone(NoiseState* state, uint32_t drone_idx);
+void noise_state_reset_drone(NoiseState* state, uint32_t agent_idx);
 
 /**
  * Reset noise state for all drones.
@@ -138,15 +138,15 @@ void noise_state_reset_all(NoiseState* state);
  *
  * @param config        Noise configuration (pipeline definition)
  * @param state         Noise state (RNGs, drift state) - can be NULL if no stateful noise
- * @param data          Batch output buffer [drone_count * output_size]
- * @param drone_indices Which global drone indices correspond to each batch entry
- * @param drone_count   Number of drones in this batch
+ * @param data          Batch output buffer [agent_count * output_size]
+ * @param agent_indices Which global drone indices correspond to each batch entry
+ * @param agent_count   Number of drones in this batch
  * @param output_size   Number of floats per drone
  * @param dt            Simulation timestep (for drift integration)
  */
 void noise_apply(const NoiseConfig* config, NoiseState* state,
-                 float* data, const uint32_t* drone_indices,
-                 uint32_t drone_count, uint32_t output_size, float dt);
+                 float* data, const uint32_t* agent_indices,
+                 uint32_t agent_count, uint32_t output_size, float dt);
 
 /* ============================================================================
  * Utility API

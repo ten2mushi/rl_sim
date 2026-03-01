@@ -2,7 +2,7 @@
  * @file urdf_parser.h
  * @brief URDF (Universal Robot Description Format) Parser
  *
- * Parses standard URDF files to extract drone physical properties.
+ * Parses standard URDF files to extract platform physical properties.
  * Supports extracting mass, inertia tensor, collision geometry, and
  * custom drone properties from <properties> extension tags.
  *
@@ -13,15 +13,15 @@
  *   URDFProperties props;
  *   char error[256];
  *   if (urdf_parse_file("crazyflie.urdf", &props, error) == 0) {
- *       urdf_apply_to_drone_config(&props, &drone_config);
+ *       urdf_apply_to_platform_config(&props, &platform_config);
  *   }
  *
- * URDF to DroneConfig Field Mapping:
+ * URDF to PlatformConfig Field Mapping:
  *   <mass value="..."/>           -> mass
  *   <inertia ixx="..." .../>      -> ixx, iyy, izz
- *   <properties arm="..."/>       -> arm_length
- *   <properties kf="..."/>        -> k_thrust
- *   <properties km="..."/>        -> k_torque
+ *   <properties arm="..."/>       -> QuadcopterConfig.arm_length (via platform_specific)
+ *   <properties kf="..."/>        -> QuadcopterConfig.k_thrust
+ *   <properties km="..."/>        -> QuadcopterConfig.k_torque
  *   <cylinder radius="..."/>      -> collision_radius (from <collision>)
  *   <sphere radius="..."/>        -> collision_radius (from <collision>)
  */
@@ -37,7 +37,7 @@ extern "C" {
 #endif
 
 /* Forward declaration */
-struct DroneConfig;
+struct PlatformConfig;
 
 /* ============================================================================
  * Constants
@@ -131,15 +131,17 @@ int urdf_parse_string(const char* urdf_str, URDFProperties* props, char* error_m
  * ============================================================================ */
 
 /**
- * Apply URDF properties to DroneConfig.
+ * Apply URDF properties to PlatformConfig.
  *
- * Copies extracted URDF values to corresponding DroneConfig fields.
+ * Copies extracted URDF values to corresponding PlatformConfig fields.
  * Only overwrites fields that were actually found in the URDF (has_* flags).
+ * Quadcopter-specific fields (arm_length, k_thrust, etc.) are applied to
+ * the QuadcopterConfig pointed to by config->platform_specific.
  *
  * @param urdf Source URDF properties
- * @param config Target drone configuration
+ * @param config Target platform configuration
  */
-void urdf_apply_to_drone_config(const URDFProperties* urdf, struct DroneConfig* config);
+void urdf_apply_to_platform_config(const URDFProperties* urdf, struct PlatformConfig* config);
 
 /**
  * Load URDF file with optional TOML overlay.

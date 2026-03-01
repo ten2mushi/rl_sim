@@ -12,6 +12,7 @@
  */
 
 #include "../include/obj_io.h"
+#include "parse_utils.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -23,47 +24,6 @@
 
 #define MTL_LINE_BUFFER_SIZE 1024
 #define MTL_INITIAL_CAPACITY 32
-
-/* ============================================================================
- * Fast Float Parsing (reuse from obj_parser)
- * ============================================================================ */
-
-static const char* mtl_parse_float(const char* str, float* out) {
-    const char* p = str;
-    float sign = 1.0f;
-    float value = 0.0f;
-    float fraction = 0.0f;
-    float divisor = 10.0f;
-    bool has_digits = false;
-
-    while (*p == ' ' || *p == '\t') p++;
-
-    if (*p == '-') {
-        sign = -1.0f;
-        p++;
-    } else if (*p == '+') {
-        p++;
-    }
-
-    while (*p >= '0' && *p <= '9') {
-        value = value * 10.0f + (float)(*p - '0');
-        has_digits = true;
-        p++;
-    }
-
-    if (*p == '.') {
-        p++;
-        while (*p >= '0' && *p <= '9') {
-            fraction += (float)(*p - '0') / divisor;
-            divisor *= 10.0f;
-            has_digits = true;
-            p++;
-        }
-    }
-
-    *out = sign * (value + fraction);
-    return has_digits ? p : str;
-}
 
 /* ============================================================================
  * MTL Parser
@@ -152,9 +112,9 @@ MtlLibrary* mtl_parse_file(Arena* arena, const char* path) {
             const char* p = line + 3;
             float r, g, b;
 
-            p = mtl_parse_float(p, &r);
-            p = mtl_parse_float(p, &g);
-            p = mtl_parse_float(p, &b);
+            p = parse_float_fast(p, &r);
+            p = parse_float_fast(p, &g);
+            p = parse_float_fast(p, &b);
 
             current->Kd = VEC3(r, g, b);
             current->has_Kd = true;
@@ -164,16 +124,16 @@ MtlLibrary* mtl_parse_file(Arena* arena, const char* path) {
             const char* p = line + 3;
             float r, g, b;
 
-            p = mtl_parse_float(p, &r);
-            p = mtl_parse_float(p, &g);
-            p = mtl_parse_float(p, &b);
+            p = parse_float_fast(p, &r);
+            p = parse_float_fast(p, &g);
+            p = parse_float_fast(p, &b);
 
             current->Ks = VEC3(r, g, b);
         }
         /* Specular exponent: Ns value */
         else if (current && line[0] == 'N' && line[1] == 's' && line[2] == ' ') {
             const char* p = line + 3;
-            mtl_parse_float(p, &current->Ns);
+            parse_float_fast(p, &current->Ns);
         }
         /* Diffuse texture: map_Kd path */
         else if (current && strncmp(line, "map_Kd ", 7) == 0) {

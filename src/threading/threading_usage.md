@@ -223,7 +223,6 @@ typedef struct ThreadPoolStats {
 | `threadpool_submit` | `ThreadPool* pool, WorkItem item` | `bool` | Submit single item. Returns false if queue full |
 | `threadpool_submit_batch` | `ThreadPool* pool, const WorkItem* items, uint32_t count` | `bool` | Submit multiple items |
 | `threadpool_wait` | `ThreadPool* pool` | `void` | Block until all pending work completes |
-| `threadpool_barrier` | `ThreadPool* pool` | `void` | Alias for `threadpool_wait` |
 | `threadpool_num_threads` | `const ThreadPool* pool` | `uint32_t` | Get worker thread count |
 | `threadpool_pending_tasks` | `const ThreadPool* pool` | `uint32_t` | Get approximate pending task count |
 | `threadpool_is_idle` | `const ThreadPool* pool` | `bool` | Check if no pending work |

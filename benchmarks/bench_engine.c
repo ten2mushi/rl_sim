@@ -1,7 +1,7 @@
 /**
  * Full Pipeline Engine Benchmarks
  *
- * End-to-end benchmarks of BatchDroneEngine with different sensor profiles.
+ * End-to-end benchmarks of BatchEngine with different sensor profiles.
  * Tests MINIMAL through STRESS configurations with phase breakdown,
  * scaling tests, memory reporting, and sustained performance checks.
  */
@@ -31,13 +31,13 @@ static double profile_targets[] = {
     8.0, 10.0, 20.0, 25.0, 30.0, 100.0
 };
 
-static EngineConfig make_profile_config(EngineProfile profile, uint32_t total_drones) {
+static EngineConfig make_profile_config(EngineProfile profile, uint32_t total_agents) {
     EngineConfig config = engine_config_default();
     /* Configure for specified total drones */
-    config.drones_per_env = 16;
-    config.num_envs = total_drones / config.drones_per_env;
+    config.agents_per_env = 16;
+    config.num_envs = total_agents / config.agents_per_env;
     if (config.num_envs == 0) config.num_envs = 1;
-    config.total_drones = config.num_envs * config.drones_per_env;
+    config.total_agents = config.num_envs * config.agents_per_env;
     config.num_threads = 0; /* auto-detect */
     config.seed = 42;
 
@@ -112,8 +112,8 @@ static EngineConfig make_profile_config(EngineProfile profile, uint32_t total_dr
  * ============================================================================ */
 
 typedef struct EngineBenchCtx {
-    BatchDroneEngine* engine;
-    uint32_t total_drones;
+    BatchEngine* engine;
+    uint32_t total_agents;
 } EngineBenchCtx;
 
 static void fn_engine_step(void* arg) {
@@ -125,17 +125,17 @@ static void fn_engine_step(void* arg) {
  * Profile Benchmark Runner
  * ============================================================================ */
 
-static BenchStats run_profile(EngineProfile profile, uint32_t total_drones,
+static BenchStats run_profile(EngineProfile profile, uint32_t total_agents,
                                uint32_t warmup, uint32_t iterations) {
     BenchStats s = {0};
     s.name = profile_names[profile];
-    s.drone_count = total_drones;
+    s.agent_count = total_agents;
     s.target_ms = profile_targets[profile];
 
-    EngineConfig config = make_profile_config(profile, total_drones);
+    EngineConfig config = make_profile_config(profile, total_agents);
 
     char error_msg[ENGINE_ERROR_MSG_SIZE];
-    BatchDroneEngine* engine = engine_create(&config, error_msg);
+    BatchEngine* engine = engine_create(&config, error_msg);
     if (!engine) {
         fprintf(stderr, "  Failed to create engine for %s: %s\n",
                 profile_names[profile], error_msg);
@@ -146,7 +146,7 @@ static BenchStats run_profile(EngineProfile profile, uint32_t total_drones,
     float* actions = engine_get_actions(engine);
     PCG32 rng;
     pcg32_seed(&rng, 42);
-    for (uint32_t i = 0; i < config.total_drones * ENGINE_ACTION_DIM; i++) {
+    for (uint32_t i = 0; i < config.total_agents * engine_get_action_dim(engine); i++) {
         actions[i] = pcg32_range(&rng, 0.2f, 0.8f);
     }
 
@@ -158,10 +158,10 @@ static BenchStats run_profile(EngineProfile profile, uint32_t total_drones,
         engine_add_sphere(engine, VEC3(10, 0, 5), 3.0f, 1);
     }
 
-    EngineBenchCtx ctx = { .engine = engine, .total_drones = config.total_drones };
+    EngineBenchCtx ctx = { .engine = engine, .total_agents = config.total_agents };
     s = bench_measure(profile_names[profile], fn_engine_step, &ctx,
                        warmup, iterations, profile_targets[profile]);
-    s.drone_count = config.total_drones;
+    s.agent_count = config.total_agents;
 
     /* Get memory stats */
     EngineStats stats;
@@ -177,19 +177,19 @@ static BenchStats run_profile(EngineProfile profile, uint32_t total_drones,
  * Phase Breakdown
  * ============================================================================ */
 
-static void print_phase_breakdown(EngineProfile profile, uint32_t total_drones,
+static void print_phase_breakdown(EngineProfile profile, uint32_t total_agents,
                                    uint32_t num_steps) {
-    EngineConfig config = make_profile_config(profile, total_drones);
+    EngineConfig config = make_profile_config(profile, total_agents);
 
     char error_msg[ENGINE_ERROR_MSG_SIZE];
-    BatchDroneEngine* engine = engine_create(&config, error_msg);
+    BatchEngine* engine = engine_create(&config, error_msg);
     if (!engine) return;
 
     /* Set actions */
     float* actions = engine_get_actions(engine);
     PCG32 rng;
     pcg32_seed(&rng, 42);
-    for (uint32_t i = 0; i < config.total_drones * ENGINE_ACTION_DIM; i++) {
+    for (uint32_t i = 0; i < config.total_agents * engine_get_action_dim(engine); i++) {
         actions[i] = pcg32_range(&rng, 0.2f, 0.8f);
     }
 
@@ -244,7 +244,7 @@ static void print_phase_breakdown(EngineProfile profile, uint32_t total_drones,
     double avg_rst = total_reset / num_steps;
 
     printf("\nPhase Breakdown (%s, %u drones, avg over %u steps):\n",
-           profile_names[profile], config.total_drones, num_steps);
+           profile_names[profile], config.total_agents, num_steps);
     printf("  Physics:    %7.3f ms (%5.1f%%)\n", avg_phys, avg_phys / avg_total * 100);
     printf("  Collision:  %7.3f ms (%5.1f%%)\n", avg_coll, avg_coll / avg_total * 100);
     printf("  Sensors:    %7.3f ms (%5.1f%%)\n", avg_sens, avg_sens / avg_total * 100);
@@ -259,10 +259,10 @@ static void print_phase_breakdown(EngineProfile profile, uint32_t total_drones,
  * Scaling helper
  * ============================================================================ */
 
-static BenchStats bench_navigation_scaling(uint32_t drone_count, uint32_t iterations,
+static BenchStats bench_navigation_scaling(uint32_t agent_count, uint32_t iterations,
                                             uint32_t warmup, uint64_t seed) {
     (void)seed;
-    return run_profile(PROFILE_NAVIGATION, drone_count, warmup, iterations);
+    return run_profile(PROFILE_NAVIGATION, agent_count, warmup, iterations);
 }
 
 /* ============================================================================
@@ -311,23 +311,23 @@ int main(int argc, char** argv) {
     {
         EngineConfig config = make_profile_config(PROFILE_NAVIGATION, N);
         char error_msg[ENGINE_ERROR_MSG_SIZE];
-        BatchDroneEngine* engine = engine_create(&config, error_msg);
+        BatchEngine* engine = engine_create(&config, error_msg);
         if (engine) {
             float* actions = engine_get_actions(engine);
             PCG32 rng;
             pcg32_seed(&rng, 42);
-            for (uint32_t i = 0; i < config.total_drones * ENGINE_ACTION_DIM; i++) {
+            for (uint32_t i = 0; i < config.total_agents * engine_get_action_dim(engine); i++) {
                 actions[i] = pcg32_range(&rng, 0.2f, 0.8f);
             }
             engine_reset(engine);
             engine_add_box(engine, VEC3(-50, -50, -10), VEC3(50, 50, 0), 1);
 
-            EngineBenchCtx ctx = { .engine = engine, .total_drones = config.total_drones };
+            EngineBenchCtx ctx = { .engine = engine, .total_agents = config.total_agents };
 
             /* Check avg < target */
             BenchStats s = bench_measure("sustained_nav_10k", fn_engine_step, &ctx,
                                           50, 10000, profile_targets[PROFILE_NAVIGATION]);
-            s.drone_count = config.total_drones;
+            s.agent_count = config.total_agents;
             bench_print_header();
             bench_print_row(&s);
 
@@ -359,7 +359,7 @@ int main(int argc, char** argv) {
     for (uint32_t i = 0; i < num_results && i < PROFILE_COUNT; i++) {
         double drones_per_sec = 0;
         if (results[i].avg_ms > 0.0001) {
-            drones_per_sec = (double)results[i].drone_count / (results[i].avg_ms / 1000.0);
+            drones_per_sec = (double)results[i].agent_count / (results[i].avg_ms / 1000.0);
         }
         printf("  %-15s %12.3f ms %13.0f\n",
                results[i].name, results[i].avg_ms, drones_per_sec);

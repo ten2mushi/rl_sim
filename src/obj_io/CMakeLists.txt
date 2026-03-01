@@ -244,7 +244,6 @@ endif()
 include(GNUInstallDirs)
 
 install(TARGETS obj_io
-    EXPORT obj_ioTargets
     ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
     LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
 )
@@ -253,11 +252,6 @@ install(FILES ${OBJ_IO_HEADERS}
     DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/obj_io
 )
 
-install(EXPORT obj_ioTargets
-    FILE obj_ioTargets.cmake
-    NAMESPACE obj_io::
-    DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/obj_io
-)
 
 # ============================================================================
 # Summary

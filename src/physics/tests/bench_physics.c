@@ -13,6 +13,7 @@
  */
 
 #include "../include/physics.h"
+#include "platform_quadcopter.h"
 #include <stdio.h>
 #include <time.h>
 #include <stdlib.h>
@@ -31,7 +32,7 @@ static double get_time_ms(void) {
 /* Benchmark result structure */
 typedef struct {
     const char* name;
-    uint32_t drone_count;
+    uint32_t agent_count;
     uint32_t iterations;
     double total_ms;
     double mean_ms;
@@ -42,28 +43,41 @@ typedef struct {
 
 static void print_bench_result(const BenchResult* result) {
     printf("%-35s | %6u drones | %5u iters | mean: %7.3f ms | min: %7.3f ms | max: %7.3f ms | %.1f ops/s\n",
-           result->name, result->drone_count, result->iterations,
+           result->name, result->agent_count, result->iterations,
            result->mean_ms, result->min_ms, result->max_ms, result->throughput);
+}
+
+/* Helper: call compute_forces_torques through the quadcopter vtable */
+static void physics_compute_forces_torques(PlatformStateSOA* states, PlatformParamsSOA* params,
+                                            float* fx, float* fy, float* fz,
+                                            float* tx, float* ty, float* tz,
+                                            uint32_t count) {
+    PLATFORM_QUADCOPTER.compute_forces_torques(
+        &states->rigid_body,
+        (float* const*)states->extension, states->extension_count,
+        (float* const*)params->extension, params->extension_count,
+        &params->rigid_body,
+        fx, fy, fz, tx, ty, tz, count);
 }
 
 /* ============================================================================
  * Benchmark: Full Physics Step
  * ============================================================================ */
 
-static BenchResult bench_full_step(uint32_t drone_count, uint32_t iterations) {
+static BenchResult bench_full_step(uint32_t agent_count, uint32_t iterations) {
     BenchResult result = {
         .name = "physics_step (full)",
-        .drone_count = drone_count,
+        .agent_count = agent_count,
         .iterations = iterations,
         .min_ms = 1e9,
         .max_ms = 0.0
     };
 
     /* Allocate memory */
-    size_t arena_size = physics_memory_size(drone_count) +
-                        drone_state_memory_size(drone_count) +
-                        drone_params_memory_size(drone_count) +
-                        drone_count * 4 * sizeof(float) +
+    size_t arena_size = physics_memory_size(agent_count) +
+                        platform_state_memory_size(agent_count, QUAD_STATE_EXT_COUNT) +
+                        platform_params_memory_size(agent_count, QUAD_PARAMS_EXT_COUNT) +
+                        agent_count * 4 * sizeof(float) +
                         16 * 1024 * 1024;  /* Extra buffer */
 
     Arena* persistent = arena_create(arena_size);
@@ -76,10 +90,10 @@ static BenchResult bench_full_step(uint32_t drone_count, uint32_t iterations) {
     }
 
     PhysicsConfig config = physics_config_default();
-    PhysicsSystem* physics = physics_create(persistent, scratch, &config, drone_count);
-    DroneStateSOA* states = drone_state_create(persistent, drone_count);
-    DroneParamsSOA* params = drone_params_create(persistent, drone_count);
-    float* actions = arena_alloc_array(persistent, float, drone_count * 4);
+    PhysicsSystem* physics = physics_create(persistent, scratch, &config, agent_count, &PLATFORM_QUADCOPTER);
+    PlatformStateSOA* states = platform_state_create(persistent, agent_count, QUAD_STATE_EXT_COUNT);
+    PlatformParamsSOA* params = platform_params_create(persistent, agent_count, QUAD_PARAMS_EXT_COUNT);
+    float* actions = arena_alloc_array(persistent, float, agent_count * 4);
 
     if (physics == NULL || states == NULL || params == NULL || actions == NULL) {
         printf("Failed to allocate physics structures\n");
@@ -90,9 +104,9 @@ static BenchResult bench_full_step(uint32_t drone_count, uint32_t iterations) {
     }
 
     /* Initialize */
-    for (uint32_t i = 0; i < drone_count; i++) {
-        states->pos_z[i] = 10.0f;
-        states->quat_w[i] = 1.0f;
+    for (uint32_t i = 0; i < agent_count; i++) {
+        states->rigid_body.pos_z[i] = 10.0f;
+        states->rigid_body.quat_w[i] = 1.0f;
         for (int m = 0; m < 4; m++) {
             actions[i * 4 + m] = 0.4f;
         }
@@ -100,14 +114,14 @@ static BenchResult bench_full_step(uint32_t drone_count, uint32_t iterations) {
 
     /* Warmup */
     for (int i = 0; i < 10; i++) {
-        physics_step(physics, states, params, actions, drone_count);
+        physics_step(physics, states, params, actions, agent_count);
     }
 
     /* Benchmark */
     double total = 0.0;
     for (uint32_t i = 0; i < iterations; i++) {
         double start = get_time_ms();
-        physics_step(physics, states, params, actions, drone_count);
+        physics_step(physics, states, params, actions, agent_count);
         double elapsed = get_time_ms() - start;
 
         total += elapsed;
@@ -131,58 +145,60 @@ static BenchResult bench_full_step(uint32_t drone_count, uint32_t iterations) {
  * Benchmark: Single Derivative Computation
  * ============================================================================ */
 
-static BenchResult bench_derivative_compute(uint32_t drone_count, uint32_t iterations) {
+static BenchResult bench_derivative_compute(uint32_t agent_count, uint32_t iterations) {
     BenchResult result = {
         .name = "physics_compute_derivatives",
-        .drone_count = drone_count,
+        .agent_count = agent_count,
         .iterations = iterations,
         .min_ms = 1e9,
         .max_ms = 0.0
     };
 
-    size_t arena_size = 2 * drone_state_memory_size(drone_count) +
-                        drone_params_memory_size(drone_count) +
-                        drone_count * 4 * sizeof(float) +
+    size_t arena_size = physics_memory_size(agent_count) +
+                        platform_state_memory_size(agent_count, QUAD_STATE_EXT_COUNT) +
+                        platform_params_memory_size(agent_count, QUAD_PARAMS_EXT_COUNT) +
+                        agent_count * 4 * sizeof(float) +
                         16 * 1024 * 1024;
 
-    Arena* arena = arena_create(arena_size);
-    if (arena == NULL) {
+    Arena* persistent = arena_create(arena_size);
+    Arena* scratch = arena_create(4 * 1024 * 1024);
+    if (persistent == NULL || scratch == NULL) {
         result.total_ms = -1;
         return result;
     }
 
-    DroneStateSOA* states = drone_state_create(arena, drone_count);
-    DroneStateSOA* derivatives = drone_state_create(arena, drone_count);
-    DroneParamsSOA* params = drone_params_create(arena, drone_count);
-    float* actions = arena_alloc_array(arena, float, drone_count * 4);
     PhysicsConfig config = physics_config_default();
+    PhysicsSystem* physics = physics_create(persistent, scratch, &config, agent_count, &PLATFORM_QUADCOPTER);
+    PlatformStateSOA* states = platform_state_create(persistent, agent_count, QUAD_STATE_EXT_COUNT);
+    PlatformParamsSOA* params = platform_params_create(persistent, agent_count, QUAD_PARAMS_EXT_COUNT);
 
-    if (states == NULL || derivatives == NULL || params == NULL) {
-        arena_destroy(arena);
+    if (physics == NULL || states == NULL || params == NULL) {
+        arena_destroy(scratch);
+        arena_destroy(persistent);
         result.total_ms = -1;
         return result;
     }
 
     /* Initialize */
-    for (uint32_t i = 0; i < drone_count; i++) {
-        states->pos_z[i] = 10.0f;
-        states->quat_w[i] = 1.0f;
-        states->rpm_0[i] = 1500.0f;
-        states->rpm_1[i] = 1500.0f;
-        states->rpm_2[i] = 1500.0f;
-        states->rpm_3[i] = 1500.0f;
+    for (uint32_t i = 0; i < agent_count; i++) {
+        states->rigid_body.pos_z[i] = 10.0f;
+        states->rigid_body.quat_w[i] = 1.0f;
+        states->extension[QUAD_EXT_RPM_0][i] = 1500.0f;
+        states->extension[QUAD_EXT_RPM_1][i] = 1500.0f;
+        states->extension[QUAD_EXT_RPM_2][i] = 1500.0f;
+        states->extension[QUAD_EXT_RPM_3][i] = 1500.0f;
     }
 
     /* Warmup */
     for (int i = 0; i < 10; i++) {
-        physics_compute_derivatives(states, params, actions, derivatives, drone_count, &config, NULL);
+        physics_compute_derivatives(physics, states, params, physics->k1, agent_count);
     }
 
     /* Benchmark */
     double total = 0.0;
     for (uint32_t i = 0; i < iterations; i++) {
         double start = get_time_ms();
-        physics_compute_derivatives(states, params, actions, derivatives, drone_count, &config, NULL);
+        physics_compute_derivatives(physics, states, params, physics->k1, agent_count);
         double elapsed = get_time_ms() - start;
 
         total += elapsed;
@@ -194,7 +210,9 @@ static BenchResult bench_derivative_compute(uint32_t drone_count, uint32_t itera
     result.mean_ms = total / iterations;
     result.throughput = 1000.0 / result.mean_ms;
 
-    arena_destroy(arena);
+    physics_destroy(physics);
+    arena_destroy(scratch);
+    arena_destroy(persistent);
     return result;
 }
 
@@ -202,22 +220,22 @@ static BenchResult bench_derivative_compute(uint32_t drone_count, uint32_t itera
  * Benchmark: Quaternion Normalization
  * ============================================================================ */
 
-static BenchResult bench_quaternion_normalize(uint32_t drone_count, uint32_t iterations) {
+static BenchResult bench_quaternion_normalize(uint32_t agent_count, uint32_t iterations) {
     BenchResult result = {
         .name = "physics_normalize_quaternions",
-        .drone_count = drone_count,
+        .agent_count = agent_count,
         .iterations = iterations,
         .min_ms = 1e9,
         .max_ms = 0.0
     };
 
-    Arena* arena = arena_create(drone_state_memory_size(drone_count) + 1024 * 1024);
+    Arena* arena = arena_create(platform_state_memory_size(agent_count, QUAD_STATE_EXT_COUNT) + 1024 * 1024);
     if (arena == NULL) {
         result.total_ms = -1;
         return result;
     }
 
-    DroneStateSOA* states = drone_state_create(arena, drone_count);
+    PlatformStateSOA* states = platform_state_create(arena, agent_count, QUAD_STATE_EXT_COUNT);
     if (states == NULL) {
         arena_destroy(arena);
         result.total_ms = -1;
@@ -225,28 +243,28 @@ static BenchResult bench_quaternion_normalize(uint32_t drone_count, uint32_t ite
     }
 
     /* Initialize with slightly unnormalized quaternions */
-    for (uint32_t i = 0; i < drone_count; i++) {
-        states->quat_w[i] = 1.001f;
-        states->quat_x[i] = 0.001f;
-        states->quat_y[i] = 0.001f;
-        states->quat_z[i] = 0.001f;
+    for (uint32_t i = 0; i < agent_count; i++) {
+        states->rigid_body.quat_w[i] = 1.001f;
+        states->rigid_body.quat_x[i] = 0.001f;
+        states->rigid_body.quat_y[i] = 0.001f;
+        states->rigid_body.quat_z[i] = 0.001f;
     }
 
     /* Warmup */
     for (int i = 0; i < 10; i++) {
-        physics_normalize_quaternions(states, drone_count);
+        physics_normalize_quaternions(states, agent_count);
     }
 
     /* Benchmark */
     double total = 0.0;
     for (uint32_t i = 0; i < iterations; i++) {
         /* Reset quaternions */
-        for (uint32_t j = 0; j < drone_count; j++) {
-            states->quat_w[j] = 1.001f;
+        for (uint32_t j = 0; j < agent_count; j++) {
+            states->rigid_body.quat_w[j] = 1.001f;
         }
 
         double start = get_time_ms();
-        physics_normalize_quaternions(states, drone_count);
+        physics_normalize_quaternions(states, agent_count);
         double elapsed = get_time_ms() - start;
 
         total += elapsed;
@@ -266,26 +284,26 @@ static BenchResult bench_quaternion_normalize(uint32_t drone_count, uint32_t ite
  * Benchmark: RK4 Combine
  * ============================================================================ */
 
-static BenchResult bench_rk4_combine(uint32_t drone_count, uint32_t iterations) {
+static BenchResult bench_rk4_combine(uint32_t agent_count, uint32_t iterations) {
     BenchResult result = {
         .name = "physics_rk4_combine",
-        .drone_count = drone_count,
+        .agent_count = agent_count,
         .iterations = iterations,
         .min_ms = 1e9,
         .max_ms = 0.0
     };
 
-    Arena* arena = arena_create(6 * drone_state_memory_size(drone_count) + 1024 * 1024);
+    Arena* arena = arena_create(6 * platform_state_memory_size(agent_count, QUAD_STATE_EXT_COUNT) + 1024 * 1024);
     if (arena == NULL) {
         result.total_ms = -1;
         return result;
     }
 
-    DroneStateSOA* states = drone_state_create(arena, drone_count);
-    DroneStateSOA* k1 = drone_state_create(arena, drone_count);
-    DroneStateSOA* k2 = drone_state_create(arena, drone_count);
-    DroneStateSOA* k3 = drone_state_create(arena, drone_count);
-    DroneStateSOA* k4 = drone_state_create(arena, drone_count);
+    PlatformStateSOA* states = platform_state_create(arena, agent_count, QUAD_STATE_EXT_COUNT);
+    PlatformStateSOA* k1 = platform_state_create(arena, agent_count, QUAD_STATE_EXT_COUNT);
+    PlatformStateSOA* k2 = platform_state_create(arena, agent_count, QUAD_STATE_EXT_COUNT);
+    PlatformStateSOA* k3 = platform_state_create(arena, agent_count, QUAD_STATE_EXT_COUNT);
+    PlatformStateSOA* k4 = platform_state_create(arena, agent_count, QUAD_STATE_EXT_COUNT);
 
     if (states == NULL || k1 == NULL || k2 == NULL || k3 == NULL || k4 == NULL) {
         arena_destroy(arena);
@@ -294,22 +312,24 @@ static BenchResult bench_rk4_combine(uint32_t drone_count, uint32_t iterations) 
     }
 
     /* Initialize */
-    for (uint32_t i = 0; i < drone_count; i++) {
-        states->quat_w[i] = 1.0f;
-        k1->pos_x[i] = 1.0f; k2->pos_x[i] = 1.0f;
-        k3->pos_x[i] = 1.0f; k4->pos_x[i] = 1.0f;
+    for (uint32_t i = 0; i < agent_count; i++) {
+        states->rigid_body.quat_w[i] = 1.0f;
+        k1->rigid_body.pos_x[i] = 1.0f; k2->rigid_body.pos_x[i] = 1.0f;
+        k3->rigid_body.pos_x[i] = 1.0f; k4->rigid_body.pos_x[i] = 1.0f;
     }
 
     /* Warmup */
     for (int i = 0; i < 10; i++) {
-        physics_rk4_combine(states, k1, k2, k3, k4, 0.02f, drone_count);
+        physics_rk4_combine(&states->rigid_body, &k1->rigid_body, &k2->rigid_body,
+                            &k3->rigid_body, &k4->rigid_body, 0.02f, agent_count);
     }
 
     /* Benchmark */
     double total = 0.0;
     for (uint32_t i = 0; i < iterations; i++) {
         double start = get_time_ms();
-        physics_rk4_combine(states, k1, k2, k3, k4, 0.02f, drone_count);
+        physics_rk4_combine(&states->rigid_body, &k1->rigid_body, &k2->rigid_body,
+                            &k3->rigid_body, &k4->rigid_body, 0.02f, agent_count);
         double elapsed = get_time_ms() - start;
 
         total += elapsed;
@@ -329,18 +349,18 @@ static BenchResult bench_rk4_combine(uint32_t drone_count, uint32_t iterations) 
  * Benchmark: Force/Torque Computation
  * ============================================================================ */
 
-static BenchResult bench_forces_torques(uint32_t drone_count, uint32_t iterations) {
+static BenchResult bench_forces_torques(uint32_t agent_count, uint32_t iterations) {
     BenchResult result = {
         .name = "physics_compute_forces_torques",
-        .drone_count = drone_count,
+        .agent_count = agent_count,
         .iterations = iterations,
         .min_ms = 1e9,
         .max_ms = 0.0
     };
 
-    size_t aligned_array = (drone_count * sizeof(float) + 31) & ~31;
-    size_t arena_size = drone_state_memory_size(drone_count) +
-                        drone_params_memory_size(drone_count) +
+    size_t aligned_array = (agent_count * sizeof(float) + 31) & ~31;
+    size_t arena_size = platform_state_memory_size(agent_count, QUAD_STATE_EXT_COUNT) +
+                        platform_params_memory_size(agent_count, QUAD_PARAMS_EXT_COUNT) +
                         6 * aligned_array + 1024 * 1024;
 
     Arena* arena = arena_create(arena_size);
@@ -349,8 +369,8 @@ static BenchResult bench_forces_torques(uint32_t drone_count, uint32_t iteration
         return result;
     }
 
-    DroneStateSOA* states = drone_state_create(arena, drone_count);
-    DroneParamsSOA* params = drone_params_create(arena, drone_count);
+    PlatformStateSOA* states = platform_state_create(arena, agent_count, QUAD_STATE_EXT_COUNT);
+    PlatformParamsSOA* params = platform_params_create(arena, agent_count, QUAD_PARAMS_EXT_COUNT);
     float* fx = arena_alloc_aligned(arena, aligned_array, 32);
     float* fy = arena_alloc_aligned(arena, aligned_array, 32);
     float* fz = arena_alloc_aligned(arena, aligned_array, 32);
@@ -365,24 +385,24 @@ static BenchResult bench_forces_torques(uint32_t drone_count, uint32_t iteration
     }
 
     /* Initialize */
-    for (uint32_t i = 0; i < drone_count; i++) {
-        states->quat_w[i] = 1.0f;
-        states->rpm_0[i] = 1500.0f;
-        states->rpm_1[i] = 1500.0f;
-        states->rpm_2[i] = 1500.0f;
-        states->rpm_3[i] = 1500.0f;
+    for (uint32_t i = 0; i < agent_count; i++) {
+        states->rigid_body.quat_w[i] = 1.0f;
+        states->extension[QUAD_EXT_RPM_0][i] = 1500.0f;
+        states->extension[QUAD_EXT_RPM_1][i] = 1500.0f;
+        states->extension[QUAD_EXT_RPM_2][i] = 1500.0f;
+        states->extension[QUAD_EXT_RPM_3][i] = 1500.0f;
     }
 
     /* Warmup */
     for (int i = 0; i < 10; i++) {
-        physics_compute_forces_torques(states, params, fx, fy, fz, tx, ty, tz, drone_count);
+        physics_compute_forces_torques(states, params, fx, fy, fz, tx, ty, tz, agent_count);
     }
 
     /* Benchmark */
     double total = 0.0;
     for (uint32_t i = 0; i < iterations; i++) {
         double start = get_time_ms();
-        physics_compute_forces_torques(states, params, fx, fy, fz, tx, ty, tz, drone_count);
+        physics_compute_forces_torques(states, params, fx, fy, fz, tx, ty, tz, agent_count);
         double elapsed = get_time_ms() - start;
 
         total += elapsed;
@@ -424,23 +444,23 @@ static void bench_scaling(void) {
 static void bench_memory_throughput(void) {
     printf("\n=== Memory Throughput Estimate ===\n");
 
-    uint32_t drone_count = 1024;
+    uint32_t agent_count = 1024;
 
     /* Estimate bytes accessed per physics step:
-     * - DroneStateSOA: 17 arrays × 4 bytes × drone_count = 68KB
-     * - DroneParamsSOA: 15 arrays × 4 bytes × drone_count = 60KB
+     * - PlatformStateSOA: 17 arrays × 4 bytes × agent_count = 68KB
+     * - PlatformParamsSOA: 15 arrays × 4 bytes × agent_count = 60KB
      * - RK4 requires 4 derivative evaluations
      * - Each derivative touches most arrays multiple times
      *
      * Conservative estimate: ~500KB per physics step for 1024 drones
      */
 
-    BenchResult result = bench_full_step(drone_count, 1000);
+    BenchResult result = bench_full_step(agent_count, 1000);
 
     if (result.total_ms > 0) {
         /* Estimate memory accessed per step */
-        size_t state_bytes = drone_state_memory_size(drone_count);
-        size_t params_bytes = drone_params_memory_size(drone_count);
+        size_t state_bytes = platform_state_memory_size(agent_count, QUAD_STATE_EXT_COUNT);
+        size_t params_bytes = platform_params_memory_size(agent_count, QUAD_PARAMS_EXT_COUNT);
         size_t bytes_per_step = (state_bytes + params_bytes) * 4;  /* 4 RK4 stages */
 
         double gb_per_sec = (bytes_per_step / 1e9) * result.throughput;

@@ -14,6 +14,7 @@
 #include "../include/obj_io.h"
 #include <stdio.h>
 #include <string.h>
+#include <math.h>
 
 /* ============================================================================
  * Default Options
@@ -111,6 +112,18 @@ static ObjIOResult write_mtl_file(const char* mtl_path, const WorldBrickMap* wor
     return OBJ_IO_SUCCESS;
 }
 
+/**
+ * Write a single triangle face to file (1-indexed vertices).
+ */
+static void write_face(FILE* file, uint32_t v0, uint32_t v1, uint32_t v2,
+                        bool has_normals) {
+    if (has_normals) {
+        fprintf(file, "f %u//%u %u//%u %u//%u\n", v0, v0, v1, v1, v2, v2);
+    } else {
+        fprintf(file, "f %u %u %u\n", v0, v1, v2);
+    }
+}
+
 /* ============================================================================
  * OBJ Writer
  * ============================================================================ */
@@ -138,11 +151,10 @@ ObjIOResult obj_export_file(const char* path, const TriangleMesh* mesh,
 
     char mtl_filename[280];
     if (options->mtl_name) {
-        strncpy(mtl_filename, options->mtl_name, sizeof(mtl_filename) - 1);
+        snprintf(mtl_filename, sizeof(mtl_filename), "%s", options->mtl_name);
     } else {
         snprintf(mtl_filename, sizeof(mtl_filename), "%s.mtl", base_name);
     }
-    mtl_filename[sizeof(mtl_filename) - 1] = '\0';
 
     /* Write MTL file if requested */
     if (options->write_mtl) {
@@ -208,15 +220,9 @@ ObjIOResult obj_export_file(const char* path, const TriangleMesh* mesh,
 
             /* Write face (1-indexed) */
             uint32_t base = f * 3;
-            uint32_t v0 = mesh->face_v[base + 0] + 1;
-            uint32_t v1 = mesh->face_v[base + 1] + 1;
-            uint32_t v2 = mesh->face_v[base + 2] + 1;
-
-            if (has_normals) {
-                fprintf(file, "f %u//%u %u//%u %u//%u\n", v0, v0, v1, v1, v2, v2);
-            } else {
-                fprintf(file, "f %u %u %u\n", v0, v1, v2);
-            }
+            write_face(file, mesh->face_v[base + 0] + 1,
+                        mesh->face_v[base + 1] + 1,
+                        mesh->face_v[base + 2] + 1, has_normals);
         }
     } else {
         /* Write faces without material groups */
@@ -226,15 +232,9 @@ ObjIOResult obj_export_file(const char* path, const TriangleMesh* mesh,
 
         for (uint32_t f = 0; f < mesh->face_count; f++) {
             uint32_t base = f * 3;
-            uint32_t v0 = mesh->face_v[base + 0] + 1;
-            uint32_t v1 = mesh->face_v[base + 1] + 1;
-            uint32_t v2 = mesh->face_v[base + 2] + 1;
-
-            if (has_normals) {
-                fprintf(file, "f %u//%u %u//%u %u//%u\n", v0, v0, v1, v1, v2, v2);
-            } else {
-                fprintf(file, "f %u %u %u\n", v0, v1, v2);
-            }
+            write_face(file, mesh->face_v[base + 0] + 1,
+                        mesh->face_v[base + 1] + 1,
+                        mesh->face_v[base + 2] + 1, has_normals);
         }
     }
 
@@ -324,7 +324,7 @@ MeshCompareResult mesh_compare(Arena* arena, const TriangleMesh* mesh_a,
 
     result.hausdorff_distance = max_dist;
     result.mean_distance = (float)(sum_dist / sample_count);
-    result.rms_distance = (float)sqrt(sum_dist_sq / sample_count);
+    result.rms_distance = sqrtf((float)(sum_dist_sq / sample_count));
     result.sample_count = sample_count;
     result.passed = (max_dist <= tolerance);
 

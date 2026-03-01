@@ -11,10 +11,10 @@
 #include "test_harness.h"
 
 /* Helper: Create engine with specific seed */
-static BatchDroneEngine* create_engine_with_seed(uint64_t seed) {
+static BatchEngine* create_engine_with_seed(uint64_t seed) {
     EngineConfig cfg = engine_config_default();
     cfg.num_envs = 4;
-    cfg.drones_per_env = 4;
+    cfg.agents_per_env = 4;
     cfg.seed = seed;
     cfg.persistent_arena_size = 128 * 1024 * 1024;
     cfg.frame_arena_size = 32 * 1024 * 1024;
@@ -29,8 +29,8 @@ static BatchDroneEngine* create_engine_with_seed(uint64_t seed) {
 
 /* 10.1 Single-threaded step is deterministic */
 TEST(step_deterministic) {
-    BatchDroneEngine* e1 = create_engine_with_seed(12345);
-    BatchDroneEngine* e2 = create_engine_with_seed(12345);
+    BatchEngine* e1 = create_engine_with_seed(12345);
+    BatchEngine* e2 = create_engine_with_seed(12345);
     ASSERT_NOT_NULL(e1);
     ASSERT_NOT_NULL(e2);
 
@@ -40,7 +40,7 @@ TEST(step_deterministic) {
     /* Apply same actions */
     float* a1 = engine_get_actions(e1);
     float* a2 = engine_get_actions(e2);
-    for (uint32_t i = 0; i < 16 * ENGINE_ACTION_DIM; i++) {
+    for (uint32_t i = 0; i < 16 * e1->action_dim; i++) {
         a1[i] = 0.5f;
         a2[i] = 0.5f;
     }
@@ -53,9 +53,9 @@ TEST(step_deterministic) {
 
     /* Positions should match (with floating point tolerance) */
     for (uint32_t j = 0; j < 16; j++) {
-        float diff_x = fabsf(e1->states->pos_x[j] - e2->states->pos_x[j]);
-        float diff_y = fabsf(e1->states->pos_y[j] - e2->states->pos_y[j]);
-        float diff_z = fabsf(e1->states->pos_z[j] - e2->states->pos_z[j]);
+        float diff_x = fabsf(e1->states->rigid_body.pos_x[j] - e2->states->rigid_body.pos_x[j]);
+        float diff_y = fabsf(e1->states->rigid_body.pos_y[j] - e2->states->rigid_body.pos_y[j]);
+        float diff_z = fabsf(e1->states->rigid_body.pos_z[j] - e2->states->rigid_body.pos_z[j]);
         /* Note: Due to threading, may not be exactly equal, but should be close */
         ASSERT_LT(diff_x, 1.0f);
         ASSERT_LT(diff_y, 1.0f);
@@ -69,14 +69,14 @@ TEST(step_deterministic) {
 
 /* 10.2 Zero actions produces stable (hover-ish) flight */
 TEST(zero_actions_stable) {
-    BatchDroneEngine* engine = create_engine_with_seed(12345);
+    BatchEngine* engine = create_engine_with_seed(12345);
     ASSERT_NOT_NULL(engine);
 
     engine_reset(engine);
 
     /* Zero actions (should produce minimal thrust) */
     float* actions = engine_get_actions(engine);
-    memset(actions, 0, 16 * ENGINE_ACTION_DIM * sizeof(float));
+    memset(actions, 0, 16 * engine->action_dim * sizeof(float));
 
     /* Step and check drone doesn't explode */
     for (int i = 0; i < 100; i++) {
@@ -85,9 +85,9 @@ TEST(zero_actions_stable) {
 
     /* All positions should still be finite */
     for (uint32_t j = 0; j < 16; j++) {
-        ASSERT_TRUE(isfinite(engine->states->pos_x[j]));
-        ASSERT_TRUE(isfinite(engine->states->pos_y[j]));
-        ASSERT_TRUE(isfinite(engine->states->pos_z[j]));
+        ASSERT_TRUE(isfinite(engine->states->rigid_body.pos_x[j]));
+        ASSERT_TRUE(isfinite(engine->states->rigid_body.pos_y[j]));
+        ASSERT_TRUE(isfinite(engine->states->rigid_body.pos_z[j]));
     }
 
     engine_destroy(engine);
@@ -96,14 +96,14 @@ TEST(zero_actions_stable) {
 
 /* 10.3 Max actions saturate correctly */
 TEST(max_actions_saturate) {
-    BatchDroneEngine* engine = create_engine_with_seed(12345);
+    BatchEngine* engine = create_engine_with_seed(12345);
     ASSERT_NOT_NULL(engine);
 
     engine_reset(engine);
 
     /* Max actions */
     float* actions = engine_get_actions(engine);
-    for (uint32_t i = 0; i < 16 * ENGINE_ACTION_DIM; i++) {
+    for (uint32_t i = 0; i < 16 * engine->action_dim; i++) {
         actions[i] = 1.0f;
     }
 
@@ -114,9 +114,9 @@ TEST(max_actions_saturate) {
 
     /* Positions should still be finite (no NaN/Inf) */
     for (uint32_t j = 0; j < 16; j++) {
-        ASSERT_TRUE(isfinite(engine->states->pos_x[j]));
-        ASSERT_TRUE(isfinite(engine->states->pos_y[j]));
-        ASSERT_TRUE(isfinite(engine->states->pos_z[j]));
+        ASSERT_TRUE(isfinite(engine->states->rigid_body.pos_x[j]));
+        ASSERT_TRUE(isfinite(engine->states->rigid_body.pos_y[j]));
+        ASSERT_TRUE(isfinite(engine->states->rigid_body.pos_z[j]));
     }
 
     engine_destroy(engine);
@@ -125,14 +125,14 @@ TEST(max_actions_saturate) {
 
 /* 10.4 Rapid reset/step cycles stable */
 TEST(rapid_reset_step_cycles) {
-    BatchDroneEngine* engine = create_engine_with_seed(12345);
+    BatchEngine* engine = create_engine_with_seed(12345);
     ASSERT_NOT_NULL(engine);
 
     for (int cycle = 0; cycle < 50; cycle++) {
         engine_reset(engine);
 
         float* actions = engine_get_actions(engine);
-        for (uint32_t i = 0; i < 16 * ENGINE_ACTION_DIM; i++) {
+        for (uint32_t i = 0; i < 16 * engine->action_dim; i++) {
             actions[i] = (float)(cycle % 10) / 10.0f;
         }
 
@@ -148,19 +148,19 @@ TEST(rapid_reset_step_cycles) {
 
 /* 10.5 State queries match state arrays */
 TEST(state_queries_match_arrays) {
-    BatchDroneEngine* engine = create_engine_with_seed(12345);
+    BatchEngine* engine = create_engine_with_seed(12345);
     ASSERT_NOT_NULL(engine);
 
     engine_reset(engine);
 
     /* Modify state directly */
-    engine->states->pos_x[5] = 10.0f;
-    engine->states->pos_y[5] = 20.0f;
-    engine->states->pos_z[5] = 30.0f;
+    engine->states->rigid_body.pos_x[5] = 10.0f;
+    engine->states->rigid_body.pos_y[5] = 20.0f;
+    engine->states->rigid_body.pos_z[5] = 30.0f;
 
     /* Query state */
-    DroneStateQuery query;
-    engine_get_drone_state(engine, 5, &query);
+    AgentStateQuery query;
+    engine_get_agent_state(engine, 5, &query);
 
     ASSERT_FLOAT_EQ(query.position.x, 10.0f);
     ASSERT_FLOAT_EQ(query.position.y, 20.0f);
@@ -172,7 +172,7 @@ TEST(state_queries_match_arrays) {
 
 /* 10.6 Get all positions works */
 TEST(get_all_positions) {
-    BatchDroneEngine* engine = create_engine_with_seed(12345);
+    BatchEngine* engine = create_engine_with_seed(12345);
     ASSERT_NOT_NULL(engine);
 
     engine_reset(engine);
@@ -181,9 +181,9 @@ TEST(get_all_positions) {
     engine_get_all_positions(engine, positions);
 
     for (uint32_t i = 0; i < 16; i++) {
-        ASSERT_FLOAT_EQ(positions[i * 3 + 0], engine->states->pos_x[i]);
-        ASSERT_FLOAT_EQ(positions[i * 3 + 1], engine->states->pos_y[i]);
-        ASSERT_FLOAT_EQ(positions[i * 3 + 2], engine->states->pos_z[i]);
+        ASSERT_FLOAT_EQ(positions[i * 3 + 0], engine->states->rigid_body.pos_x[i]);
+        ASSERT_FLOAT_EQ(positions[i * 3 + 1], engine->states->rigid_body.pos_y[i]);
+        ASSERT_FLOAT_EQ(positions[i * 3 + 2], engine->states->rigid_body.pos_z[i]);
     }
 
     engine_destroy(engine);
@@ -192,7 +192,7 @@ TEST(get_all_positions) {
 
 /* 10.7 Statistics collection works */
 TEST(statistics_collection) {
-    BatchDroneEngine* engine = create_engine_with_seed(12345);
+    BatchEngine* engine = create_engine_with_seed(12345);
     ASSERT_NOT_NULL(engine);
 
     engine_reset(engine);
@@ -213,18 +213,18 @@ TEST(statistics_collection) {
 
 /* 10.8 Index conversion utilities */
 TEST(index_conversion) {
-    BatchDroneEngine* engine = create_engine_with_seed(12345);
+    BatchEngine* engine = create_engine_with_seed(12345);
     ASSERT_NOT_NULL(engine);
 
-    /* Test drone_idx_to_env */
+    /* Test agent_idx_to_env */
     uint32_t env_id, local_id;
-    engine_drone_idx_to_env(engine, 7, &env_id, &local_id);
+    engine_agent_idx_to_env(engine, 7, &env_id, &local_id);
     ASSERT_EQ(env_id, 1);   /* Drone 7 is in env 1 (4 drones per env) */
     ASSERT_EQ(local_id, 3); /* Local index 3 */
 
-    /* Test env_to_drone_idx */
-    uint32_t drone_idx = engine_env_to_drone_idx(engine, 2, 1);
-    ASSERT_EQ(drone_idx, 9); /* Env 2, local 1 = 2*4 + 1 = 9 */
+    /* Test env_to_agent_idx */
+    uint32_t agent_idx = engine_env_to_agent_idx(engine, 2, 1);
+    ASSERT_EQ(agent_idx, 9); /* Env 2, local 1 = 2*4 + 1 = 9 */
 
     engine_destroy(engine);
     return 0;
@@ -232,7 +232,7 @@ TEST(index_conversion) {
 
 /* 10.9 World manipulation */
 TEST(world_manipulation) {
-    BatchDroneEngine* engine = create_engine_with_seed(12345);
+    BatchEngine* engine = create_engine_with_seed(12345);
     ASSERT_NOT_NULL(engine);
 
     /* Add obstacles */
@@ -256,7 +256,7 @@ TEST(world_manipulation) {
 
 /* 10.10 Target setting */
 TEST(target_setting) {
-    BatchDroneEngine* engine = create_engine_with_seed(12345);
+    BatchEngine* engine = create_engine_with_seed(12345);
     ASSERT_NOT_NULL(engine);
 
     engine_reset(engine);

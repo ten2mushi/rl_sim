@@ -64,6 +64,7 @@ target_include_directories(gpu PUBLIC
 
 target_include_directories(gpu PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/../foundation/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/../rigid_body_state/include
     ${CMAKE_CURRENT_SOURCE_DIR}/../drone_state/include
     ${CMAKE_CURRENT_SOURCE_DIR}/../world_brick_map/include
     ${CMAKE_CURRENT_SOURCE_DIR}/../sensor_system/include

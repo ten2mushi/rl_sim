@@ -55,6 +55,10 @@ target_include_directories(physics
     PUBLIC
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
         $<INSTALL_INTERFACE:include>
+    PRIVATE
+        # Platform include for PlatformVTable definition (used in physics.c)
+        # Not a link dependency to avoid circular dep: platform -> physics -> platform
+        ${CMAKE_CURRENT_SOURCE_DIR}/../platform/include
 )
 
 # Link to dependencies
@@ -130,7 +134,7 @@ if(PHYSICS_BUILD_TESTS)
     enable_testing()
 
     add_executable(test_physics tests/test_physics.c)
-    target_link_libraries(test_physics PRIVATE physics)
+    target_link_libraries(test_physics PRIVATE physics platform)
 
     # Enable debug assertions for tests
     target_compile_definitions(test_physics PRIVATE FOUNDATION_DEBUG=1)
@@ -152,7 +156,7 @@ endif()
 
 if(PHYSICS_BUILD_BENCHMARKS)
     add_executable(bench_physics tests/bench_physics.c)
-    target_link_libraries(bench_physics PRIVATE physics)
+    target_link_libraries(bench_physics PRIVATE physics platform)
 
     # Optimize benchmarks
     if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang|AppleClang")
@@ -176,7 +180,6 @@ endif()
 include(GNUInstallDirs)
 
 install(TARGETS physics
-    EXPORT physicsTargets
     ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
     LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
 )
@@ -185,11 +188,6 @@ install(FILES ${PHYSICS_HEADERS}
     DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/physics
 )
 
-install(EXPORT physicsTargets
-    FILE physicsTargets.cmake
-    NAMESPACE physics::
-    DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/physics
-)
 
 # ============================================================================
 # Summary

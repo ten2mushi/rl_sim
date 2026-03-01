@@ -35,7 +35,7 @@ PufferEnv* puffer_env_create_from_config(const EngineConfig* config, char* error
     /* Create engine */
     char local_error[ENGINE_ERROR_MSG_SIZE];
     char* err = error_msg ? error_msg : local_error;
-    BatchDroneEngine* engine = engine_create(config, err);
+    BatchEngine* engine = engine_create(config, err);
     if (engine == NULL) {
         return NULL;
     }
@@ -60,7 +60,7 @@ PufferEnv* puffer_env_create_from_config(const EngineConfig* config, char* error
 
     /* Set dimensions */
     env->num_envs = (int)engine->config.num_envs;
-    env->num_agents = (int)engine->config.drones_per_env;
+    env->num_agents = (int)engine->config.agents_per_env;
     env->obs_size = (int)engine->obs_dim;
     env->action_size = (int)engine->action_dim;
 
@@ -108,7 +108,7 @@ void puffer_env_close(PufferEnv* env) {
         /* PufferEnv itself is allocated from engine's persistent arena,
          * so engine_destroy frees this struct. Save the engine pointer
          * and do NOT write to env after engine_destroy returns. */
-        BatchDroneEngine* engine = env->engine;
+        BatchEngine* engine = env->engine;
         engine_destroy(engine);
     }
 }

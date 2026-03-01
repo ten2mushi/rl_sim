@@ -180,7 +180,7 @@ int main(int argc, char** argv) {
             world_ctx_init_queries(ctx, scratch, 1024, cli.seed);
             BenchStats s = bench_measure("sdf_query_batch_1024", fn_sdf_query_batch, ctx,
                                           cli.warmup, cli.iterations, 0.025);
-            s.drone_count = 1024;
+            s.agent_count = 1024;
             bench_print_row(&s);
             results[num_results++] = s;
         }
@@ -195,7 +195,7 @@ int main(int argc, char** argv) {
             world_ctx_init_queries(ctx, scratch, 4096, cli.seed);
             BenchStats s = bench_measure("sdf_query_batch_4096", fn_sdf_query_batch, ctx,
                                           cli.warmup, cli.iterations, 0.1);
-            s.drone_count = 4096;
+            s.agent_count = 4096;
             bench_print_row(&s);
             results[num_results++] = s;
         }
@@ -214,7 +214,7 @@ int main(int argc, char** argv) {
             world_ctx_init_rays(ctx, scratch, 1024, cli.seed);
             BenchStats s = bench_measure("raymarch_batch_1024", fn_raymarch_batch, ctx,
                                           cli.warmup, cli.iterations, 5.0);
-            s.drone_count = 1024;
+            s.agent_count = 1024;
             bench_print_row(&s);
             results[num_results++] = s;
         }
@@ -237,7 +237,7 @@ int main(int argc, char** argv) {
                 snprintf(name, sizeof(name), "raymarch_1024_%u_prims", complexities[ci]);
                 BenchStats s = bench_measure(name, fn_raymarch_batch, ctx,
                                               cli.warmup, cli.iterations, 10.0);
-                s.drone_count = 1024;
+                s.agent_count = 1024;
                 bench_print_row(&s);
                 results[num_results++] = s;
             }

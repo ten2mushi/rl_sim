@@ -192,7 +192,6 @@ endif()
 include(GNUInstallDirs)
 
 install(TARGETS reward_system
-    EXPORT reward_systemTargets
     ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
     LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
 )
@@ -201,11 +200,6 @@ install(FILES ${REWARD_SYSTEM_HEADERS}
     DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/reward_system
 )
 
-install(EXPORT reward_systemTargets
-    FILE reward_systemTargets.cmake
-    NAMESPACE reward_system::
-    DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/reward_system
-)
 
 # ============================================================================
 # Summary

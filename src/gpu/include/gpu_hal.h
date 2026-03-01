@@ -314,7 +314,7 @@ uint64_t gpu_event_value(const GpuEvent* event);
  * ============================================================================ */
 
 struct WorldBrickMap;
-struct DroneStateSOA;
+struct RigidBodyStateSOA;
 struct MeshBVH;
 struct TriangleMesh;
 
@@ -378,7 +378,7 @@ GpuResult gpu_sdf_atlas_sync_dirty(GpuSdfAtlas* atlas,
 void gpu_sdf_atlas_destroy(GpuSdfAtlas* atlas);
 
 /* ============================================================================
- * Section 11: Drone Poses GPU Structure
+ * Section 12: Drone Poses GPU Structure
  * ============================================================================ */
 
 /**
@@ -386,35 +386,35 @@ void gpu_sdf_atlas_destroy(GpuSdfAtlas* atlas);
  * Layout: separate float arrays for pos_x, pos_y, pos_z, quat_w, quat_x, quat_y, quat_z
  */
 typedef struct GpuDronePoses {
-    GpuBuffer* pos_x;     /**< float[max_drones] */
-    GpuBuffer* pos_y;     /**< float[max_drones] */
-    GpuBuffer* pos_z;     /**< float[max_drones] */
-    GpuBuffer* quat_w;    /**< float[max_drones] */
-    GpuBuffer* quat_x;    /**< float[max_drones] */
-    GpuBuffer* quat_y;    /**< float[max_drones] */
-    GpuBuffer* quat_z;    /**< float[max_drones] */
-    uint32_t max_drones;
+    GpuBuffer* pos_x;     /**< float[max_agents] */
+    GpuBuffer* pos_y;     /**< float[max_agents] */
+    GpuBuffer* pos_z;     /**< float[max_agents] */
+    GpuBuffer* quat_w;    /**< float[max_agents] */
+    GpuBuffer* quat_x;    /**< float[max_agents] */
+    GpuBuffer* quat_y;    /**< float[max_agents] */
+    GpuBuffer* quat_z;    /**< float[max_agents] */
+    uint32_t max_agents;
 } GpuDronePoses;
 
 /**
  * Create drone pose buffers.
  */
-GpuDronePoses gpu_drone_poses_create(GpuDevice* device, uint32_t max_drones);
+GpuDronePoses gpu_agent_poses_create(GpuDevice* device, uint32_t max_agents);
 
 /**
- * Upload drone poses from DroneStateSOA to GPU buffers.
+ * Upload drone poses from RigidBodyStateSOA to GPU buffers.
  */
-GpuResult gpu_drone_poses_upload(GpuDronePoses* poses,
-                                  const struct DroneStateSOA* drones,
-                                  uint32_t drone_count);
+GpuResult gpu_agent_poses_upload(GpuDronePoses* poses,
+                                  const struct RigidBodyStateSOA* agents,
+                                  uint32_t agent_count);
 
 /**
  * Destroy drone pose buffers.
  */
-void gpu_drone_poses_destroy(GpuDronePoses* poses);
+void gpu_agent_poses_destroy(GpuDronePoses* poses);
 
 /* ============================================================================
- * Section 12: Ray Table GPU Structure
+ * Section 13: Ray Table GPU Structure
  * ============================================================================ */
 
 /**
@@ -443,7 +443,7 @@ GpuRayTable gpu_ray_table_create(GpuDevice* device, const Vec3* directions,
 void gpu_ray_table_destroy(GpuRayTable* table);
 
 /* ============================================================================
- * Section 13: Sensor Output GPU Structure
+ * Section 14: Sensor Output GPU Structure
  * ============================================================================ */
 
 /**
@@ -470,7 +470,7 @@ GpuSensorOutput gpu_sensor_output_create(GpuDevice* device,
 void gpu_sensor_output_destroy(GpuSensorOutput* output);
 
 /* ============================================================================
- * Section 14: Linearized BVH for GPU Voxelization
+ * Section 15: Linearized BVH for GPU Voxelization
  * ============================================================================ */
 
 /**
@@ -498,7 +498,7 @@ GpuLinearBVH gpu_linear_bvh_create(GpuDevice* device,
 void gpu_linear_bvh_destroy(GpuLinearBVH* bvh);
 
 /* ============================================================================
- * Section 15: Triangle Data for GPU Voxelization
+ * Section 16: Triangle Data for GPU Voxelization
  * ============================================================================ */
 
 /**
@@ -529,7 +529,7 @@ GpuTriangleData gpu_triangle_data_create(GpuDevice* device,
 void gpu_triangle_data_destroy(GpuTriangleData* data);
 
 /* ============================================================================
- * Section 16: GPU Voxelization
+ * Section 17: GPU Voxelization
  * ============================================================================ */
 
 /**

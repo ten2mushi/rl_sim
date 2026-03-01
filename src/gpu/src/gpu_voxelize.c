@@ -87,21 +87,30 @@ GpuResult gpu_voxelize_surface_bricks(GpuDevice* device,
 
     const VoxelizeOptions* options = (const VoxelizeOptions*)opts;
 
+    /* Init all resources to zero/NULL for uniform cleanup */
+    GpuLinearBVH gpu_bvh = {0};
+    GpuTriangleData gpu_tris = {0};
+    GpuBuffer* brick_list_buf = NULL;
+    GpuBuffer* output_sdf = NULL;
+    GpuBuffer* output_mat = NULL;
+    GpuKernel* kernel = NULL;
+    GpuCommandQueue* queue = NULL;
+    GpuResult result = GPU_ERROR_NO_MEMORY;
+
     /* ====================================================================
      * Step 1: Upload BVH and triangle data to GPU
      * ==================================================================== */
 
-    GpuLinearBVH gpu_bvh = gpu_linear_bvh_create(device, bvh);
+    gpu_bvh = gpu_linear_bvh_create(device, bvh);
     if (!gpu_bvh.nodes) {
         fprintf(stderr, "gpu_voxelize: failed to create GPU BVH\n");
-        return GPU_ERROR_NO_MEMORY;
+        goto cleanup;
     }
 
-    GpuTriangleData gpu_tris = gpu_triangle_data_create(device, mesh);
+    gpu_tris = gpu_triangle_data_create(device, mesh);
     if (!gpu_tris.vertices_x) {
-        gpu_linear_bvh_destroy(&gpu_bvh);
         fprintf(stderr, "gpu_voxelize: failed to create GPU triangle data\n");
-        return GPU_ERROR_NO_MEMORY;
+        goto cleanup;
     }
 
     /* ====================================================================
@@ -109,12 +118,8 @@ GpuResult gpu_voxelize_surface_bricks(GpuDevice* device,
      * ==================================================================== */
 
     size_t brick_list_bytes = num_surface_bricks * 3 * sizeof(uint32_t);
-    GpuBuffer* brick_list_buf = gpu_buffer_create(device, brick_list_bytes, GPU_MEMORY_SHARED);
-    if (!brick_list_buf) {
-        gpu_linear_bvh_destroy(&gpu_bvh);
-        gpu_triangle_data_destroy(&gpu_tris);
-        return GPU_ERROR_NO_MEMORY;
-    }
+    brick_list_buf = gpu_buffer_create(device, brick_list_bytes, GPU_MEMORY_SHARED);
+    if (!brick_list_buf) goto cleanup;
     gpu_buffer_upload(brick_list_buf, surface_brick_list, brick_list_bytes, 0);
 
     /* ====================================================================
@@ -125,16 +130,9 @@ GpuResult gpu_voxelize_surface_bricks(GpuDevice* device,
     size_t sdf_bytes = total_voxels * sizeof(int8_t);
     size_t mat_bytes = total_voxels * sizeof(uint8_t);
 
-    GpuBuffer* output_sdf = gpu_buffer_create(device, sdf_bytes, GPU_MEMORY_SHARED);
-    GpuBuffer* output_mat = gpu_buffer_create(device, mat_bytes, GPU_MEMORY_SHARED);
-    if (!output_sdf || !output_mat) {
-        if (output_sdf) gpu_buffer_destroy(output_sdf);
-        if (output_mat) gpu_buffer_destroy(output_mat);
-        gpu_buffer_destroy(brick_list_buf);
-        gpu_linear_bvh_destroy(&gpu_bvh);
-        gpu_triangle_data_destroy(&gpu_tris);
-        return GPU_ERROR_NO_MEMORY;
-    }
+    output_sdf = gpu_buffer_create(device, sdf_bytes, GPU_MEMORY_SHARED);
+    output_mat = gpu_buffer_create(device, mat_bytes, GPU_MEMORY_SHARED);
+    if (!output_sdf || !output_mat) goto cleanup;
 
     /* Clear output (default: outside, material 0) */
     memset(gpu_buffer_map(output_sdf), 127, sdf_bytes);
@@ -144,15 +142,11 @@ GpuResult gpu_voxelize_surface_bricks(GpuDevice* device,
      * Step 4: Create kernel and bind buffers
      * ==================================================================== */
 
-    GpuKernel* kernel = gpu_kernel_create(device, "sdf_voxelize_surface");
+    kernel = gpu_kernel_create(device, "sdf_voxelize_surface");
     if (!kernel) {
-        gpu_buffer_destroy(output_sdf);
-        gpu_buffer_destroy(output_mat);
-        gpu_buffer_destroy(brick_list_buf);
-        gpu_linear_bvh_destroy(&gpu_bvh);
-        gpu_triangle_data_destroy(&gpu_tris);
         fprintf(stderr, "gpu_voxelize: failed to create kernel\n");
-        return GPU_ERROR_COMPILE;
+        result = GPU_ERROR_COMPILE;
+        goto cleanup;
     }
 
     /* Bind buffers matching shader layout */
@@ -175,21 +169,13 @@ GpuResult gpu_voxelize_surface_bricks(GpuDevice* device,
      * Step 5: Dispatch
      * ==================================================================== */
 
-    GpuCommandQueue* queue = gpu_queue_create(device);
-    if (!queue) {
-        gpu_kernel_destroy(kernel);
-        gpu_buffer_destroy(output_sdf);
-        gpu_buffer_destroy(output_mat);
-        gpu_buffer_destroy(brick_list_buf);
-        gpu_linear_bvh_destroy(&gpu_bvh);
-        gpu_triangle_data_destroy(&gpu_tris);
-        return GPU_ERROR_NO_MEMORY;
-    }
+    queue = gpu_queue_create(device);
+    if (!queue) goto cleanup;
 
     /* Grid: (8, 8, num_surface_bricks), Group: (8, 8, 1) */
-    GpuResult result = gpu_queue_dispatch(queue, kernel,
-                                           8, 8, num_surface_bricks,
-                                           8, 8, 1);
+    result = gpu_queue_dispatch(queue, kernel,
+                                 8, 8, num_surface_bricks,
+                                 8, 8, 1);
     if (result != GPU_SUCCESS) {
         fprintf(stderr, "gpu_voxelize: dispatch failed: %s\n",
                 gpu_error_string(result));

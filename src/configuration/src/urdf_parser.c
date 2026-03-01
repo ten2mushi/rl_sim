@@ -7,6 +7,7 @@
 
 #include "urdf_parser.h"
 #include "configuration.h"
+#include "platform_quadcopter.h"
 #include "yxml.h"
 
 #include <stdio.h>
@@ -309,18 +310,7 @@ static int parse_urdf_content(const char* content, size_t len,
 void urdf_properties_init(URDFProperties* props) {
     if (!props) return;
     memset(props, 0, sizeof(URDFProperties));
-
-    /* Set reasonable defaults for optional fields */
-    props->mass = 0.0f;
-    props->ixx = 0.0f;
-    props->iyy = 0.0f;
-    props->izz = 0.0f;
-    props->collision_radius = 0.0f;
-    props->arm_length = 0.0f;
-    props->k_thrust = 0.0f;
-    props->k_torque = 0.0f;
-    props->motor_tau = 0.0f;
-    props->max_rpm = 0.0f;
+    /* All fields default to 0.0f via memset */
 }
 
 int urdf_parse_file(const char* path, URDFProperties* props, char* error_msg) {
@@ -396,7 +386,7 @@ int urdf_parse_string(const char* urdf_str, URDFProperties* props, char* error_m
     return parse_urdf_content(urdf_str, strlen(urdf_str), props, error_msg);
 }
 
-void urdf_apply_to_drone_config(const URDFProperties* urdf, struct DroneConfig* config) {
+void urdf_apply_to_platform_config(const URDFProperties* urdf, struct PlatformConfig* config) {
     if (!urdf || !config) return;
 
     /* Copy robot name */
@@ -417,13 +407,14 @@ void urdf_apply_to_drone_config(const URDFProperties* urdf, struct DroneConfig* 
         config->collision_radius = urdf->collision_radius;
     }
 
-    /* Apply custom drone properties if found */
-    if (urdf->has_properties) {
-        if (urdf->arm_length > 0.0f) config->arm_length = urdf->arm_length;
-        if (urdf->k_thrust > 0.0f) config->k_thrust = urdf->k_thrust;
-        if (urdf->k_torque > 0.0f) config->k_torque = urdf->k_torque;
-        if (urdf->motor_tau > 0.0f) config->motor_tau = urdf->motor_tau;
-        if (urdf->max_rpm > 0.0f) config->max_rpm = urdf->max_rpm;
+    /* Apply custom drone properties if found (quadcopter-specific via platform_specific) */
+    if (urdf->has_properties && config->platform_specific) {
+        QuadcopterConfig* quad = (QuadcopterConfig*)config->platform_specific;
+        if (urdf->arm_length > 0.0f) quad->arm_length = urdf->arm_length;
+        if (urdf->k_thrust > 0.0f) quad->k_thrust = urdf->k_thrust;
+        if (urdf->k_torque > 0.0f) quad->k_torque = urdf->k_torque;
+        if (urdf->motor_tau > 0.0f) quad->motor_tau = urdf->motor_tau;
+        if (urdf->max_rpm > 0.0f) quad->max_rpm = urdf->max_rpm;
     }
 }
 
@@ -446,8 +437,8 @@ int config_load_urdf_with_overlay(const char* urdf_path,
         return urdf_result;
     }
 
-    /* Apply URDF properties to drone config */
-    urdf_apply_to_drone_config(&urdf, &config->drone);
+    /* Apply URDF properties to platform config */
+    urdf_apply_to_platform_config(&urdf, &config->platform);
 
     /* Load TOML overlay if provided */
     if (toml_path) {

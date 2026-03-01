@@ -29,8 +29,8 @@ static void teardown(void) {
 }
 
 /** Fill data buffer with a known pattern */
-static void fill_data(float* data, uint32_t drone_count, uint32_t output_size) {
-    for (uint32_t d = 0; d < drone_count; d++) {
+static void fill_data(float* data, uint32_t agent_count, uint32_t output_size) {
+    for (uint32_t d = 0; d < agent_count; d++) {
         for (uint32_t c = 0; c < output_size; c++) {
             data[d * output_size + c] = 1.0f + (float)c * 0.1f;
         }

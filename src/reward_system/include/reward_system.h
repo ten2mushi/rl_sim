@@ -25,7 +25,7 @@
  *
  * Dependencies:
  * - foundation: Vec3, Arena, SIMD macros, PCG32, math utilities
- * - drone_state: DroneStateSOA, DroneParamsSOA
+ * - drone_state: PlatformStateSOA, PlatformParamsSOA
  * - collision_system: CollisionResults
  */
 
@@ -33,7 +33,7 @@
 #define REWARD_SYSTEM_H
 
 #include "foundation.h"
-#include "drone_state.h"
+#include "rigid_body_state.h"
 #include "collision_system.h"
 
 #ifdef __cplusplus
@@ -105,7 +105,7 @@ typedef struct RaceGate {
  * Formation target (for FORMATION task).
  */
 typedef struct FormationTarget {
-    Vec3* relative_positions;  /**< [num_drones] relative to leader */
+    Vec3* relative_positions;  /**< [num_agents] relative to leader */
     uint32_t leader_idx;       /**< Index of leader drone */
     float separation_dist;     /**< Minimum separation distance */
 } FormationTarget;
@@ -234,12 +234,12 @@ typedef struct GateSOA {
     float* radius;        /**< [num_gates] Gate opening radius */
 
     /* Per-drone progress tracking */
-    uint8_t* passed;      /**< [max_drones * num_gates] Passed flags bitmap */
-    uint32_t* current_gate; /**< [max_drones] Current gate index per drone */
+    uint8_t* passed;      /**< [max_agents * num_gates] Passed flags bitmap */
+    uint32_t* current_gate; /**< [max_agents] Current gate index per drone */
 
     /* Metadata */
     uint32_t num_gates;   /**< Number of gates in course */
-    uint32_t max_drones;  /**< Maximum drones tracked */
+    uint32_t max_agents;  /**< Maximum drones tracked */
 } GateSOA;
 
 /* ============================================================================
@@ -284,21 +284,21 @@ typedef struct RewardSystem {
     GateSOA* gates;                /**< Racing gates (NULL if not racing) */
 
     /* Previous state tracking (for delta rewards) */
-    float* prev_distance;          /**< [max_drones] Previous distance to target */
-    float* prev_actions;           /**< [max_drones * 4] Previous actions (for jerk) */
+    float* prev_distance;          /**< [max_agents] Previous distance to target */
+    float* prev_actions;           /**< [max_agents * 4] Previous actions (for jerk) */
 
     /* Episode tracking */
-    float* episode_return;         /**< [max_drones] Cumulative reward */
-    uint32_t* episode_length;      /**< [max_drones] Steps in episode */
-    uint32_t* gates_passed;        /**< [max_drones] Gates passed count */
-    float* best_distance;          /**< [max_drones] Best distance achieved */
+    float* episode_return;         /**< [max_agents] Cumulative reward */
+    uint32_t* episode_length;      /**< [max_agents] Steps in episode */
+    uint32_t* gates_passed;        /**< [max_agents] Gates passed count */
+    float* best_distance;          /**< [max_agents] Best distance achieved */
 
     /* Termination conditions */
     TerminationFlags* termination; /**< Termination flags */
 
     /* Memory management */
     Arena* arena;                  /**< Arena allocator (reference) */
-    uint32_t max_drones;           /**< Maximum drone capacity */
+    uint32_t max_agents;           /**< Maximum drone capacity */
     uint32_t max_gates;            /**< Maximum gates (0 if not racing) */
 } RewardSystem;
 
@@ -313,12 +313,12 @@ typedef struct RewardSystem {
  *
  * @param arena Arena allocator to use
  * @param config Reward configuration (NULL for default based on task)
- * @param max_drones Maximum number of drones
+ * @param max_agents Maximum number of drones
  * @param max_gates Maximum number of gates (0 for non-racing tasks)
  * @return Pointer to RewardSystem, or NULL on failure
  */
 RewardSystem* reward_create(Arena* arena, const RewardConfig* config,
-                            uint32_t max_drones, uint32_t max_gates);
+                            uint32_t max_agents, uint32_t max_gates);
 
 /**
  * Destroy a reward system.
@@ -335,9 +335,9 @@ void reward_destroy(RewardSystem* sys);
  * Clears episode tracking, resets termination flags, clears gate progress.
  *
  * @param sys Reward system
- * @param drone_idx Drone index to reset
+ * @param agent_idx Drone index to reset
  */
-void reward_reset(RewardSystem* sys, uint32_t drone_idx);
+void reward_reset(RewardSystem* sys, uint32_t agent_idx);
 
 /**
  * Reset multiple drones' reward states.
@@ -358,12 +358,12 @@ void reward_reset_batch(RewardSystem* sys, const uint32_t* indices, uint32_t cou
  * Set target for a single drone.
  *
  * @param sys Reward system
- * @param drone_idx Drone index
+ * @param agent_idx Drone index
  * @param position Target position
  * @param velocity Target velocity (usually zero)
  * @param radius Success radius
  */
-void reward_set_target(RewardSystem* sys, uint32_t drone_idx,
+void reward_set_target(RewardSystem* sys, uint32_t agent_idx,
                        Vec3 position, Vec3 velocity, float radius);
 
 /**
@@ -387,8 +387,9 @@ void reward_set_targets_random(RewardSystem* sys, uint32_t count,
  *
  * @param sys Reward system
  * @param dt Time step (seconds)
+ * @param count Number of drones to update
  */
-void reward_update_targets(RewardSystem* sys, float dt);
+void reward_update_targets(RewardSystem* sys, float dt, uint32_t count);
 
 /**
  * Set racing gates.
@@ -406,9 +407,9 @@ void reward_set_gates(RewardSystem* sys, const Vec3* centers,
  * Reset gate progress for a drone.
  *
  * @param sys Reward system
- * @param drone_idx Drone index
+ * @param agent_idx Drone index
  */
-void reward_reset_gates(RewardSystem* sys, uint32_t drone_idx);
+void reward_reset_gates(RewardSystem* sys, uint32_t agent_idx);
 
 /* ============================================================================
  * Section 10: Reward Computation Functions
@@ -428,8 +429,8 @@ void reward_reset_gates(RewardSystem* sys, uint32_t drone_idx);
  * @param rewards Output: computed rewards [count]
  * @param count Number of drones
  */
-void reward_compute(RewardSystem* sys, const DroneStateSOA* states,
-                    const DroneParamsSOA* params, const float* actions,
+void reward_compute(RewardSystem* sys, const RigidBodyStateSOA* states,
+                    const RigidBodyParamsSOA* params, const float* actions,
                     const CollisionResults* collisions,
                     float* rewards, uint32_t count);
 
@@ -446,8 +447,8 @@ void reward_compute(RewardSystem* sys, const DroneStateSOA* states,
  * @param rewards Output rewards
  * @param count Number of drones
  */
-void reward_compute_hover(RewardSystem* sys, const DroneStateSOA* states,
-                          const DroneParamsSOA* params, const float* actions,
+void reward_compute_hover(RewardSystem* sys, const RigidBodyStateSOA* states,
+                          const RigidBodyParamsSOA* params, const float* actions,
                           const CollisionResults* collisions,
                           float* rewards, uint32_t count);
 
@@ -464,8 +465,8 @@ void reward_compute_hover(RewardSystem* sys, const DroneStateSOA* states,
  * @param rewards Output rewards
  * @param count Number of drones
  */
-void reward_compute_race(RewardSystem* sys, const DroneStateSOA* states,
-                         const DroneParamsSOA* params, const float* actions,
+void reward_compute_race(RewardSystem* sys, const RigidBodyStateSOA* states,
+                         const RigidBodyParamsSOA* params, const float* actions,
                          const CollisionResults* collisions,
                          float* rewards, uint32_t count);
 
@@ -482,8 +483,8 @@ void reward_compute_race(RewardSystem* sys, const DroneStateSOA* states,
  * @param rewards Output rewards
  * @param count Number of drones
  */
-void reward_compute_track(RewardSystem* sys, const DroneStateSOA* states,
-                          const DroneParamsSOA* params, const float* actions,
+void reward_compute_track(RewardSystem* sys, const RigidBodyStateSOA* states,
+                          const RigidBodyParamsSOA* params, const float* actions,
                           const CollisionResults* collisions,
                           float* rewards, uint32_t count);
 
@@ -500,8 +501,8 @@ void reward_compute_track(RewardSystem* sys, const DroneStateSOA* states,
  * @param rewards Output rewards
  * @param count Number of drones
  */
-void reward_compute_land(RewardSystem* sys, const DroneStateSOA* states,
-                         const DroneParamsSOA* params, const float* actions,
+void reward_compute_land(RewardSystem* sys, const RigidBodyStateSOA* states,
+                         const RigidBodyParamsSOA* params, const float* actions,
                          const CollisionResults* collisions,
                          float* rewards, uint32_t count);
 
@@ -518,8 +519,8 @@ void reward_compute_land(RewardSystem* sys, const DroneStateSOA* states,
  * @param rewards Output rewards
  * @param count Number of drones
  */
-void reward_compute_formation(RewardSystem* sys, const DroneStateSOA* states,
-                              const DroneParamsSOA* params, const float* actions,
+void reward_compute_formation(RewardSystem* sys, const RigidBodyStateSOA* states,
+                              const RigidBodyParamsSOA* params, const float* actions,
                               const CollisionResults* collisions,
                               float* rewards, uint32_t count);
 
@@ -541,7 +542,7 @@ void reward_compute_formation(RewardSystem* sys, const DroneStateSOA* states,
  * @param flags Output: termination flags
  * @param count Number of drones
  */
-void reward_compute_terminations(RewardSystem* sys, const DroneStateSOA* states,
+void reward_compute_terminations(RewardSystem* sys, const RigidBodyStateSOA* states,
                                  const CollisionResults* collisions,
                                  Vec3 bounds_min, Vec3 bounds_max,
                                  uint32_t max_steps, TerminationFlags* flags,
@@ -551,19 +552,19 @@ void reward_compute_terminations(RewardSystem* sys, const DroneStateSOA* states,
  * Check if a drone's episode is done.
  *
  * @param sys Reward system
- * @param drone_idx Drone index
+ * @param agent_idx Drone index
  * @return true if episode is terminated
  */
-bool reward_is_done(const RewardSystem* sys, uint32_t drone_idx);
+bool reward_is_done(const RewardSystem* sys, uint32_t agent_idx);
 
 /**
  * Check if a drone achieved success.
  *
  * @param sys Reward system
- * @param drone_idx Drone index
+ * @param agent_idx Drone index
  * @return true if episode ended in success
  */
-bool reward_is_success(const RewardSystem* sys, uint32_t drone_idx);
+bool reward_is_success(const RewardSystem* sys, uint32_t agent_idx);
 
 /* ============================================================================
  * Section 12: Utility Functions
@@ -574,24 +575,24 @@ bool reward_is_success(const RewardSystem* sys, uint32_t drone_idx);
  *
  * @param sys Reward system
  * @param states Drone state arrays
- * @param drone_idx Drone index
+ * @param agent_idx Drone index
  * @return Distance to target (meters)
  */
 float reward_distance_to_target(const RewardSystem* sys,
-                                const DroneStateSOA* states,
-                                uint32_t drone_idx);
+                                const RigidBodyStateSOA* states,
+                                uint32_t agent_idx);
 
 /**
  * Check if drone has reached its target.
  *
  * @param sys Reward system
  * @param states Drone state arrays
- * @param drone_idx Drone index
+ * @param agent_idx Drone index
  * @return true if within target radius
  */
 bool reward_reached_target(const RewardSystem* sys,
-                           const DroneStateSOA* states,
-                           uint32_t drone_idx);
+                           const RigidBodyStateSOA* states,
+                           uint32_t agent_idx);
 
 /**
  * Check if drone crossed a gate.
@@ -600,24 +601,24 @@ bool reward_reached_target(const RewardSystem* sys,
  *
  * @param sys Reward system
  * @param states Drone state arrays
- * @param drone_idx Drone index
+ * @param agent_idx Drone index
  * @param gate_idx Gate index
  * @param prev_pos Previous position
  * @return true if gate was crossed in correct direction
  */
 bool reward_check_gate_crossing(const RewardSystem* sys,
-                                const DroneStateSOA* states,
-                                uint32_t drone_idx, uint32_t gate_idx,
+                                const RigidBodyStateSOA* states,
+                                uint32_t agent_idx, uint32_t gate_idx,
                                 Vec3 prev_pos);
 
 /**
  * Get episode statistics for a drone.
  *
  * @param sys Reward system
- * @param drone_idx Drone index
+ * @param agent_idx Drone index
  * @return Episode statistics
  */
-EpisodeStats reward_get_episode_stats(const RewardSystem* sys, uint32_t drone_idx);
+EpisodeStats reward_get_episode_stats(const RewardSystem* sys, uint32_t agent_idx);
 
 /**
  * Get default reward configuration for a task type.
@@ -630,11 +631,11 @@ RewardConfig reward_config_default(TaskType task);
 /**
  * Calculate memory required for reward system.
  *
- * @param max_drones Maximum drone count
+ * @param max_agents Maximum drone count
  * @param max_gates Maximum gate count
  * @return Total bytes required
  */
-size_t reward_memory_size(uint32_t max_drones, uint32_t max_gates);
+size_t reward_memory_size(uint32_t max_agents, uint32_t max_gates);
 
 /* ============================================================================
  * Section 13: Type Size Verification

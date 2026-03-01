@@ -48,10 +48,10 @@ static int benches_passed = 0;
 } while(0)
 
 /* Helper: Create benchmark engine */
-static BatchDroneEngine* create_bench_engine(void) {
+static BatchEngine* create_bench_engine(void) {
     EngineConfig cfg = engine_config_default();
     cfg.num_envs = BENCH_NUM_ENVS;
-    cfg.drones_per_env = BENCH_DRONES_PER_ENV;
+    cfg.agents_per_env = BENCH_DRONES_PER_ENV;
     cfg.persistent_arena_size = 256 * 1024 * 1024;
     cfg.frame_arena_size = 64 * 1024 * 1024;
     cfg.seed = 42;
@@ -66,7 +66,7 @@ static BatchDroneEngine* create_bench_engine(void) {
 
 /* Benchmark: Full step time */
 BENCHMARK(step_1024_drones) {
-    BatchDroneEngine* engine = create_bench_engine();
+    BatchEngine* engine = create_bench_engine();
     if (!engine) {
         printf("    Failed to create engine\n");
         return -1;
@@ -104,7 +104,7 @@ BENCHMARK(step_1024_drones) {
 
 /* Benchmark: Physics phase */
 BENCHMARK(physics_time) {
-    BatchDroneEngine* engine = create_bench_engine();
+    BatchEngine* engine = create_bench_engine();
     if (!engine) return -1;
 
     engine_reset(engine);
@@ -135,7 +135,7 @@ BENCHMARK(physics_time) {
 
 /* Benchmark: Collision phase */
 BENCHMARK(collision_time) {
-    BatchDroneEngine* engine = create_bench_engine();
+    BatchEngine* engine = create_bench_engine();
     if (!engine) return -1;
 
     engine_reset(engine);
@@ -164,7 +164,7 @@ BENCHMARK(collision_time) {
 
 /* Benchmark: Sensor phase */
 BENCHMARK(sensor_time) {
-    BatchDroneEngine* engine = create_bench_engine();
+    BatchEngine* engine = create_bench_engine();
     if (!engine) return -1;
 
     engine_reset(engine);
@@ -193,7 +193,7 @@ BENCHMARK(sensor_time) {
 
 /* Benchmark: Reward phase */
 BENCHMARK(reward_time) {
-    BatchDroneEngine* engine = create_bench_engine();
+    BatchEngine* engine = create_bench_engine();
     if (!engine) return -1;
 
     engine_reset(engine);
@@ -222,7 +222,7 @@ BENCHMARK(reward_time) {
 
 /* Benchmark: Reset time */
 BENCHMARK(reset_time) {
-    BatchDroneEngine* engine = create_bench_engine();
+    BatchEngine* engine = create_bench_engine();
     if (!engine) return -1;
 
     double total_reset = 0.0;
@@ -250,7 +250,7 @@ BENCHMARK(reset_time) {
 
 /* Benchmark: Memory usage */
 BENCHMARK(memory_usage) {
-    BatchDroneEngine* engine = create_bench_engine();
+    BatchEngine* engine = create_bench_engine();
     if (!engine) return -1;
 
     engine_reset(engine);
@@ -273,7 +273,7 @@ BENCHMARK(memory_usage) {
 
 /* Benchmark: Sustained performance */
 BENCHMARK(sustained_performance) {
-    BatchDroneEngine* engine = create_bench_engine();
+    BatchEngine* engine = create_bench_engine();
     if (!engine) return -1;
 
     engine_reset(engine);

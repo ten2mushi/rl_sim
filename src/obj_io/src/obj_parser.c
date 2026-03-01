@@ -10,6 +10,7 @@
  */
 
 #include "../include/obj_io.h"
+#include "parse_utils.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -25,88 +26,6 @@
 #define INITIAL_VERTEX_CAPACITY 65536
 #define INITIAL_FACE_CAPACITY 131072
 #define MAX_MATERIALS 256
-
-/* ============================================================================
- * Fast Float Parsing
- * ============================================================================ */
-
-/**
- * Parse float without locale overhead
- * Returns pointer to character after parsed number
- */
-static const char* parse_float_fast(const char* str, float* out) {
-    const char* p = str;
-    float sign = 1.0f;
-    float value = 0.0f;
-    float fraction = 0.0f;
-    float divisor = 10.0f;
-    bool has_decimal = false;
-    bool has_digits = false;
-
-    /* Skip whitespace */
-    while (*p == ' ' || *p == '\t') p++;
-
-    /* Sign */
-    if (*p == '-') {
-        sign = -1.0f;
-        p++;
-    } else if (*p == '+') {
-        p++;
-    }
-
-    /* Integer part */
-    while (*p >= '0' && *p <= '9') {
-        value = value * 10.0f + (float)(*p - '0');
-        has_digits = true;
-        p++;
-    }
-
-    /* Decimal part */
-    if (*p == '.') {
-        has_decimal = true;
-        p++;
-        while (*p >= '0' && *p <= '9') {
-            fraction += (float)(*p - '0') / divisor;
-            divisor *= 10.0f;
-            has_digits = true;
-            p++;
-        }
-    }
-
-    /* Exponent part (scientific notation) */
-    if ((*p == 'e' || *p == 'E') && has_digits) {
-        p++;
-        int exp_sign = 1;
-        int exp_value = 0;
-
-        if (*p == '-') {
-            exp_sign = -1;
-            p++;
-        } else if (*p == '+') {
-            p++;
-        }
-
-        while (*p >= '0' && *p <= '9') {
-            exp_value = exp_value * 10 + (*p - '0');
-            p++;
-        }
-
-        float multiplier = 1.0f;
-        for (int i = 0; i < exp_value; i++) {
-            if (exp_sign > 0) {
-                multiplier *= 10.0f;
-            } else {
-                multiplier *= 0.1f;
-            }
-        }
-        value = (value + fraction) * multiplier;
-    } else {
-        value = value + fraction;
-    }
-
-    *out = sign * value;
-    return has_digits ? p : str;
-}
 
 /**
  * Parse integer (vertex index)
@@ -170,8 +89,7 @@ static uint8_t material_tracker_get_or_add(MaterialTracker* tracker, const char*
     /* Add new */
     if (tracker->count < MAX_MATERIALS) {
         uint8_t id = (uint8_t)tracker->count;
-        strncpy(tracker->entries[tracker->count].name, name, 63);
-        tracker->entries[tracker->count].name[63] = '\0';
+        snprintf(tracker->entries[tracker->count].name, 64, "%s", name);
         tracker->entries[tracker->count].id = id;
         tracker->count++;
         return id;
@@ -192,21 +110,6 @@ static bool parse_vertex_line(const char* line, float* x, float* y, float* z) {
 
     p = parse_float_fast(p, x);
     if (p == line + 1) return false;
-
-    p = parse_float_fast(p, y);
-    p = parse_float_fast(p, z);
-
-    return true;
-}
-
-/**
- * Parse vertex normal line: vn x y z
- */
-static bool parse_normal_line(const char* line, float* x, float* y, float* z) {
-    const char* p = line + 2; /* Skip 'vn' */
-
-    p = parse_float_fast(p, x);
-    if (p == line + 2) return false;
 
     p = parse_float_fast(p, y);
     p = parse_float_fast(p, z);
@@ -308,6 +211,50 @@ ObjIOResult obj_parse_file(Arena* arena, const char* path,
     *out_mesh = NULL;
     if (out_mtl) *out_mtl = NULL;
 
+    /* ---- Pass 1: Pre-scan to count vertices and faces ----
+     * Avoids arena fragmentation from repeated array doubling.
+     * Uses stack-allocated line buffer so no arena memory is consumed. */
+    uint32_t prescan_verts = 0;
+    uint32_t prescan_faces = 0;  /* triangles after fan triangulation */
+    {
+        FILE* scan_file = fopen(path, "r");
+        if (!scan_file) {
+            if (error) snprintf(error, 256, "Cannot open file: %s", path);
+            return OBJ_IO_ERROR_FILE_NOT_FOUND;
+        }
+        char scan_buf[512];
+        while (fgets(scan_buf, sizeof(scan_buf), scan_file)) {
+            const char* p = scan_buf;
+            while (*p == ' ' || *p == '\t') p++;
+            if (p[0] == 'v' && p[1] == ' ') {
+                prescan_verts++;
+            } else if (p[0] == 'f' && p[1] == ' ') {
+                /* Count vertex indices in face line to estimate triangles */
+                int n = 0;
+                const char* q = p + 2;
+                while (*q && *q != '\n' && *q != '\r') {
+                    while (*q == ' ' || *q == '\t') q++;
+                    if (*q && *q != '\n' && *q != '\r') {
+                        n++;
+                        while (*q && *q != ' ' && *q != '\t' && *q != '\n' && *q != '\r') q++;
+                    }
+                }
+                if (n >= 3) prescan_faces += (uint32_t)(n - 2);
+            }
+        }
+        fclose(scan_file);
+    }
+
+    /* Use pre-scanned counts with 10% headroom, or fallback to defaults */
+    uint32_t vertex_capacity = prescan_verts > 0
+        ? prescan_verts + prescan_verts / 10 + 64
+        : INITIAL_VERTEX_CAPACITY;
+    uint32_t face_capacity = prescan_faces > 0
+        ? prescan_faces + prescan_faces / 10 + 64
+        : INITIAL_FACE_CAPACITY;
+
+    /* ---- Pass 2: Actual parse ---- */
+
     /* Open file */
     FILE* file = fopen(path, "r");
     if (!file) {
@@ -323,8 +270,8 @@ ObjIOResult obj_parse_file(Arena* arena, const char* path,
         return OBJ_IO_ERROR_OUT_OF_MEMORY;
     }
 
-    /* Create mesh */
-    TriangleMesh* mesh = mesh_create(arena, INITIAL_VERTEX_CAPACITY, INITIAL_FACE_CAPACITY);
+    /* Create mesh with pre-scanned capacity */
+    TriangleMesh* mesh = mesh_create(arena, vertex_capacity, face_capacity);
     if (!mesh) {
         fclose(file);
         if (error) snprintf(error, 256, "Out of memory for mesh");
@@ -374,13 +321,9 @@ ObjIOResult obj_parse_file(Arena* arena, const char* path,
                 if (z > mesh->bbox_max.z) mesh->bbox_max.z = z;
             }
         }
-        /* Vertex normal: vn x y z */
+        /* Vertex normal: vn x y z -- parsed normals are discarded (recomputed if requested) */
         else if (line[0] == 'v' && line[1] == 'n' && line[2] == ' ') {
-            /* Normals stored but we'll recompute if requested */
-            float nx, ny, nz;
-            if (parse_normal_line(line, &nx, &ny, &nz)) {
-                /* Could store file normals here if needed */
-            }
+            continue;
         }
         /* Face: f v1 v2 v3 ... */
         else if (line[0] == 'f' && line[1] == ' ') {
@@ -413,8 +356,7 @@ ObjIOResult obj_parse_file(Arena* arena, const char* path,
             while (*name_start == ' ') name_start++;
 
             /* Copy filename, strip newline */
-            strncpy(mtl_filename, name_start, 255);
-            mtl_filename[255] = '\0';
+            snprintf(mtl_filename, sizeof(mtl_filename), "%s", name_start);
             char* newline = strchr(mtl_filename, '\n');
             if (newline) *newline = '\0';
             char* cr = strchr(mtl_filename, '\r');
@@ -472,12 +414,11 @@ ObjIOResult obj_parse_file(Arena* arena, const char* path,
                     mtl_path[dir_len] = '\0';
                     strncat(mtl_path, mtl_filename, sizeof(mtl_path) - dir_len - 1);
                 } else {
-                    strncpy(mtl_path, mtl_filename, sizeof(mtl_path) - 1);
+                    snprintf(mtl_path, sizeof(mtl_path), "%s", mtl_filename);
                 }
             } else {
-                strncpy(mtl_path, mtl_filename, sizeof(mtl_path) - 1);
+                snprintf(mtl_path, sizeof(mtl_path), "%s", mtl_filename);
             }
-            mtl_path[sizeof(mtl_path) - 1] = '\0';
         }
 
         *out_mtl = mtl_parse_file(arena, mtl_path);
@@ -491,8 +432,7 @@ ObjIOResult obj_parse_file(Arena* arena, const char* path,
             for (uint32_t i = 0; i < mat_tracker.count; i++) {
                 mesh->material_names[i] = arena_alloc_array(arena, char, 64);
                 if (mesh->material_names[i]) {
-                    strncpy(mesh->material_names[i], mat_tracker.entries[i].name, 63);
-                    mesh->material_names[i][63] = '\0';
+                    snprintf(mesh->material_names[i], 64, "%s", mat_tracker.entries[i].name);
                 }
             }
             mesh->material_name_count = mat_tracker.count;

@@ -48,11 +48,13 @@ class MeshData(NamedTuple):
 def compute_omega(channel_diameter: float) -> float:
     """Derive angular frequency from desired channel diameter.
 
-    The gyroid channel diameter is approximately 0.35 * period, where
-    period = 2*pi / omega.  Inverting: omega = 2*pi * 0.35 / d.
+    The gyroid inscribed sphere diameter (minimum navigable clearance) is
+    0.433 * period, where period = 2*pi / omega.  Numerically verified by
+    ray-casting from the channel center at (pi/4, pi/4, pi/4) where G=1.5
+    (the global maximum).  Inverting: omega = 2*pi * 0.433 / d.
 
     Args:
-        channel_diameter: Target inner channel diameter in meters.
+        channel_diameter: Target minimum navigable clearance in meters.
 
     Returns:
         Angular frequency omega (rad/m).
@@ -64,7 +66,7 @@ def compute_omega(channel_diameter: float) -> float:
         raise ValueError(
             f"channel_diameter must be positive, got {channel_diameter}"
         )
-    return 2.0 * math.pi * 0.35 / channel_diameter
+    return 2.0 * math.pi * 0.433 / channel_diameter
 
 
 def auto_resolution(size: float, channel_diameter: float) -> int:
@@ -112,7 +114,7 @@ def generate_gyroid(
     """
     omega = compute_omega(channel_diameter)
     period = 2.0 * math.pi / omega
-    approx_diameter = 0.35 * period
+    approx_diameter = 0.433 * period
     print(f"  omega          = {omega:.4f} rad/m")
     print(f"  period         = {period:.4f} m")
     print(f"  approx channel = {approx_diameter:.4f} m")

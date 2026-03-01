@@ -203,16 +203,16 @@ extern GpuResult gpu_dispatch_raymarch(struct GpuSensorContext* ctx,
                                        GpuKernel* kernel,
                                        GpuBuffer* ray_table_buf,
                                        GpuBuffer* output_buf,
-                                       GpuBuffer* drone_idx_buf,
+                                       GpuBuffer* agent_idx_buf,
                                        const WorldBrickMap* world,
                                        RaymarchParams rp);
 
-extern struct GpuSensorContext* gpu_sensor_context_create(uint32_t max_drones);
+extern struct GpuSensorContext* gpu_sensor_context_create(uint32_t max_agents);
 extern void gpu_sensor_context_destroy(struct GpuSensorContext* ctx);
 extern GpuResult gpu_sensor_context_sync_frame(struct GpuSensorContext* ctx,
                                                 const WorldBrickMap* world,
-                                                const DroneStateSOA* drones,
-                                                uint32_t drone_count);
+                                                const RigidBodyStateSOA* drones,
+                                                uint32_t agent_count);
 extern GpuDevice* gpu_sensor_context_device(struct GpuSensorContext* ctx);
 extern GpuCommandQueue* gpu_sensor_context_queue(struct GpuSensorContext* ctx);
 
@@ -264,13 +264,13 @@ static void destroy_scene(TestScene* scene) {
 }
 
 /* ============================================================================
- * DroneStateSOA Helper
+ * PlatformStateSOA Helper
  * ============================================================================ */
 
 #define MAX_TEST_DRONES 1024
 
 typedef struct TestDrones {
-    DroneStateSOA soa;
+    PlatformStateSOA soa;
     float px[MAX_TEST_DRONES], py[MAX_TEST_DRONES], pz[MAX_TEST_DRONES];
     float qw[MAX_TEST_DRONES], qx[MAX_TEST_DRONES];
     float qy[MAX_TEST_DRONES], qz[MAX_TEST_DRONES];
@@ -278,13 +278,13 @@ typedef struct TestDrones {
 
 static void init_test_drones(TestDrones* td, uint32_t count) {
     memset(td, 0, sizeof(TestDrones));
-    td->soa.pos_x = td->px;
-    td->soa.pos_y = td->py;
-    td->soa.pos_z = td->pz;
-    td->soa.quat_w = td->qw;
-    td->soa.quat_x = td->qx;
-    td->soa.quat_y = td->qy;
-    td->soa.quat_z = td->qz;
+    td->soa.rigid_body.pos_x = td->px;
+    td->soa.rigid_body.pos_y = td->py;
+    td->soa.rigid_body.pos_z = td->pz;
+    td->soa.rigid_body.quat_w = td->qw;
+    td->soa.rigid_body.quat_x = td->qx;
+    td->soa.rigid_body.quat_y = td->qy;
+    td->soa.rigid_body.quat_z = td->qz;
 
     for (uint32_t i = 0; i < count; i++) {
         td->qw[i] = 1.0f;
@@ -363,9 +363,9 @@ typedef struct GpuTestCtx {
     GpuKernel* kernel;
 } GpuTestCtx;
 
-static GpuTestCtx gpu_test_setup(uint32_t max_drones) {
+static GpuTestCtx gpu_test_setup(uint32_t max_agents) {
     GpuTestCtx g = {0};
-    g.ctx = gpu_sensor_context_create(max_drones);
+    g.ctx = gpu_sensor_context_create(max_agents);
     if (g.ctx == NULL) return g;
     g.device = gpu_sensor_context_device(g.ctx);
     g.kernel = gpu_kernel_create(g.device, "raymarch_unified");
@@ -381,12 +381,12 @@ static void gpu_test_teardown(GpuTestCtx* g) {
 /* Run GPU dispatch and readback */
 static float* gpu_dispatch_and_readback(GpuTestCtx* g,
                                          const WorldBrickMap* world,
-                                         const DroneStateSOA* drones,
-                                         uint32_t drone_count,
+                                         const RigidBodyStateSOA* drones,
+                                         uint32_t agent_count,
                                          const Vec3* rays, uint32_t ray_count,
                                          RaymarchParams rp,
                                          uint32_t total_output_floats) {
-    GpuResult r = gpu_sensor_context_sync_frame(g->ctx, world, drones, drone_count);
+    GpuResult r = gpu_sensor_context_sync_frame(g->ctx, world, drones, agent_count);
     if (r != GPU_SUCCESS) return NULL;
 
     GpuRayTable ray_table = gpu_ray_table_create(g->device, rays, ray_count);
@@ -398,24 +398,24 @@ static float* gpu_dispatch_and_readback(GpuTestCtx* g,
         return NULL;
     }
 
-    GpuBuffer* drone_idx = gpu_buffer_create(g->device,
-        drone_count * sizeof(uint32_t), GPU_MEMORY_SHARED);
-    if (drone_idx == NULL) {
+    GpuBuffer* agent_idx = gpu_buffer_create(g->device,
+        agent_count * sizeof(uint32_t), GPU_MEMORY_SHARED);
+    if (agent_idx == NULL) {
         gpu_ray_table_destroy(&ray_table);
         gpu_sensor_output_destroy(&output);
         return NULL;
     }
-    uint32_t* idx_ptr = (uint32_t*)gpu_buffer_map(drone_idx);
-    for (uint32_t i = 0; i < drone_count; i++) idx_ptr[i] = i;
+    uint32_t* idx_ptr = (uint32_t*)gpu_buffer_map(agent_idx);
+    for (uint32_t i = 0; i < agent_count; i++) idx_ptr[i] = i;
 
-    rp.drone_count = drone_count;
+    rp.agent_count = agent_count;
 
     r = gpu_dispatch_raymarch(g->ctx, g->kernel, ray_table.rays, output.buffer,
-                              drone_idx, world, rp);
+                              agent_idx, world, rp);
     if (r != GPU_SUCCESS) {
         gpu_ray_table_destroy(&ray_table);
         gpu_sensor_output_destroy(&output);
-        gpu_buffer_destroy(drone_idx);
+        gpu_buffer_destroy(agent_idx);
         return NULL;
     }
 
@@ -435,7 +435,7 @@ static float* gpu_dispatch_and_readback(GpuTestCtx* g,
 
     gpu_ray_table_destroy(&ray_table);
     gpu_sensor_output_destroy(&output);
-    gpu_buffer_destroy(drone_idx);
+    gpu_buffer_destroy(agent_idx);
 
     return result;
 }
@@ -446,23 +446,23 @@ static float* gpu_dispatch_and_readback(GpuTestCtx* g,
  * ============================================================================ */
 
 static void test_camera_depth(GpuTestCtx* g, TestScene* scene,
-                               uint32_t drone_count) {
+                               uint32_t agent_count) {
     const uint32_t W = 32, H = 32;
     const float FOV = (float)(M_PI / 2.0);
     const float NEAR = 0.1f, FAR = 50.0f;
     char name[128];
-    snprintf(name, sizeof(name), "camera_depth_%ux%u_%ud", W, H, drone_count);
+    snprintf(name, sizeof(name), "camera_depth_%ux%u_%ud", W, H, agent_count);
     _th_run++;
 
     Vec3* rays = create_camera_rays(W, H, FOV, FOV);
     if (rays == NULL) { printf("  Running %s... FAILED (line %d)\n", name, __LINE__); return; }
 
     uint32_t total = W * H;
-    uint32_t out_total = drone_count * total;
+    uint32_t out_total = agent_count * total;
 
     TestDrones td;
-    init_test_drones(&td, drone_count);
-    for (uint32_t i = 0; i < drone_count; i++) {
+    init_test_drones(&td, agent_count);
+    for (uint32_t i = 0; i < agent_count; i++) {
         td.px[i] = -2.0f + (float)(i % 8) * 0.5f;
         td.py[i] = -2.0f + (float)((i / 8) % 8) * 0.5f;
         td.pz[i] = (float)(i % 3) * 0.3f;
@@ -470,7 +470,7 @@ static void test_camera_depth(GpuTestCtx* g, TestScene* scene,
 
     float* cpu_out = malloc(out_total * sizeof(float));
     if (cpu_out == NULL) { printf("  Running %s... FAILED (line %d)\n", name, __LINE__); free(rays); return; }
-    for (uint32_t d = 0; d < drone_count; d++) {
+    for (uint32_t d = 0; d < agent_count; d++) {
         Vec3 pos = VEC3(td.px[d], td.py[d], td.pz[d]);
         Quat q = QUAT(td.qw[d], td.qx[d], td.qy[d], td.qz[d]);
         cpu_render_depth(scene->world, pos, q, rays, total, NEAR, FAR,
@@ -480,8 +480,8 @@ static void test_camera_depth(GpuTestCtx* g, TestScene* scene,
     RaymarchParams rp = gpu_raymarch_params_for_depth(NEAR, FAR);
     rp.image_width = W;
     rp.image_height = H;
-    float* gpu_out = gpu_dispatch_and_readback(g, scene->world, &td.soa,
-                                                drone_count, rays, total, rp, out_total);
+    float* gpu_out = gpu_dispatch_and_readback(g, scene->world, &td.soa.rigid_body,
+                                                agent_count, rays, total, rp, out_total);
     if (gpu_out == NULL) { printf("  Running %s... FAILED (line %d)\n", name, __LINE__); free(cpu_out); free(rays); return; }
 
     CompareResult cr = compare_1fpp(cpu_out, gpu_out, out_total, 1e-3f, false);
@@ -496,23 +496,23 @@ static void test_camera_depth(GpuTestCtx* g, TestScene* scene,
 }
 
 static void test_camera_rgb(GpuTestCtx* g, TestScene* scene,
-                             uint32_t drone_count) {
+                             uint32_t agent_count) {
     const uint32_t W = 32, H = 32;
     const float FOV = (float)(M_PI / 2.0);
     const float NEAR = 0.1f, FAR = 50.0f;
     char name[128];
-    snprintf(name, sizeof(name), "camera_rgb_%ux%u_%ud", W, H, drone_count);
+    snprintf(name, sizeof(name), "camera_rgb_%ux%u_%ud", W, H, agent_count);
     _th_run++;
 
     Vec3* rays = create_camera_rays(W, H, FOV, FOV);
     if (rays == NULL) { printf("  Running %s... FAILED (line %d)\n", name, __LINE__); return; }
 
     uint32_t total = W * H;
-    uint32_t out_total = drone_count * total * 3;
+    uint32_t out_total = agent_count * total * 3;
 
     TestDrones td;
-    init_test_drones(&td, drone_count);
-    for (uint32_t i = 0; i < drone_count; i++) {
+    init_test_drones(&td, agent_count);
+    for (uint32_t i = 0; i < agent_count; i++) {
         td.px[i] = -2.0f + (float)(i % 8) * 0.5f;
         td.py[i] = -2.0f + (float)((i / 8) % 8) * 0.5f;
         td.pz[i] = (float)(i % 3) * 0.3f;
@@ -520,7 +520,7 @@ static void test_camera_rgb(GpuTestCtx* g, TestScene* scene,
 
     float* cpu_out = malloc(out_total * sizeof(float));
     if (cpu_out == NULL) { printf("  Running %s... FAILED (line %d)\n", name, __LINE__); free(rays); return; }
-    for (uint32_t d = 0; d < drone_count; d++) {
+    for (uint32_t d = 0; d < agent_count; d++) {
         Vec3 pos = VEC3(td.px[d], td.py[d], td.pz[d]);
         Quat q = QUAT(td.qw[d], td.qx[d], td.qy[d], td.qz[d]);
         cpu_render_rgb(scene->world, pos, q, rays, total, NEAR, FAR,
@@ -530,11 +530,11 @@ static void test_camera_rgb(GpuTestCtx* g, TestScene* scene,
     RaymarchParams rp = gpu_raymarch_params_for_rgb(NEAR, FAR);
     rp.image_width = W;
     rp.image_height = H;
-    float* gpu_out = gpu_dispatch_and_readback(g, scene->world, &td.soa,
-                                                drone_count, rays, total, rp, out_total);
+    float* gpu_out = gpu_dispatch_and_readback(g, scene->world, &td.soa.rigid_body,
+                                                agent_count, rays, total, rp, out_total);
     if (gpu_out == NULL) { printf("  Running %s... FAILED (line %d)\n", name, __LINE__); free(cpu_out); free(rays); return; }
 
-    CompareResult cr = compare_rgb(cpu_out, gpu_out, drone_count * total, 1e-2f);
+    CompareResult cr = compare_rgb(cpu_out, gpu_out, agent_count * total, 1e-2f);
     printf("  Running %s...(max_err=%f, nans=%u, boundary=%u) %s\n",
            name, cr.max_err, cr.nan_count, cr.boundary_count,
            cr.pass ? "PASSED" : "FAILED");
@@ -546,23 +546,23 @@ static void test_camera_rgb(GpuTestCtx* g, TestScene* scene,
 }
 
 static void test_camera_segmentation(GpuTestCtx* g, TestScene* scene,
-                                      uint32_t drone_count) {
+                                      uint32_t agent_count) {
     const uint32_t W = 32, H = 32;
     const float FOV = (float)(M_PI / 2.0);
     const float NEAR = 0.1f, FAR = 50.0f;
     char name[128];
-    snprintf(name, sizeof(name), "camera_seg_%ux%u_%ud", W, H, drone_count);
+    snprintf(name, sizeof(name), "camera_seg_%ux%u_%ud", W, H, agent_count);
     _th_run++;
 
     Vec3* rays = create_camera_rays(W, H, FOV, FOV);
     if (rays == NULL) { printf("  Running %s... FAILED (line %d)\n", name, __LINE__); return; }
 
     uint32_t total = W * H;
-    uint32_t out_total = drone_count * total;
+    uint32_t out_total = agent_count * total;
 
     TestDrones td;
-    init_test_drones(&td, drone_count);
-    for (uint32_t i = 0; i < drone_count; i++) {
+    init_test_drones(&td, agent_count);
+    for (uint32_t i = 0; i < agent_count; i++) {
         td.px[i] = -2.0f + (float)(i % 8) * 0.5f;
         td.py[i] = -2.0f + (float)((i / 8) % 8) * 0.5f;
         td.pz[i] = (float)(i % 3) * 0.3f;
@@ -570,7 +570,7 @@ static void test_camera_segmentation(GpuTestCtx* g, TestScene* scene,
 
     float* cpu_out = malloc(out_total * sizeof(float));
     if (cpu_out == NULL) { printf("  Running %s... FAILED (line %d)\n", name, __LINE__); free(rays); return; }
-    for (uint32_t d = 0; d < drone_count; d++) {
+    for (uint32_t d = 0; d < agent_count; d++) {
         Vec3 pos = VEC3(td.px[d], td.py[d], td.pz[d]);
         Quat q = QUAT(td.qw[d], td.qx[d], td.qy[d], td.qz[d]);
         cpu_render_material(scene->world, pos, q, rays, total, NEAR, FAR,
@@ -580,8 +580,8 @@ static void test_camera_segmentation(GpuTestCtx* g, TestScene* scene,
     RaymarchParams rp = gpu_raymarch_params_for_material(NEAR, FAR);
     rp.image_width = W;
     rp.image_height = H;
-    float* gpu_out = gpu_dispatch_and_readback(g, scene->world, &td.soa,
-                                                drone_count, rays, total, rp, out_total);
+    float* gpu_out = gpu_dispatch_and_readback(g, scene->world, &td.soa.rigid_body,
+                                                agent_count, rays, total, rp, out_total);
     if (gpu_out == NULL) { printf("  Running %s... FAILED (line %d)\n", name, __LINE__); free(cpu_out); free(rays); return; }
 
     CompareResult cr = compare_1fpp(cpu_out, gpu_out, out_total, 0.0f, true);
@@ -596,31 +596,31 @@ static void test_camera_segmentation(GpuTestCtx* g, TestScene* scene,
 }
 
 static void test_lidar_3d(GpuTestCtx* g, TestScene* scene,
-                           uint32_t drone_count) {
+                           uint32_t agent_count) {
     const uint32_t H_RAYS = 16, V_LAYERS = 8;
     const float H_FOV = (float)(M_PI * 2.0 / 3.0);
     const float V_FOV = (float)(M_PI / 6.0);
     const float MAX_RANGE = 30.0f;
     char name[128];
-    snprintf(name, sizeof(name), "lidar_3d_%ux%u_%ud", H_RAYS, V_LAYERS, drone_count);
+    snprintf(name, sizeof(name), "lidar_3d_%ux%u_%ud", H_RAYS, V_LAYERS, agent_count);
     _th_run++;
 
     uint32_t total_rays = H_RAYS * V_LAYERS;
     Vec3* rays = create_lidar_3d_rays(H_RAYS, V_LAYERS, H_FOV, V_FOV);
     if (rays == NULL) { printf("  Running %s... FAILED (line %d)\n", name, __LINE__); return; }
 
-    uint32_t out_total = drone_count * total_rays;
+    uint32_t out_total = agent_count * total_rays;
 
     TestDrones td;
-    init_test_drones(&td, drone_count);
-    for (uint32_t i = 0; i < drone_count; i++) {
+    init_test_drones(&td, agent_count);
+    for (uint32_t i = 0; i < agent_count; i++) {
         td.px[i] = -1.0f + (float)(i % 4) * 0.5f;
         td.py[i] = -1.0f + (float)((i / 4) % 4) * 0.5f;
     }
 
     float* cpu_out = malloc(out_total * sizeof(float));
     if (cpu_out == NULL) { printf("  Running %s... FAILED (line %d)\n", name, __LINE__); free(rays); return; }
-    for (uint32_t d = 0; d < drone_count; d++) {
+    for (uint32_t d = 0; d < agent_count; d++) {
         Vec3 pos = VEC3(td.px[d], td.py[d], td.pz[d]);
         Quat q = QUAT(td.qw[d], td.qx[d], td.qy[d], td.qz[d]);
         cpu_render_distance(scene->world, pos, q, rays, total_rays, MAX_RANGE,
@@ -630,8 +630,8 @@ static void test_lidar_3d(GpuTestCtx* g, TestScene* scene,
     RaymarchParams rp = gpu_raymarch_params_for_distance(MAX_RANGE);
     rp.image_width = H_RAYS;
     rp.image_height = V_LAYERS;
-    float* gpu_out = gpu_dispatch_and_readback(g, scene->world, &td.soa,
-                                                drone_count, rays, total_rays,
+    float* gpu_out = gpu_dispatch_and_readback(g, scene->world, &td.soa.rigid_body,
+                                                agent_count, rays, total_rays,
                                                 rp, out_total);
     if (gpu_out == NULL) { printf("  Running %s... FAILED (line %d)\n", name, __LINE__); free(cpu_out); free(rays); return; }
 
@@ -647,29 +647,29 @@ static void test_lidar_3d(GpuTestCtx* g, TestScene* scene,
 }
 
 static void test_lidar_2d(GpuTestCtx* g, TestScene* scene,
-                           uint32_t drone_count) {
+                           uint32_t agent_count) {
     const uint32_t NUM_RAYS = 64;
     const float FOV = (float)M_PI;
     const float MAX_RANGE = 30.0f;
     char name[128];
-    snprintf(name, sizeof(name), "lidar_2d_%u_%ud", NUM_RAYS, drone_count);
+    snprintf(name, sizeof(name), "lidar_2d_%u_%ud", NUM_RAYS, agent_count);
     _th_run++;
 
     Vec3* rays = create_lidar_2d_rays(NUM_RAYS, FOV);
     if (rays == NULL) { printf("  Running %s... FAILED (line %d)\n", name, __LINE__); return; }
 
-    uint32_t out_total = drone_count * NUM_RAYS;
+    uint32_t out_total = agent_count * NUM_RAYS;
 
     TestDrones td;
-    init_test_drones(&td, drone_count);
-    for (uint32_t i = 0; i < drone_count; i++) {
+    init_test_drones(&td, agent_count);
+    for (uint32_t i = 0; i < agent_count; i++) {
         td.px[i] = -1.0f + (float)(i % 4) * 0.5f;
         td.py[i] = -1.0f + (float)((i / 4) % 4) * 0.5f;
     }
 
     float* cpu_out = malloc(out_total * sizeof(float));
     if (cpu_out == NULL) { printf("  Running %s... FAILED (line %d)\n", name, __LINE__); free(rays); return; }
-    for (uint32_t d = 0; d < drone_count; d++) {
+    for (uint32_t d = 0; d < agent_count; d++) {
         Vec3 pos = VEC3(td.px[d], td.py[d], td.pz[d]);
         Quat q = QUAT(td.qw[d], td.qx[d], td.qy[d], td.qz[d]);
         cpu_render_distance(scene->world, pos, q, rays, NUM_RAYS, MAX_RANGE,
@@ -679,8 +679,8 @@ static void test_lidar_2d(GpuTestCtx* g, TestScene* scene,
     RaymarchParams rp = gpu_raymarch_params_for_distance(MAX_RANGE);
     rp.image_width = NUM_RAYS;
     rp.image_height = 1;
-    float* gpu_out = gpu_dispatch_and_readback(g, scene->world, &td.soa,
-                                                drone_count, rays, NUM_RAYS,
+    float* gpu_out = gpu_dispatch_and_readback(g, scene->world, &td.soa.rigid_body,
+                                                agent_count, rays, NUM_RAYS,
                                                 rp, out_total);
     if (gpu_out == NULL) { printf("  Running %s... FAILED (line %d)\n", name, __LINE__); free(cpu_out); free(rays); return; }
 
@@ -695,10 +695,10 @@ static void test_lidar_2d(GpuTestCtx* g, TestScene* scene,
     free(rays);
 }
 
-static void test_tof(GpuTestCtx* g, TestScene* scene, uint32_t drone_count) {
+static void test_tof(GpuTestCtx* g, TestScene* scene, uint32_t agent_count) {
     const float MAX_RANGE = 30.0f;
     char name[128];
-    snprintf(name, sizeof(name), "tof_%ud", drone_count);
+    snprintf(name, sizeof(name), "tof_%ud", agent_count);
     _th_run++;
 
     Vec3 forward_dir = VEC3(1.0f, 0.0f, 0.0f);
@@ -706,18 +706,18 @@ static void test_tof(GpuTestCtx* g, TestScene* scene, uint32_t drone_count) {
     if (rays == NULL) { printf("  Running %s... FAILED (line %d)\n", name, __LINE__); return; }
     rays[0] = forward_dir;
 
-    uint32_t out_total = drone_count;
+    uint32_t out_total = agent_count;
 
     TestDrones td;
-    init_test_drones(&td, drone_count);
-    for (uint32_t i = 0; i < drone_count; i++) {
+    init_test_drones(&td, agent_count);
+    for (uint32_t i = 0; i < agent_count; i++) {
         td.px[i] = -1.0f + (float)(i % 8) * 0.3f;
         td.py[i] = -1.0f + (float)((i / 8) % 8) * 0.3f;
     }
 
     float* cpu_out = malloc(out_total * sizeof(float));
     if (cpu_out == NULL) { printf("  Running %s... FAILED (line %d)\n", name, __LINE__); free(rays); return; }
-    for (uint32_t d = 0; d < drone_count; d++) {
+    for (uint32_t d = 0; d < agent_count; d++) {
         Vec3 pos = VEC3(td.px[d], td.py[d], td.pz[d]);
         Quat q = QUAT(td.qw[d], td.qx[d], td.qy[d], td.qz[d]);
         cpu_render_distance(scene->world, pos, q, &forward_dir, 1, MAX_RANGE,
@@ -727,8 +727,8 @@ static void test_tof(GpuTestCtx* g, TestScene* scene, uint32_t drone_count) {
     RaymarchParams rp = gpu_raymarch_params_for_distance(MAX_RANGE);
     rp.image_width = 1;
     rp.image_height = 1;
-    float* gpu_out = gpu_dispatch_and_readback(g, scene->world, &td.soa,
-                                                drone_count, rays, 1,
+    float* gpu_out = gpu_dispatch_and_readback(g, scene->world, &td.soa.rigid_body,
+                                                agent_count, rays, 1,
                                                 rp, out_total);
     if (gpu_out == NULL) { printf("  Running %s... FAILED (line %d)\n", name, __LINE__); free(cpu_out); free(rays); return; }
 
@@ -764,7 +764,7 @@ static void test_ground_truth_depth(GpuTestCtx* g, TestScene* scene) {
     RaymarchParams rp = gpu_raymarch_params_for_depth(NEAR, FAR);
     rp.image_width = 1;
     rp.image_height = 1;
-    float* gpu_out = gpu_dispatch_and_readback(g, scene->world, &td.soa,
+    float* gpu_out = gpu_dispatch_and_readback(g, scene->world, &td.soa.rigid_body,
                                                 1, &forward, 1, rp, 1);
     if (gpu_out == NULL) { printf("  Running gt_depth... FAILED (line %d)\n", __LINE__); return; }
 
@@ -799,7 +799,7 @@ static void test_ground_truth_distance(GpuTestCtx* g, TestScene* scene) {
     RaymarchParams rp = gpu_raymarch_params_for_distance(MAX_RANGE);
     rp.image_width = 1;
     rp.image_height = 1;
-    float* gpu_out = gpu_dispatch_and_readback(g, scene->world, &td.soa,
+    float* gpu_out = gpu_dispatch_and_readback(g, scene->world, &td.soa.rigid_body,
                                                 1, &forward, 1, rp, 1);
     if (gpu_out == NULL) { printf("  Running gt_distance... FAILED (line %d)\n", __LINE__); return; }
 
@@ -830,7 +830,7 @@ static void test_ground_truth_segmentation(GpuTestCtx* g, TestScene* scene) {
     RaymarchParams rp = gpu_raymarch_params_for_material(NEAR, FAR);
     rp.image_width = 1;
     rp.image_height = 1;
-    float* gpu_out = gpu_dispatch_and_readback(g, scene->world, &td.soa,
+    float* gpu_out = gpu_dispatch_and_readback(g, scene->world, &td.soa.rigid_body,
                                                 1, &forward, 1, rp, 1);
     if (gpu_out == NULL) { printf("  Running gt_seg... FAILED (line %d)\n", __LINE__); return; }
 
@@ -859,7 +859,7 @@ static void test_ground_truth_rgb(GpuTestCtx* g, TestScene* scene) {
     RaymarchParams rp = gpu_raymarch_params_for_rgb(NEAR, FAR);
     rp.image_width = 1;
     rp.image_height = 1;
-    float* gpu_out = gpu_dispatch_and_readback(g, scene->world, &td.soa,
+    float* gpu_out = gpu_dispatch_and_readback(g, scene->world, &td.soa.rigid_body,
                                                 1, &forward, 1, rp, 3);
     if (gpu_out == NULL) { printf("  Running gt_rgb... FAILED (line %d)\n", __LINE__); return; }
 
@@ -899,7 +899,7 @@ static void test_ground_truth_lidar_forward(GpuTestCtx* g, TestScene* scene) {
     RaymarchParams rp = gpu_raymarch_params_for_distance(MAX_RANGE);
     rp.image_width = num_rays;
     rp.image_height = 1;
-    float* gpu_out = gpu_dispatch_and_readback(g, scene->world, &td.soa,
+    float* gpu_out = gpu_dispatch_and_readback(g, scene->world, &td.soa.rigid_body,
                                                 1, rays, num_rays, rp, num_rays);
     if (gpu_out == NULL) { printf("  Running gt_lidar... FAILED (line %d)\n", __LINE__); free(rays); return; }
 
@@ -968,7 +968,7 @@ static void test_nonsquare_fov(GpuTestCtx* g, TestScene* scene) {
     RaymarchParams rp = gpu_raymarch_params_for_depth(NEAR, FAR);
     rp.image_width = W;
     rp.image_height = H;
-    float* gpu_out = gpu_dispatch_and_readback(g, scene->world, &td.soa,
+    float* gpu_out = gpu_dispatch_and_readback(g, scene->world, &td.soa.rigid_body,
                                                 4, rays, total, rp, out_total);
     if (gpu_out == NULL) { printf("  Running nonsquare_%ux%u... FAILED (line %d)\n", W, H, __LINE__); free(cpu_out); free(rays); return; }
 

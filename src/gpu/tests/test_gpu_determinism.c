@@ -40,12 +40,12 @@
  * Helper: Create a deterministic GPU test engine
  * ============================================================================ */
 
-static BatchDroneEngine* create_deterministic_engine(uint64_t seed,
+static BatchEngine* create_deterministic_engine(uint64_t seed,
                                                       SensorConfig* sensors,
                                                       uint32_t num_sensors) {
     EngineConfig cfg = engine_config_default();
     cfg.num_envs = TEST_NUM_ENVS;
-    cfg.drones_per_env = TEST_DRONES_PER_ENV;
+    cfg.agents_per_env = TEST_DRONES_PER_ENV;
     cfg.seed = seed;
     cfg.persistent_arena_size = 256 * 1024 * 1024;
     cfg.frame_arena_size = 64 * 1024 * 1024;
@@ -58,7 +58,7 @@ static BatchDroneEngine* create_deterministic_engine(uint64_t seed,
     cfg.gravity = 9.81f;
 
     char error[ENGINE_ERROR_MSG_SIZE];
-    BatchDroneEngine* engine = engine_create(&cfg, error);
+    BatchEngine* engine = engine_create(&cfg, error);
     if (engine == NULL) {
         printf("\n    engine_create failed: %s", error);
     }
@@ -94,9 +94,9 @@ static void add_test_geometry(WorldBrickMap* world) {
 }
 
 /* Helper: Capture full observation buffer into a newly allocated snapshot */
-static float* capture_observations(BatchDroneEngine* engine, size_t* out_size) {
+static float* capture_observations(BatchEngine* engine, size_t* out_size) {
     uint32_t obs_dim = engine_get_obs_dim(engine);
-    uint32_t total = engine->config.total_drones;
+    uint32_t total = engine->config.total_agents;
     size_t buf_size = (size_t)total * obs_dim * sizeof(float);
 
     float* snapshot = (float*)malloc(buf_size);
@@ -110,12 +110,12 @@ static float* capture_observations(BatchDroneEngine* engine, size_t* out_size) {
 }
 
 /* Helper: Run N steps with zero actions, return observation snapshot after last step */
-static float* run_steps_and_capture(BatchDroneEngine* engine, int num_steps, size_t* out_size) {
+static float* run_steps_and_capture(BatchEngine* engine, int num_steps, size_t* out_size) {
     float* actions = engine_get_actions(engine);
-    uint32_t total = engine->config.total_drones;
+    uint32_t total = engine->config.total_agents;
 
     /* Zero actions (hover) for deterministic behavior */
-    memset(actions, 0, (size_t)total * ENGINE_ACTION_DIM * sizeof(float));
+    memset(actions, 0, (size_t)total * 4 * sizeof(float));
 
     for (int i = 0; i < num_steps; i++) {
         engine_step(engine);
@@ -159,7 +159,7 @@ TEST(reset_determinism_basic) {
     SensorConfig sensors[2];
     uint32_t ns = build_test_sensors(sensors);
 
-    BatchDroneEngine* engine = create_deterministic_engine(TEST_SEED, sensors, ns);
+    BatchEngine* engine = create_deterministic_engine(TEST_SEED, sensors, ns);
     ASSERT_MSG(engine != NULL, "engine creation");
 
     add_test_geometry(engine->world);
@@ -218,7 +218,7 @@ TEST(per_step_determinism) {
     SensorConfig sensors[2];
     uint32_t ns = build_test_sensors(sensors);
 
-    BatchDroneEngine* engine = create_deterministic_engine(TEST_SEED, sensors, ns);
+    BatchEngine* engine = create_deterministic_engine(TEST_SEED, sensors, ns);
     ASSERT_MSG(engine != NULL, "engine creation");
 
     add_test_geometry(engine->world);
@@ -231,14 +231,14 @@ TEST(per_step_determinism) {
     engine_reset(engine);
 
     obs_dim = engine_get_obs_dim(engine);
-    total = engine->config.total_drones;
+    total = engine->config.total_agents;
     step_obs_size = (size_t)total * obs_dim * sizeof(float);
 
     float* snapshots1 = (float*)malloc(step_obs_size * TEST_NUM_STEPS);
     ASSERT_MSG(snapshots1 != NULL, "snapshots1 allocation");
 
     float* actions = engine_get_actions(engine);
-    memset(actions, 0, (size_t)total * ENGINE_ACTION_DIM * sizeof(float));
+    memset(actions, 0, (size_t)total * 4 * sizeof(float));
 
     for (int step = 0; step < TEST_NUM_STEPS; step++) {
         engine_step(engine);
@@ -253,7 +253,7 @@ TEST(per_step_determinism) {
     ASSERT_MSG(snapshots2 != NULL, "snapshots2 allocation");
 
     actions = engine_get_actions(engine);
-    memset(actions, 0, (size_t)total * ENGINE_ACTION_DIM * sizeof(float));
+    memset(actions, 0, (size_t)total * 4 * sizeof(float));
 
     for (int step = 0; step < TEST_NUM_STEPS; step++) {
         engine_step(engine);
@@ -297,7 +297,7 @@ TEST(multi_reset_determinism) {
     SensorConfig sensors[2];
     uint32_t ns = build_test_sensors(sensors);
 
-    BatchDroneEngine* engine = create_deterministic_engine(TEST_SEED, sensors, ns);
+    BatchEngine* engine = create_deterministic_engine(TEST_SEED, sensors, ns);
     ASSERT_MSG(engine != NULL, "engine creation");
 
     add_test_geometry(engine->world);
@@ -351,12 +351,12 @@ TEST(separate_engines_same_seed) {
     uint32_t ns = build_test_sensors(sensors);
 
     /* Engine A */
-    BatchDroneEngine* engine_a = create_deterministic_engine(TEST_SEED, sensors, ns);
+    BatchEngine* engine_a = create_deterministic_engine(TEST_SEED, sensors, ns);
     ASSERT_MSG(engine_a != NULL, "engine_a creation");
     add_test_geometry(engine_a->world);
 
     /* Engine B */
-    BatchDroneEngine* engine_b = create_deterministic_engine(TEST_SEED, sensors, ns);
+    BatchEngine* engine_b = create_deterministic_engine(TEST_SEED, sensors, ns);
     ASSERT_MSG(engine_b != NULL, "engine_b creation");
     add_test_geometry(engine_b->world);
 
@@ -405,12 +405,12 @@ TEST(different_seeds_differ) {
     uint32_t ns = build_test_sensors(sensors);
 
     /* Engine with seed 42 */
-    BatchDroneEngine* engine_a = create_deterministic_engine(42, sensors, ns);
+    BatchEngine* engine_a = create_deterministic_engine(42, sensors, ns);
     ASSERT_MSG(engine_a != NULL, "engine_a creation");
     add_test_geometry(engine_a->world);
 
     /* Engine with seed 99 */
-    BatchDroneEngine* engine_b = create_deterministic_engine(99, sensors, ns);
+    BatchEngine* engine_b = create_deterministic_engine(99, sensors, ns);
     ASSERT_MSG(engine_b != NULL, "engine_b creation");
     add_test_geometry(engine_b->world);
 
@@ -456,7 +456,7 @@ TEST(gpu_depth_sensor_consistency) {
     sensors[0].camera.fov_vertical = (float)(M_PI / 2.0);
     sensors[0].camera.far_clip = 50.0f;
 
-    BatchDroneEngine* engine = create_deterministic_engine(TEST_SEED, sensors, 1);
+    BatchEngine* engine = create_deterministic_engine(TEST_SEED, sensors, 1);
     ASSERT_MSG(engine != NULL, "engine creation");
 
     add_test_geometry(engine->world);
@@ -521,7 +521,7 @@ TEST(extended_run_determinism) {
     SensorConfig sensors[2];
     uint32_t ns = build_test_sensors(sensors);
 
-    BatchDroneEngine* engine = create_deterministic_engine(TEST_SEED, sensors, ns);
+    BatchEngine* engine = create_deterministic_engine(TEST_SEED, sensors, ns);
     ASSERT_MSG(engine != NULL, "engine creation");
 
     add_test_geometry(engine->world);
@@ -585,7 +585,7 @@ TEST(mixed_sensor_determinism) {
     sensors[3].camera.fov_vertical = (float)(M_PI / 2.0);
     sensors[3].camera.far_clip = 50.0f;
 
-    BatchDroneEngine* engine = create_deterministic_engine(TEST_SEED, sensors, 4);
+    BatchEngine* engine = create_deterministic_engine(TEST_SEED, sensors, 4);
     ASSERT_MSG(engine != NULL, "engine creation");
 
     add_test_geometry(engine->world);
@@ -611,10 +611,10 @@ TEST(mixed_sensor_determinism) {
     if (cmp != 0) {
         long diff_offset = find_first_diff(snapshot1, snapshot2, obs_size);
         long float_idx = diff_offset / (long)sizeof(float);
-        uint32_t drone_idx = (uint32_t)(float_idx / obs_dim);
+        uint32_t agent_idx = (uint32_t)(float_idx / obs_dim);
         uint32_t obs_offset = (uint32_t)(float_idx % obs_dim);
         printf("\n    MISMATCH at drone %u, obs offset %u: %.8e vs %.8e",
-               drone_idx, obs_offset, snapshot1[float_idx], snapshot2[float_idx]);
+               agent_idx, obs_offset, snapshot1[float_idx], snapshot2[float_idx]);
     }
     ASSERT_MSG(cmp == 0, "mixed sensor observations must be deterministic");
 

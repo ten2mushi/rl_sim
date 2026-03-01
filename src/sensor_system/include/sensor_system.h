@@ -22,14 +22,14 @@
  *
  * Dependencies:
  * - foundation: Vec3, Quat, Arena, PCG32, SIMD utilities
- * - drone_state: DroneStateSOA
+ * - drone_state: PlatformStateSOA
  */
 
 #ifndef SENSOR_SYSTEM_H
 #define SENSOR_SYSTEM_H
 
 #include "foundation.h"
-#include "drone_state.h"
+#include "rigid_body_state.h"
 #include "noise.h"
 
 #ifdef __cplusplus
@@ -106,9 +106,9 @@ typedef enum SensorType {
  * World and collision pointers may be NULL if not needed by the sensor type.
  */
 struct SensorContext {
-    const DroneStateSOA* drones;        /* Drone state arrays */
-    const uint32_t* drone_indices;      /* Which drones to sample */
-    uint32_t drone_count;               /* Number of drones in this batch */
+    const RigidBodyStateSOA* agents;    /* Agent rigid body state arrays */
+    const uint32_t* agent_indices;      /* Which agents to sample */
+    uint32_t agent_count;               /* Number of agents in this batch */
     const struct WorldBrickMap* world;  /* World for raymarching (nullable) */
     const struct CollisionSystem* collision; /* For neighbor queries (nullable) */
     Arena* scratch;                     /* Per-frame scratch memory */
@@ -178,7 +178,7 @@ struct SensorVTable {
      *
      * @param sensor        The sensor to sample
      * @param ctx           Context with drone state, indices, world, etc.
-     * @param output_buffer Output buffer sized [ctx->drone_count * output_size]
+     * @param output_buffer Output buffer sized [ctx->agent_count * output_size]
      */
     void (*batch_sample)(Sensor* sensor, const SensorContext* ctx, float* output_buffer);
 
@@ -194,9 +194,9 @@ struct SensorVTable {
      * Called when a drone is reset (e.g., episode end).
      *
      * @param sensor     The sensor to reset
-     * @param drone_index Index of drone being reset
+     * @param agent_index Index of drone being reset
      */
-    void (*reset)(Sensor* sensor, uint32_t drone_index);
+    void (*reset)(Sensor* sensor, uint32_t agent_index);
 
     /**
      * Clean up sensor resources (optional).
@@ -356,18 +356,18 @@ struct SensorSystem {
     uint32_t sensor_count;              /* Current number of sensors */
     uint32_t max_sensors;               /* Maximum sensor capacity */
 
-    /** Per-drone sensor attachments: [max_drones * MAX_SENSORS_PER_DRONE] */
+    /** Per-drone sensor attachments: [max_agents * MAX_SENSORS_PER_DRONE] */
     SensorAttachment* attachments;
 
-    /** Number of sensors attached per drone: [max_drones] */
+    /** Number of sensors attached per drone: [max_agents] */
     uint32_t* attachment_counts;
 
-    /** Shared observation buffer: [max_drones * obs_dim], 32-byte aligned */
+    /** Shared observation buffer: [max_agents * obs_dim], 32-byte aligned */
     float* observation_buffer;
     size_t obs_dim;                     /* Total observation dimensions */
 
     /** Batch processing data: drones grouped by sensor */
-    uint32_t** drones_by_sensor;        /* [max_sensors][max_drones] */
+    uint32_t** drones_by_sensor;        /* [max_sensors][max_agents] */
     uint32_t* drones_per_sensor;        /* [max_sensors] count per sensor */
 
     /** Memory arenas */
@@ -378,7 +378,7 @@ struct SensorSystem {
     float dt;
 
     /** Capacity limits */
-    uint32_t max_drones;
+    uint32_t max_agents;
 };
 
 /* ============================================================================
@@ -392,12 +392,12 @@ struct SensorSystem {
  * is 32-byte aligned for SIMD operations.
  *
  * @param arena       Memory arena for allocation
- * @param max_drones  Maximum number of drones to support
+ * @param max_agents  Maximum number of drones to support
  * @param max_sensors Maximum number of unique sensors
  * @param max_obs_dim Maximum observation dimensions per drone
  * @return New sensor system, or NULL on failure
  */
-SensorSystem* sensor_system_create(Arena* arena, uint32_t max_drones,
+SensorSystem* sensor_system_create(Arena* arena, uint32_t max_agents,
                                    uint32_t max_sensors, size_t max_obs_dim);
 
 /**
@@ -475,20 +475,20 @@ uint32_t sensor_system_create_sensor(SensorSystem* sys, const SensorConfig* conf
  * at the returned offset.
  *
  * @param sys        Sensor system
- * @param drone_idx  Drone index to attach to
+ * @param agent_idx  Drone index to attach to
  * @param sensor_idx Sensor index to attach
  * @return Output offset in observation buffer, or UINT32_MAX on failure
  */
-uint32_t sensor_system_attach(SensorSystem* sys, uint32_t drone_idx, uint32_t sensor_idx);
+uint32_t sensor_system_attach(SensorSystem* sys, uint32_t agent_idx, uint32_t sensor_idx);
 
 /**
  * Detach a sensor from a drone.
  *
  * @param sys            Sensor system
- * @param drone_idx      Drone index
+ * @param agent_idx      Drone index
  * @param attachment_idx Attachment index (0 to attachment_count-1)
  */
-void sensor_system_detach(SensorSystem* sys, uint32_t drone_idx, uint32_t attachment_idx);
+void sensor_system_detach(SensorSystem* sys, uint32_t agent_idx, uint32_t attachment_idx);
 
 /**
  * Get a sensor by index.
@@ -503,10 +503,10 @@ Sensor* sensor_system_get_sensor(SensorSystem* sys, uint32_t sensor_idx);
  * Get the number of sensors attached to a drone.
  *
  * @param sys       Sensor system
- * @param drone_idx Drone index
+ * @param agent_idx Drone index
  * @return Number of attached sensors
  */
-uint32_t sensor_system_get_attachment_count(const SensorSystem* sys, uint32_t drone_idx);
+uint32_t sensor_system_get_attachment_count(const SensorSystem* sys, uint32_t agent_idx);
 
 /* ============================================================================
  * Section 14: Batch Processing Functions (Critical Path)
@@ -526,12 +526,12 @@ uint32_t sensor_system_get_attachment_count(const SensorSystem* sys, uint32_t dr
  * @param drones      Drone state arrays
  * @param world       World for raymarching sensors (can be NULL)
  * @param collision   Collision system for neighbor queries (can be NULL)
- * @param drone_count Number of drones to process
+ * @param agent_count Number of drones to process
  */
-void sensor_system_sample_all(SensorSystem* sys, const DroneStateSOA* drones,
+void sensor_system_sample_all(SensorSystem* sys, const RigidBodyStateSOA* agents,
                               const struct WorldBrickMap* world,
                               const struct CollisionSystem* collision,
-                              uint32_t drone_count);
+                              uint32_t agent_count);
 
 /**
  * Sample only CPU sensors (those with batch_sample_gpu == NULL).
@@ -545,12 +545,12 @@ void sensor_system_sample_all(SensorSystem* sys, const DroneStateSOA* drones,
  * @param drones      Drone state arrays
  * @param world       World for raymarching sensors (can be NULL)
  * @param collision   Collision system for neighbor queries (can be NULL)
- * @param drone_count Number of drones to process
+ * @param agent_count Number of drones to process
  */
-void sensor_system_sample_cpu_only(SensorSystem* sys, const DroneStateSOA* drones,
+void sensor_system_sample_cpu_only(SensorSystem* sys, const RigidBodyStateSOA* agents,
                                     const struct WorldBrickMap* world,
                                     const struct CollisionSystem* collision,
-                                    uint32_t drone_count);
+                                    uint32_t agent_count);
 
 /**
  * Sample a specific sensor for all drones that have it attached.
@@ -560,13 +560,13 @@ void sensor_system_sample_cpu_only(SensorSystem* sys, const DroneStateSOA* drone
  * @param drones     Drone state arrays
  * @param world      World for raymarching sensors (can be NULL)
  * @param collision  Collision system for neighbor queries (can be NULL)
- * @param drone_count Number of drones
+ * @param agent_count Number of drones
  */
 void sensor_system_sample_sensor(SensorSystem* sys, uint32_t sensor_idx,
-                                 const DroneStateSOA* drones,
+                                 const RigidBodyStateSOA* agents,
                                  const struct WorldBrickMap* world,
                                  const struct CollisionSystem* collision,
-                                 uint32_t drone_count);
+                                 uint32_t agent_count);
 
 /* ============================================================================
  * Section 15: Observation Access Functions
@@ -576,7 +576,7 @@ void sensor_system_sample_sensor(SensorSystem* sys, uint32_t sensor_idx,
  * Get the observation buffer pointer.
  *
  * Returns the contiguous observation buffer for all drones.
- * Buffer is sized [max_drones * obs_dim] and 32-byte aligned.
+ * Buffer is sized [max_agents * obs_dim] and 32-byte aligned.
  *
  * @param sys Sensor system
  * @return Pointer to observation buffer
@@ -596,7 +596,7 @@ const float* sensor_system_get_observations_const(const SensorSystem* sys);
  *
  * After calling this, sensor sampling writes directly into the provided buffer,
  * eliminating a memcpy from the internal buffer. The external buffer must be
- * at least max_drones * obs_dim * sizeof(float) bytes and 32-byte aligned.
+ * at least max_agents * obs_dim * sizeof(float) bytes and 32-byte aligned.
  *
  * @param sys    Sensor system
  * @param buffer External observation buffer (must outlive sensor system)
@@ -615,19 +615,19 @@ size_t sensor_system_get_obs_dim(const SensorSystem* sys);
  * Get a specific drone's observation.
  *
  * @param sys       Sensor system
- * @param drone_idx Drone index
+ * @param agent_idx Drone index
  * @return Pointer to drone's observation (obs_dim floats)
  */
-float* sensor_system_get_drone_obs(SensorSystem* sys, uint32_t drone_idx);
+float* sensor_system_get_drone_obs(SensorSystem* sys, uint32_t agent_idx);
 
 /**
  * Get a specific drone's observation (const version).
  *
  * @param sys       Sensor system
- * @param drone_idx Drone index
+ * @param agent_idx Drone index
  * @return Const pointer to drone's observation
  */
-const float* sensor_system_get_drone_obs_const(const SensorSystem* sys, uint32_t drone_idx);
+const float* sensor_system_get_drone_obs_const(const SensorSystem* sys, uint32_t agent_idx);
 
 /* ============================================================================
  * Section 16: Configuration Helper Functions
@@ -733,22 +733,22 @@ const char* sensor_type_name(SensorType type);
 /**
  * Calculate memory required for a sensor system.
  *
- * @param max_drones  Maximum drones
+ * @param max_agents  Maximum drones
  * @param max_sensors Maximum sensors
  * @param max_obs_dim Maximum observation dimensions
  * @return Required bytes
  */
-size_t sensor_system_memory_size(uint32_t max_drones, uint32_t max_sensors,
+size_t sensor_system_memory_size(uint32_t max_agents, uint32_t max_sensors,
                                  size_t max_obs_dim);
 
 /**
  * Compute total observation dimension from attachments.
  *
  * @param sys       Sensor system
- * @param drone_idx Drone index
+ * @param agent_idx Drone index
  * @return Total observation dimension for this drone
  */
-size_t sensor_system_compute_obs_dim(const SensorSystem* sys, uint32_t drone_idx);
+size_t sensor_system_compute_obs_dim(const SensorSystem* sys, uint32_t agent_idx);
 
 /* ============================================================================
  * Section 18: Type Size Verification

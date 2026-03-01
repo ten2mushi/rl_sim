@@ -31,8 +31,8 @@ typedef struct {
     uint32_t    thread_id;
 } WorkerContext;
 
-/* Static array of contexts - avoids allocation */
-static WorkerContext worker_contexts[THREADING_MAX_THREADS];
+/* Verify WorkerContext fits in the 16-byte slots allocated in ThreadPool._worker_ctx */
+FOUNDATION_STATIC_ASSERT(sizeof(WorkerContext) <= 16, "WorkerContext must fit in 16 bytes");
 
 /* ============================================================================
  * Forward Declarations
@@ -173,12 +173,13 @@ ThreadPool* threadpool_create(const ThreadPoolConfig* config) {
     pthread_key_create(&pool->thread_id_key, NULL);
 
     /* Start worker threads */
+    WorkerContext* contexts = (WorkerContext*)(void*)pool->_worker_ctx;
     for (uint32_t i = 0; i < num_threads; i++) {
         /* Set up context for this thread */
-        worker_contexts[i].pool = pool;
-        worker_contexts[i].thread_id = i;
+        contexts[i].pool = pool;
+        contexts[i].thread_id = i;
 
-        if (pthread_create(&pool->threads[i], NULL, worker_thread, &worker_contexts[i]) != 0) {
+        if (pthread_create(&pool->threads[i], NULL, worker_thread, &contexts[i]) != 0) {
             /* Failed to create thread - cleanup and fail */
             atomic_store_relaxed(&pool->shutdown, 1);
             pthread_cond_broadcast(&pool->work_available);
@@ -328,11 +329,6 @@ void threadpool_wait(ThreadPool* pool) {
         }
         pthread_mutex_unlock(&pool->mutex);
     }
-}
-
-void threadpool_barrier(ThreadPool* pool) {
-    /* Wait for all work to complete */
-    threadpool_wait(pool);
 }
 
 /* ============================================================================

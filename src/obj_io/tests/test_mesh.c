@@ -297,18 +297,21 @@ TEST(bvh_inside_outside) {
     return 0;
 }
 
-TEST(mesh_growth) {
+TEST(mesh_capacity_enforcement) {
     Arena* arena = arena_create(10 * 1024 * 1024);
     TriangleMesh* mesh = mesh_create(arena, 4, 2);
 
-    /* Add more vertices than initial capacity */
-    for (int i = 0; i < 100; i++) {
+    /* Fill to capacity — should succeed */
+    for (int i = 0; i < 4; i++) {
         uint32_t v = mesh_add_vertex(mesh, (float)i, (float)i, (float)i);
         ASSERT_NE(v, UINT32_MAX);
     }
+    ASSERT_EQ(mesh->vertex_count, 4);
 
-    ASSERT_EQ(mesh->vertex_count, 100);
-    ASSERT_TRUE(mesh->vertex_capacity >= 100);
+    /* Exceeding capacity — should fail (no dynamic growth) */
+    uint32_t v = mesh_add_vertex(mesh, 99.0f, 99.0f, 99.0f);
+    ASSERT_EQ(v, UINT32_MAX);
+    ASSERT_EQ(mesh->vertex_count, 4);
 
     arena_destroy(arena);
     return 0;
@@ -333,7 +336,7 @@ int main(void) {
     RUN_TEST(bvh_closest_point);
     RUN_TEST(bvh_aabb_intersect);
     RUN_TEST(bvh_inside_outside);
-    RUN_TEST(mesh_growth);
+    RUN_TEST(mesh_capacity_enforcement);
 
     TEST_SUITE_END();
 }

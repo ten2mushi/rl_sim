@@ -52,8 +52,12 @@ target_include_directories(drone_state
         $<INSTALL_INTERFACE:include>
 )
 
-# Link to foundation
-target_link_libraries(drone_state PUBLIC foundation)
+# Link to foundation and rigid_body_state
+if(NOT TARGET rigid_body_state)
+    add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/../rigid_body_state
+                     ${CMAKE_CURRENT_BINARY_DIR}/rigid_body_state EXCLUDE_FROM_ALL)
+endif()
+target_link_libraries(drone_state PUBLIC foundation rigid_body_state)
 
 # Compiler flags
 if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang|AppleClang")
@@ -125,7 +129,7 @@ if(DRONE_STATE_BUILD_TESTS)
     enable_testing()
 
     add_executable(test_drone_state tests/test_drone_state.c)
-    target_link_libraries(test_drone_state PRIVATE drone_state)
+    target_link_libraries(test_drone_state PRIVATE drone_state platform)
 
     # Enable debug assertions for tests
     target_compile_definitions(test_drone_state PRIVATE FOUNDATION_DEBUG=1)
@@ -133,10 +137,17 @@ if(DRONE_STATE_BUILD_TESTS)
     # Add to CTest
     add_test(NAME test_drone_state COMMAND test_drone_state)
 
+    # Deep tests: scale, boundary, copy semantics (Yoneda philosophy)
+    # NOTE: Compiled WITHOUT FOUNDATION_DEBUG because these tests exercise
+    # out-of-bounds / NULL paths that rely on graceful fallback (not abort).
+    add_executable(test_drone_state_deep tests/test_drone_state_deep.c)
+    target_link_libraries(test_drone_state_deep PRIVATE drone_state platform)
+    add_test(NAME test_drone_state_deep COMMAND test_drone_state_deep)
+
     # Custom target to run tests with output
     add_custom_target(test_drone_state_run
         COMMAND ${CMAKE_CTEST_COMMAND} --output-on-failure
-        DEPENDS test_drone_state
+        DEPENDS test_drone_state test_drone_state_deep
         COMMENT "Running drone_state unit tests"
     )
 endif()
@@ -147,7 +158,7 @@ endif()
 
 if(DRONE_STATE_BUILD_BENCHMARKS)
     add_executable(bench_drone_state tests/bench_drone_state.c)
-    target_link_libraries(bench_drone_state PRIVATE drone_state)
+    target_link_libraries(bench_drone_state PRIVATE drone_state platform)
 
     # Optimize benchmarks
     if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang|AppleClang")
@@ -171,19 +182,12 @@ endif()
 include(GNUInstallDirs)
 
 install(TARGETS drone_state
-    EXPORT drone_stateTargets
     ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
     LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
 )
 
 install(FILES ${DRONE_STATE_HEADERS}
     DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/drone_state
-)
-
-install(EXPORT drone_stateTargets
-    FILE drone_stateTargets.cmake
-    NAMESPACE drone_state::
-    DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/drone_state
 )
 
 # ============================================================================

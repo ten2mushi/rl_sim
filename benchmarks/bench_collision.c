@@ -9,6 +9,7 @@
 #include "bench_harness.h"
 #include "collision_system.h"
 #include "world_brick_map.h"
+#include "platform_quadcopter.h"
 
 /* ============================================================================
  * Fixture
@@ -18,28 +19,29 @@ typedef struct CollisionBenchCtx {
     Arena* persistent;
     Arena* scratch;
     CollisionSystem* collision;
-    DroneStateSOA* drones;
-    DroneParamsSOA* params;
+    PlatformStateSOA* drones;
+    PlatformParamsSOA* params;
     WorldBrickMap* world;
-    uint32_t num_drones;
+    uint32_t num_agents;
 } CollisionBenchCtx;
 
 static CollisionBenchCtx* collision_ctx_create(Arena* persistent, Arena* scratch,
-                                                uint32_t num_drones, bool with_world) {
+                                                uint32_t num_agents, bool with_world) {
     CollisionBenchCtx* ctx = arena_alloc_type(persistent, CollisionBenchCtx);
     memset(ctx, 0, sizeof(*ctx));
     ctx->persistent = persistent;
     ctx->scratch = scratch;
-    ctx->num_drones = num_drones;
+    ctx->num_agents = num_agents;
 
-    ctx->collision = collision_create(persistent, num_drones, 0.1f, 1.0f);
-    ctx->drones = drone_state_create(persistent, num_drones);
-    ctx->params = drone_params_create(persistent, num_drones);
+    ctx->collision = collision_create(persistent, num_agents, 0.1f, 1.0f);
+    ctx->drones = platform_state_create(persistent, num_agents, QUAD_STATE_EXT_COUNT);
+    ctx->params = platform_params_create(persistent, num_agents, QUAD_PARAMS_EXT_COUNT);
 
     if (!ctx->collision || !ctx->drones || !ctx->params) return NULL;
 
-    for (uint32_t i = 0; i < num_drones; i++) {
-        drone_params_init(ctx->params, i);
+    for (uint32_t i = 0; i < num_agents; i++) {
+        platform_params_init(ctx->params, i);
+        PLATFORM_QUADCOPTER.init_params(ctx->params->extension, ctx->params->extension_count, i);
     }
 
     if (with_world) {
@@ -62,34 +64,34 @@ static CollisionBenchCtx* collision_ctx_create(Arena* persistent, Arena* scratch
 /* Hash build */
 static void fn_hash_build(void* arg) {
     CollisionBenchCtx* ctx = (CollisionBenchCtx*)arg;
-    collision_build_spatial_hash(ctx->collision, ctx->drones, ctx->num_drones);
+    collision_build_spatial_hash(ctx->collision, &ctx->drones->rigid_body, ctx->num_agents);
 }
 
 /* Drone-drone detection */
 static void fn_detect_dd(void* arg) {
     CollisionBenchCtx* ctx = (CollisionBenchCtx*)arg;
     collision_reset(ctx->collision);
-    collision_build_spatial_hash(ctx->collision, ctx->drones, ctx->num_drones);
-    collision_detect_drone_drone(ctx->collision, ctx->drones, ctx->num_drones);
+    collision_build_spatial_hash(ctx->collision, &ctx->drones->rigid_body, ctx->num_agents);
+    collision_detect_drone_drone(ctx->collision, &ctx->drones->rigid_body, ctx->num_agents);
 }
 
 /* World collision detection */
 static void fn_detect_world(void* arg) {
     CollisionBenchCtx* ctx = (CollisionBenchCtx*)arg;
-    collision_detect_drone_world(ctx->collision, ctx->drones, ctx->world, ctx->num_drones);
+    collision_detect_drone_world(ctx->collision, &ctx->drones->rigid_body, ctx->world, ctx->num_agents);
 }
 
 /* Full detection (drone-drone + world) */
 static void fn_detect_all(void* arg) {
     CollisionBenchCtx* ctx = (CollisionBenchCtx*)arg;
-    collision_detect_all(ctx->collision, ctx->drones, ctx->world, ctx->num_drones);
+    collision_detect_all(ctx->collision, &ctx->drones->rigid_body, ctx->world, ctx->num_agents);
 }
 
 /* Collision response */
 static void fn_response(void* arg) {
     CollisionBenchCtx* ctx = (CollisionBenchCtx*)arg;
-    collision_apply_response(ctx->collision, ctx->drones, ctx->params,
-                              0.5f, 1.0f, ctx->num_drones);
+    collision_apply_response(ctx->collision, &ctx->drones->rigid_body, &ctx->params->rigid_body,
+                              0.5f, 1.0f, ctx->num_agents);
 }
 
 /* Full frame: detect + response */
@@ -100,16 +102,16 @@ typedef struct TotalFrameCtx {
 static void fn_total_frame(void* arg) {
     TotalFrameCtx* tctx = (TotalFrameCtx*)arg;
     CollisionBenchCtx* ctx = tctx->cctx;
-    collision_detect_all(ctx->collision, ctx->drones, ctx->world, ctx->num_drones);
-    collision_apply_response(ctx->collision, ctx->drones, ctx->params,
-                              0.5f, 1.0f, ctx->num_drones);
+    collision_detect_all(ctx->collision, &ctx->drones->rigid_body, ctx->world, ctx->num_agents);
+    collision_apply_response(ctx->collision, &ctx->drones->rigid_body, &ctx->params->rigid_body,
+                              0.5f, 1.0f, ctx->num_agents);
 }
 
 /* KNN batch */
 typedef struct KNNBenchCtx {
     CollisionSystem* collision;
-    DroneStateSOA* drones;
-    uint32_t num_drones;
+    PlatformStateSOA* drones;
+    uint32_t num_agents;
     uint32_t k;
     uint32_t* out_indices;
     float* out_distances;
@@ -117,8 +119,8 @@ typedef struct KNNBenchCtx {
 
 static void fn_knn_batch(void* arg) {
     KNNBenchCtx* ctx = (KNNBenchCtx*)arg;
-    collision_find_k_nearest_batch(ctx->collision, ctx->drones,
-                                    ctx->num_drones, ctx->k,
+    collision_find_k_nearest_batch(ctx->collision, &ctx->drones->rigid_body,
+                                    ctx->num_agents, ctx->k,
                                     ctx->out_indices, ctx->out_distances);
 }
 
@@ -126,26 +128,26 @@ static void fn_knn_batch(void* arg) {
  * Scaling helper
  * ============================================================================ */
 
-static BenchStats bench_total_frame_scaling(uint32_t drone_count, uint32_t iterations,
+static BenchStats bench_total_frame_scaling(uint32_t agent_count, uint32_t iterations,
                                              uint32_t warmup, uint64_t seed) {
     Arena* pa = arena_create(128 * 1024 * 1024);
     Arena* sa = arena_create(32 * 1024 * 1024);
     BenchStats s = {0};
     s.name = "total_frame";
-    s.drone_count = drone_count;
+    s.agent_count = agent_count;
 
-    CollisionBenchCtx* ctx = collision_ctx_create(pa, sa, drone_count, true);
+    CollisionBenchCtx* ctx = collision_ctx_create(pa, sa, agent_count, true);
     if (!ctx) {
         arena_destroy(sa);
         arena_destroy(pa);
         return s;
     }
 
-    bench_init_drones_scattered(ctx->drones, drone_count, 50.0f, seed);
+    bench_init_drones_scattered(ctx->drones, agent_count, 50.0f, seed);
 
     TotalFrameCtx tctx = { .cctx = ctx };
     s = bench_measure("total_frame", fn_total_frame, &tctx, warmup, iterations, 1.5);
-    s.drone_count = drone_count;
+    s.agent_count = agent_count;
 
     arena_destroy(sa);
     arena_destroy(pa);
@@ -185,40 +187,40 @@ int main(int argc, char** argv) {
 
             s = bench_measure("hash_build_scattered", fn_hash_build, ctx,
                                cli.warmup, cli.iterations, 0.1);
-            s.drone_count = N;
+            s.agent_count = N;
             bench_print_row(&s);
             results[num_results++] = s;
 
             s = bench_measure("detect_dd_scattered", fn_detect_dd, ctx,
                                cli.warmup, cli.iterations, 0.3);
-            s.drone_count = N;
+            s.agent_count = N;
             bench_print_row(&s);
             results[num_results++] = s;
 
             s = bench_measure("detect_world", fn_detect_world, ctx,
                                cli.warmup, cli.iterations, 0.2);
-            s.drone_count = N;
+            s.agent_count = N;
             bench_print_row(&s);
             results[num_results++] = s;
 
             s = bench_measure("detect_all_world", fn_detect_all, ctx,
                                cli.warmup, cli.iterations, 1.0);
-            s.drone_count = N;
+            s.agent_count = N;
             bench_print_row(&s);
             results[num_results++] = s;
 
             /* Run detection first so response has collision data */
-            collision_detect_all(ctx->collision, ctx->drones, ctx->world, N);
+            collision_detect_all(ctx->collision, &ctx->drones->rigid_body, ctx->world, N);
             s = bench_measure("response_all", fn_response, ctx,
                                cli.warmup, cli.iterations, 0.2);
-            s.drone_count = N;
+            s.agent_count = N;
             bench_print_row(&s);
             results[num_results++] = s;
 
             TotalFrameCtx tctx = { .cctx = ctx };
             s = bench_measure("total_frame", fn_total_frame, &tctx,
                                cli.warmup, cli.iterations, 1.5);
-            s.drone_count = N;
+            s.agent_count = N;
             bench_print_row(&s);
             results[num_results++] = s;
         }
@@ -238,13 +240,13 @@ int main(int argc, char** argv) {
 
             s = bench_measure("hash_build_clustered", fn_hash_build, ctx,
                                cli.warmup, cli.iterations, 0.2);
-            s.drone_count = N;
+            s.agent_count = N;
             bench_print_row(&s);
             results[num_results++] = s;
 
             s = bench_measure("detect_dd_clustered", fn_detect_dd, ctx,
                                cli.warmup, cli.iterations, 0.5);
-            s.drone_count = N;
+            s.agent_count = N;
             bench_print_row(&s);
             results[num_results++] = s;
         }
@@ -259,7 +261,7 @@ int main(int argc, char** argv) {
         CollisionBenchCtx* ctx = collision_ctx_create(persistent, scratch, N, false);
         if (ctx) {
             bench_init_drones_scattered(ctx->drones, N, 50.0f, cli.seed);
-            collision_build_spatial_hash(ctx->collision, ctx->drones, N);
+            collision_build_spatial_hash(ctx->collision, &ctx->drones->rigid_body, N);
 
             uint32_t k = 8;
             uint32_t* out_idx = arena_alloc_array(scratch, uint32_t, N * k);
@@ -268,7 +270,7 @@ int main(int argc, char** argv) {
             KNNBenchCtx kctx = {
                 .collision = ctx->collision,
                 .drones = ctx->drones,
-                .num_drones = N,
+                .num_agents = N,
                 .k = k,
                 .out_indices = out_idx,
                 .out_distances = out_dist
@@ -276,7 +278,7 @@ int main(int argc, char** argv) {
 
             BenchStats s = bench_measure("knn_batch_k8", fn_knn_batch, &kctx,
                                           cli.warmup, cli.iterations, 10.0);
-            s.drone_count = N;
+            s.agent_count = N;
             bench_print_row(&s);
             results[num_results++] = s;
         }

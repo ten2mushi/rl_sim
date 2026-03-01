@@ -9,6 +9,10 @@
 
 #include "../include/foundation.h"
 
+#if defined(__APPLE__) || defined(__linux__)
+#include <time.h>
+#endif
+
 /* PCG constants */
 #define PCG32_MULT  6364136223846793005ULL
 #define PCG32_INC   1442695040888963407ULL
@@ -180,7 +184,6 @@ PCG32* pcg32_thread_local(void) {
 
         /* Mix in more entropy if we have clock */
 #if defined(__APPLE__) || defined(__linux__)
-        #include <time.h>
         struct timespec ts;
         if (clock_gettime(CLOCK_MONOTONIC, &ts) == 0) {
             seed ^= (uint64_t)ts.tv_nsec;

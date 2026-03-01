@@ -12,6 +12,7 @@
 #include "sensor_implementations.h"
 #include "collision_system.h"
 #include "world_brick_map.h"
+#include "platform_quadcopter.h"
 
 /* ============================================================================
  * Fixture
@@ -21,13 +22,13 @@ typedef struct SensorBenchCtx {
     Arena* persistent;
     Arena* scratch;
     SensorSystem* sys;
-    DroneStateSOA* drones;
+    PlatformStateSOA* drones;
     WorldBrickMap* world;
     CollisionSystem* collision;
-    uint32_t num_drones;
+    uint32_t num_agents;
 } SensorBenchCtx;
 
-static SensorBenchCtx* sensor_ctx_create(uint32_t num_drones, bool with_world,
+static SensorBenchCtx* sensor_ctx_create(uint32_t num_agents, bool with_world,
                                           bool with_collision, uint64_t seed) {
     size_t pa_size = 256 * 1024 * 1024;
     size_t sa_size = 64 * 1024 * 1024;
@@ -39,17 +40,17 @@ static SensorBenchCtx* sensor_ctx_create(uint32_t num_drones, bool with_world,
     memset(ctx, 0, sizeof(*ctx));
     ctx->persistent = persistent;
     ctx->scratch = scratch;
-    ctx->num_drones = num_drones;
+    ctx->num_agents = num_agents;
 
     /* Create sensor system with enough obs buffer */
-    ctx->sys = sensor_system_create(persistent, num_drones, 8, 16384);
+    ctx->sys = sensor_system_create(persistent, num_agents, 8, 16384);
     if (!ctx->sys) return NULL;
     sensor_implementations_register_all(&ctx->sys->registry);
 
     /* Create drone state */
-    ctx->drones = drone_state_create(persistent, num_drones);
+    ctx->drones = platform_state_create(persistent, num_agents, QUAD_STATE_EXT_COUNT);
     if (!ctx->drones) return NULL;
-    bench_init_drones_grid(ctx->drones, num_drones, 10.0f, seed);
+    bench_init_drones_grid(ctx->drones, num_agents, 10.0f, seed);
 
     /* Create world with CSG geometry */
     if (with_world) {
@@ -63,9 +64,9 @@ static SensorBenchCtx* sensor_ctx_create(uint32_t num_drones, bool with_world,
 
     /* Create collision system for neighbor sensor */
     if (with_collision) {
-        ctx->collision = collision_create(persistent, num_drones, 0.1f, 2.0f);
+        ctx->collision = collision_create(persistent, num_agents, 0.1f, 2.0f);
         if (ctx->collision) {
-            collision_build_spatial_hash(ctx->collision, ctx->drones, num_drones);
+            collision_build_spatial_hash(ctx->collision, ctx->drones, num_agents);
         }
     }
 
@@ -85,27 +86,27 @@ static void sensor_ctx_destroy(SensorBenchCtx* ctx) {
 
 typedef struct SingleSensorCtx {
     SensorSystem* sys;
-    DroneStateSOA* drones;
+    PlatformStateSOA* drones;
     WorldBrickMap* world;
     CollisionSystem* collision;
-    uint32_t num_drones;
+    uint32_t num_agents;
 } SingleSensorCtx;
 
 static void fn_sensor_sample_all(void* arg) {
     SingleSensorCtx* ctx = (SingleSensorCtx*)arg;
     sensor_system_sample_all(ctx->sys, ctx->drones, ctx->world,
-                              ctx->collision, ctx->num_drones);
+                              ctx->collision, ctx->num_agents);
 }
 
 static BenchStats run_single_sensor(const char* name, SensorConfig config,
-                                     uint32_t num_drones, bool needs_world,
+                                     uint32_t num_agents, bool needs_world,
                                      bool needs_collision, double target_ms,
                                      uint32_t warmup, uint32_t iterations,
                                      uint64_t seed) {
-    SensorBenchCtx* ctx = sensor_ctx_create(num_drones, needs_world, needs_collision, seed);
+    SensorBenchCtx* ctx = sensor_ctx_create(num_agents, needs_world, needs_collision, seed);
     BenchStats s = {0};
     s.name = name;
-    s.drone_count = num_drones;
+    s.agent_count = num_agents;
     if (!ctx) return s;
 
     uint32_t sensor_idx = sensor_system_create_sensor(ctx->sys, &config);
@@ -114,13 +115,13 @@ static BenchStats run_single_sensor(const char* name, SensorConfig config,
         return s;
     }
 
-    for (uint32_t d = 0; d < num_drones; d++) {
+    for (uint32_t d = 0; d < num_agents; d++) {
         sensor_system_attach(ctx->sys, d, sensor_idx);
     }
 
     /* Rebuild collision hash if needed */
     if (needs_collision && ctx->collision) {
-        collision_build_spatial_hash(ctx->collision, ctx->drones, num_drones);
+        collision_build_spatial_hash(ctx->collision, ctx->drones, num_agents);
     }
 
     SingleSensorCtx sctx = {
@@ -128,11 +129,11 @@ static BenchStats run_single_sensor(const char* name, SensorConfig config,
         .drones = ctx->drones,
         .world = ctx->world,
         .collision = ctx->collision,
-        .num_drones = num_drones
+        .num_agents = num_agents
     };
 
     s = bench_measure(name, fn_sensor_sample_all, &sctx, warmup, iterations, target_ms);
-    s.drone_count = num_drones;
+    s.agent_count = num_agents;
     s.persistent_bytes = ctx->persistent->used;
     s.frame_bytes = ctx->scratch->used;
 
@@ -145,14 +146,14 @@ static BenchStats run_single_sensor(const char* name, SensorConfig config,
  * ============================================================================ */
 
 static BenchStats run_combo_sensor(const char* name, SensorConfig* configs,
-                                    uint32_t num_configs, uint32_t num_drones,
+                                    uint32_t num_configs, uint32_t num_agents,
                                     bool needs_world, bool needs_collision,
                                     double target_ms, uint32_t warmup,
                                     uint32_t iterations, uint64_t seed) {
-    SensorBenchCtx* ctx = sensor_ctx_create(num_drones, needs_world, needs_collision, seed);
+    SensorBenchCtx* ctx = sensor_ctx_create(num_agents, needs_world, needs_collision, seed);
     BenchStats s = {0};
     s.name = name;
-    s.drone_count = num_drones;
+    s.agent_count = num_agents;
     if (!ctx) return s;
 
     for (uint32_t c = 0; c < num_configs; c++) {
@@ -161,13 +162,13 @@ static BenchStats run_combo_sensor(const char* name, SensorConfig* configs,
             sensor_ctx_destroy(ctx);
             return s;
         }
-        for (uint32_t d = 0; d < num_drones; d++) {
+        for (uint32_t d = 0; d < num_agents; d++) {
             sensor_system_attach(ctx->sys, d, sensor_idx);
         }
     }
 
     if (needs_collision && ctx->collision) {
-        collision_build_spatial_hash(ctx->collision, ctx->drones, num_drones);
+        collision_build_spatial_hash(ctx->collision, ctx->drones, num_agents);
     }
 
     SingleSensorCtx sctx = {
@@ -175,11 +176,11 @@ static BenchStats run_combo_sensor(const char* name, SensorConfig* configs,
         .drones = ctx->drones,
         .world = ctx->world,
         .collision = ctx->collision,
-        .num_drones = num_drones
+        .num_agents = num_agents
     };
 
     s = bench_measure(name, fn_sensor_sample_all, &sctx, warmup, iterations, target_ms);
-    s.drone_count = num_drones;
+    s.agent_count = num_agents;
     s.persistent_bytes = ctx->persistent->used;
     s.frame_bytes = ctx->scratch->used;
 
@@ -191,25 +192,25 @@ static BenchStats run_combo_sensor(const char* name, SensorConfig* configs,
  * Scaling helper
  * ============================================================================ */
 
-static BenchStats bench_lidar2d_scaling(uint32_t drone_count, uint32_t iterations,
+static BenchStats bench_lidar2d_scaling(uint32_t agent_count, uint32_t iterations,
                                          uint32_t warmup, uint64_t seed) {
     SensorConfig config = sensor_config_lidar_2d(64, 3.14159f, 20.0f);
-    return run_single_sensor("lidar2d_64", config, drone_count, true, false,
+    return run_single_sensor("lidar2d_64", config, agent_count, true, false,
                               5.0, warmup, iterations, seed);
 }
 
-static BenchStats bench_camera_depth_scaling(uint32_t drone_count, uint32_t iterations,
+static BenchStats bench_camera_depth_scaling(uint32_t agent_count, uint32_t iterations,
                                               uint32_t warmup, uint64_t seed) {
     SensorConfig config = sensor_config_camera(32, 32, 1.57f, 100.0f);
     config.type = SENSOR_TYPE_CAMERA_DEPTH;
-    return run_single_sensor("camera_depth_32", config, drone_count, true, false,
+    return run_single_sensor("camera_depth_32", config, agent_count, true, false,
                               4.0, warmup, iterations, seed);
 }
 
-static BenchStats bench_neighbor_scaling(uint32_t drone_count, uint32_t iterations,
+static BenchStats bench_neighbor_scaling(uint32_t agent_count, uint32_t iterations,
                                           uint32_t warmup, uint64_t seed) {
     SensorConfig config = sensor_config_neighbor(5, 20.0f);
-    return run_single_sensor("neighbor_k5", config, drone_count, false, true,
+    return run_single_sensor("neighbor_k5", config, agent_count, false, true,
                               1.0, warmup, iterations, seed);
 }
 
@@ -462,7 +463,7 @@ int main(int argc, char** argv) {
                 .drones = ctx->drones,
                 .world = ctx->world,
                 .collision = ctx->collision,
-                .num_drones = N
+                .num_agents = N
             };
 
             bench_check_degradation("combo_navigation", fn_sensor_sample_all, &sctx,

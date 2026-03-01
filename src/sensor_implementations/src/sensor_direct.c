@@ -40,9 +40,9 @@ static uint32_t position_get_output_shape(const Sensor* sensor, uint32_t* shape)
 static void position_batch_sample(Sensor* sensor, const SensorContext* ctx, float* output_buffer) {
     (void)sensor;
 
-    const DroneStateSOA* drones = ctx->drones;
-    const uint32_t* indices = ctx->drone_indices;
-    uint32_t count = ctx->drone_count;
+    const RigidBodyStateSOA* drones = ctx->agents;
+    const uint32_t* indices = ctx->agent_indices;
+    uint32_t count = ctx->agent_count;
 
     for (uint32_t i = 0; i < count; i++) {
         uint32_t d = indices[i];
@@ -54,9 +54,9 @@ static void position_batch_sample(Sensor* sensor, const SensorContext* ctx, floa
     }
 }
 
-static void position_reset(Sensor* sensor, uint32_t drone_index) {
+static void position_reset(Sensor* sensor, uint32_t agent_index) {
     (void)sensor;
-    (void)drone_index;
+    (void)agent_index;
     /* No state to reset */
 }
 
@@ -106,9 +106,9 @@ static uint32_t velocity_get_output_shape(const Sensor* sensor, uint32_t* shape)
 static void velocity_batch_sample(Sensor* sensor, const SensorContext* ctx, float* output_buffer) {
     (void)sensor;
 
-    const DroneStateSOA* drones = ctx->drones;
-    const uint32_t* indices = ctx->drone_indices;
-    uint32_t count = ctx->drone_count;
+    const RigidBodyStateSOA* drones = ctx->agents;
+    const uint32_t* indices = ctx->agent_indices;
+    uint32_t count = ctx->agent_count;
 
     for (uint32_t i = 0; i < count; i++) {
         uint32_t d = indices[i];
@@ -126,9 +126,9 @@ static void velocity_batch_sample(Sensor* sensor, const SensorContext* ctx, floa
     }
 }
 
-static void velocity_reset(Sensor* sensor, uint32_t drone_index) {
+static void velocity_reset(Sensor* sensor, uint32_t agent_index) {
     (void)sensor;
-    (void)drone_index;
+    (void)agent_index;
     /* No state to reset */
 }
 

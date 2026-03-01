@@ -1116,6 +1116,905 @@ TEST(edge_voxel_boundary) {
 }
 
 /* ============================================================================
+ * Section 15: Batch SDF Query Tests
+ *
+ * world_sdf_query_batch and world_sdf_gradient_batch are the SIMD-targeted
+ * batch paths. They must produce identical results to the scalar API.
+ * ============================================================================ */
+
+TEST(batch_sdf_query_basic) {
+    Arena* arena = arena_create(32 * 1024 * 1024);
+    WorldBrickMap* world = world_create(arena,
+        VEC3(-10.0f, -10.0f, -10.0f), VEC3(10.0f, 10.0f, 10.0f),
+        0.1f, 2000, 256);
+
+    world_set_sphere(world, VEC3(0.0f, 0.0f, 0.0f), 3.0f, 1);
+
+    Vec3 positions[4] = {
+        VEC3(0.0f, 0.0f, 0.0f),
+        VEC3(3.0f, 0.0f, 0.0f),
+        VEC3(5.0f, 0.0f, 0.0f),
+        VEC3(100.0f, 0.0f, 0.0f)
+    };
+    float sdfs[4];
+
+    world_sdf_query_batch(world, positions, sdfs, 4);
+
+    ASSERT_TRUE(sdfs[0] < 0.0f);
+    ASSERT_FLOAT_NEAR(sdfs[1], 0.0f, 0.3f);
+    ASSERT_TRUE(sdfs[2] > 0.0f);
+    ASSERT_FLOAT_EQ(sdfs[3], world->sdf_scale);
+
+    for (int i = 0; i < 4; i++) {
+        float scalar = world_sdf_query(world, positions[i]);
+        ASSERT_FLOAT_NEAR(sdfs[i], scalar, 1e-5f);
+    }
+
+    arena_destroy(arena);
+    return 0;
+}
+
+TEST(batch_sdf_query_null_args) {
+    Arena* arena = arena_create(16 * 1024 * 1024);
+    WorldBrickMap* world = world_create(arena,
+        VEC3(-10.0f, -10.0f, -10.0f), VEC3(10.0f, 10.0f, 10.0f),
+        0.1f, 100, 256);
+
+    Vec3 pos = VEC3(0.0f, 0.0f, 0.0f);
+    float sdf = -999.0f;
+
+    world_sdf_query_batch(NULL, &pos, &sdf, 1);
+    world_sdf_query_batch(world, NULL, &sdf, 1);
+    world_sdf_query_batch(world, &pos, NULL, 1);
+    world_sdf_query_batch(world, &pos, &sdf, 0);
+
+    ASSERT_FLOAT_EQ(sdf, -999.0f);
+
+    arena_destroy(arena);
+    return 0;
+}
+
+TEST(batch_sdf_gradient_basic) {
+    Arena* arena = arena_create(32 * 1024 * 1024);
+    WorldBrickMap* world = world_create(arena,
+        VEC3(-10.0f, -10.0f, -10.0f), VEC3(10.0f, 10.0f, 10.0f),
+        0.1f, 2000, 256);
+
+    world_set_sphere(world, VEC3(0.0f, 0.0f, 0.0f), 3.0f, 1);
+
+    Vec3 positions[3] = {
+        VEC3(3.0f, 0.0f, 0.0f),
+        VEC3(0.0f, 3.0f, 0.0f),
+        VEC3(0.0f, 0.0f, 3.0f),
+    };
+    Vec3 gradients[3];
+
+    world_sdf_gradient_batch(world, positions, gradients, 3);
+
+    ASSERT_TRUE(gradients[0].x > 0.0f);
+    ASSERT_TRUE(fabsf(gradients[0].x) > fabsf(gradients[0].y));
+
+    ASSERT_TRUE(gradients[1].y > 0.0f);
+    ASSERT_TRUE(fabsf(gradients[1].y) > fabsf(gradients[1].x));
+
+    ASSERT_TRUE(gradients[2].z > 0.0f);
+    ASSERT_TRUE(fabsf(gradients[2].z) > fabsf(gradients[2].x));
+
+    for (int i = 0; i < 3; i++) {
+        Vec3 scalar = world_sdf_gradient(world, positions[i]);
+        ASSERT_FLOAT_NEAR(gradients[i].x, scalar.x, 1e-5f);
+        ASSERT_FLOAT_NEAR(gradients[i].y, scalar.y, 1e-5f);
+        ASSERT_FLOAT_NEAR(gradients[i].z, scalar.z, 1e-5f);
+    }
+
+    arena_destroy(arena);
+    return 0;
+}
+
+/* ============================================================================
+ * Section 16: World Lifecycle Extended Tests
+ * ============================================================================ */
+
+TEST(world_clear_resets_state) {
+    Arena* arena = arena_create(32 * 1024 * 1024);
+    WorldBrickMap* world = world_create(arena,
+        VEC3(-5.0f, -5.0f, -5.0f), VEC3(5.0f, 5.0f, 5.0f),
+        0.5f, 500, 256);
+
+    world_set_sphere(world, VEC3(0.0f, 0.0f, 0.0f), 3.0f, 1);
+
+    float sdf_before = world_sdf_query(world, VEC3(0.0f, 0.0f, 0.0f));
+    ASSERT_TRUE(sdf_before < 0.0f);
+
+    world_clear(world);
+
+    ASSERT_EQ(world->atlas_count, 0);
+    ASSERT_EQ(world->free_count, 0);
+    ASSERT_EQ(world->uniform_inside_count, 0);
+    ASSERT_EQ(world->uniform_outside_count, 0);
+
+    float sdf_after = world_sdf_query(world, VEC3(0.0f, 0.0f, 0.0f));
+    ASSERT_FLOAT_EQ(sdf_after, world->sdf_scale);
+
+    world_set_sphere(world, VEC3(0.0f, 0.0f, 0.0f), 2.0f, 2);
+    float sdf_reuse = world_sdf_query(world, VEC3(0.0f, 0.0f, 0.0f));
+    ASSERT_TRUE(sdf_reuse < 0.0f);
+
+    arena_destroy(arena);
+    return 0;
+}
+
+TEST(world_clear_null_safe) {
+    world_clear(NULL);
+    return 0;
+}
+
+TEST(world_destroy_null_safe) {
+    world_destroy(NULL);
+    return 0;
+}
+
+TEST(world_memory_size_basic) {
+    size_t size = world_memory_size(10, 10, 10, 1000);
+    ASSERT_TRUE(size > 0);
+
+    size_t size_small = world_memory_size(5, 5, 5, 1000);
+    ASSERT_TRUE(size > size_small);
+
+    size_t size_few = world_memory_size(10, 10, 10, 100);
+    ASSERT_TRUE(size > size_few);
+
+    return 0;
+}
+
+/* ============================================================================
+ * Section 17: Feature Channel Tests
+ * ============================================================================ */
+
+TEST(feature_channel_add_and_find) {
+    Arena* arena = arena_create(32 * 1024 * 1024);
+    WorldBrickMap* world = world_create(arena,
+        VEC3(0.0f, 0.0f, 0.0f), VEC3(8.0f, 8.0f, 8.0f),
+        1.0f, 100, 256);
+
+    ASSERT_EQ(world->feature_channel_count, 0);
+
+    int32_t ch_color = world_add_channel(world, "color_r", VOXEL_TYPE_FLOAT32, 1);
+    ASSERT_TRUE(ch_color >= 0);
+    ASSERT_EQ(world->feature_channel_count, 1);
+
+    int32_t ch_class = world_add_channel(world, "class", VOXEL_TYPE_UINT8, 1);
+    ASSERT_TRUE(ch_class >= 0);
+    ASSERT_NE(ch_color, ch_class);
+
+    ASSERT_EQ(world_find_channel(world, "color_r"), ch_color);
+    ASSERT_EQ(world_find_channel(world, "class"), ch_class);
+    ASSERT_EQ(world_find_channel(world, "nonexistent"), -1);
+    ASSERT_EQ(world_find_channel(world, NULL), -1);
+
+    const VoxelChannel* desc = world_get_channel(world, ch_color);
+    ASSERT_NOT_NULL(desc);
+    ASSERT_EQ(desc->type, VOXEL_TYPE_FLOAT32);
+    ASSERT_EQ(desc->components, 1);
+    ASSERT_EQ(desc->bytes_per_voxel, 4);
+
+    ASSERT_NULL(world_get_channel(world, -1));
+    ASSERT_NULL(world_get_channel(world, 99));
+
+    arena_destroy(arena);
+    return 0;
+}
+
+TEST(feature_channel_add_invalid) {
+    Arena* arena = arena_create(16 * 1024 * 1024);
+    WorldBrickMap* world = world_create(arena,
+        VEC3(0.0f, 0.0f, 0.0f), VEC3(8.0f, 8.0f, 8.0f),
+        1.0f, 100, 256);
+
+    ASSERT_EQ(world_add_channel(NULL, "test", VOXEL_TYPE_FLOAT32, 1), -1);
+    ASSERT_EQ(world_add_channel(world, NULL, VOXEL_TYPE_FLOAT32, 1), -1);
+    ASSERT_EQ(world_add_channel(world, "test", VOXEL_TYPE_FLOAT32, 0), -1);
+
+    arena_destroy(arena);
+    return 0;
+}
+
+TEST(feature_channel_set_query_f32) {
+    Arena* arena = arena_create(32 * 1024 * 1024);
+    WorldBrickMap* world = world_create(arena,
+        VEC3(0.0f, 0.0f, 0.0f), VEC3(8.0f, 8.0f, 8.0f),
+        1.0f, 100, 256);
+
+    int32_t ch = world_add_channel(world, "temperature", VOXEL_TYPE_FLOAT32, 1);
+    ASSERT_TRUE(ch >= 0);
+
+    world_set_voxel(world, VEC3(0.5f, 0.5f, 0.5f), -1.0f, 1);
+
+    world_channel_set_f32(world, ch, VEC3(0.5f, 0.5f, 0.5f), 0, 42.5f);
+    float val = world_channel_query_f32(world, ch, VEC3(0.5f, 0.5f, 0.5f), 0);
+    ASSERT_FLOAT_EQ(val, 42.5f);
+
+    float val_oob = world_channel_query_f32(world, ch, VEC3(-1.0f, 0.0f, 0.0f), 0);
+    ASSERT_FLOAT_EQ(val_oob, 0.0f);
+
+    arena_destroy(arena);
+    return 0;
+}
+
+TEST(feature_channel_set_query_u8) {
+    Arena* arena = arena_create(32 * 1024 * 1024);
+    WorldBrickMap* world = world_create(arena,
+        VEC3(0.0f, 0.0f, 0.0f), VEC3(8.0f, 8.0f, 8.0f),
+        1.0f, 100, 256);
+
+    int32_t ch = world_add_channel(world, "label", VOXEL_TYPE_UINT8, 1);
+    ASSERT_TRUE(ch >= 0);
+
+    world_set_voxel(world, VEC3(0.5f, 0.5f, 0.5f), -1.0f, 1);
+
+    world_channel_set_u8(world, ch, VEC3(0.5f, 0.5f, 0.5f), 0, 200);
+    uint8_t val = world_channel_query_u8(world, ch, VEC3(0.5f, 0.5f, 0.5f), 0);
+    ASSERT_EQ(val, 200);
+
+    arena_destroy(arena);
+    return 0;
+}
+
+TEST(feature_channel_multicomponent) {
+    Arena* arena = arena_create(32 * 1024 * 1024);
+    WorldBrickMap* world = world_create(arena,
+        VEC3(0.0f, 0.0f, 0.0f), VEC3(8.0f, 8.0f, 8.0f),
+        1.0f, 100, 256);
+
+    int32_t ch = world_add_channel(world, "color", VOXEL_TYPE_FLOAT32, 3);
+    ASSERT_TRUE(ch >= 0);
+
+    const VoxelChannel* desc = world_get_channel(world, ch);
+    ASSERT_EQ(desc->components, 3);
+    ASSERT_EQ(desc->bytes_per_voxel, 12);
+
+    world_set_voxel(world, VEC3(0.5f, 0.5f, 0.5f), -1.0f, 1);
+
+    world_channel_set_f32(world, ch, VEC3(0.5f, 0.5f, 0.5f), 0, 0.9f);
+    world_channel_set_f32(world, ch, VEC3(0.5f, 0.5f, 0.5f), 1, 0.4f);
+    world_channel_set_f32(world, ch, VEC3(0.5f, 0.5f, 0.5f), 2, 0.1f);
+
+    ASSERT_FLOAT_EQ(world_channel_query_f32(world, ch, VEC3(0.5f, 0.5f, 0.5f), 0), 0.9f);
+    ASSERT_FLOAT_EQ(world_channel_query_f32(world, ch, VEC3(0.5f, 0.5f, 0.5f), 1), 0.4f);
+    ASSERT_FLOAT_EQ(world_channel_query_f32(world, ch, VEC3(0.5f, 0.5f, 0.5f), 2), 0.1f);
+
+    arena_destroy(arena);
+    return 0;
+}
+
+TEST(feature_channel_retroactive_allocation) {
+    Arena* arena = arena_create(32 * 1024 * 1024);
+    WorldBrickMap* world = world_create(arena,
+        VEC3(0.0f, 0.0f, 0.0f), VEC3(8.0f, 8.0f, 8.0f),
+        1.0f, 100, 256);
+
+    world_set_voxel(world, VEC3(0.5f, 0.5f, 0.5f), -1.0f, 1);
+    ASSERT_TRUE(world->atlas_count > 0);
+
+    int32_t ch = world_add_channel(world, "late", VOXEL_TYPE_FLOAT32, 1);
+    ASSERT_TRUE(ch >= 0);
+
+    float val = world_channel_query_f32(world, ch, VEC3(0.5f, 0.5f, 0.5f), 0);
+    ASSERT_FLOAT_EQ(val, 0.0f);
+
+    world_channel_set_f32(world, ch, VEC3(0.5f, 0.5f, 0.5f), 0, 77.0f);
+    val = world_channel_query_f32(world, ch, VEC3(0.5f, 0.5f, 0.5f), 0);
+    ASSERT_FLOAT_EQ(val, 77.0f);
+
+    arena_destroy(arena);
+    return 0;
+}
+
+/* ============================================================================
+ * Section 18: Uniform Brick Detection Tests
+ * ============================================================================ */
+
+TEST(detect_uniform_outside_brick) {
+    Arena* arena = arena_create(16 * 1024 * 1024);
+    WorldBrickMap* world = world_create(arena,
+        VEC3(-10.0f, -10.0f, -10.0f), VEC3(10.0f, 10.0f, 10.0f),
+        0.1f, 100, 256);
+
+    int32_t atlas_idx = world_alloc_brick(world, 0, 0, 0);
+    ASSERT_NE(atlas_idx, BRICK_EMPTY_INDEX);
+
+    int32_t result = world_detect_uniform_brick(world, atlas_idx);
+    ASSERT_EQ(result, BRICK_UNIFORM_OUTSIDE);
+
+    arena_destroy(arena);
+    return 0;
+}
+
+TEST(detect_uniform_inside_brick) {
+    Arena* arena = arena_create(16 * 1024 * 1024);
+    WorldBrickMap* world = world_create(arena,
+        VEC3(-10.0f, -10.0f, -10.0f), VEC3(10.0f, 10.0f, 10.0f),
+        0.1f, 100, 256);
+
+    uint32_t grid_idx = brick_linear_index(world, 0, 0, 0);
+    world->brick_indices[grid_idx] = BRICK_UNIFORM_INSIDE;
+    world->uniform_inside_count++;
+
+    int32_t atlas_idx = world_alloc_brick(world, 0, 0, 0);
+    ASSERT_NE(atlas_idx, BRICK_EMPTY_INDEX);
+
+    int32_t result = world_detect_uniform_brick(world, atlas_idx);
+    ASSERT_EQ(result, BRICK_UNIFORM_INSIDE);
+
+    arena_destroy(arena);
+    return 0;
+}
+
+TEST(detect_non_uniform_brick) {
+    Arena* arena = arena_create(16 * 1024 * 1024);
+    WorldBrickMap* world = world_create(arena,
+        VEC3(-10.0f, -10.0f, -10.0f), VEC3(10.0f, 10.0f, 10.0f),
+        0.1f, 100, 256);
+
+    int32_t atlas_idx = world_alloc_brick(world, 0, 0, 0);
+    ASSERT_NE(atlas_idx, BRICK_EMPTY_INDEX);
+
+    int8_t* sdf = world_brick_sdf(world, atlas_idx);
+    sdf[0] = -50;
+
+    int32_t result = world_detect_uniform_brick(world, atlas_idx);
+    ASSERT_EQ(result, atlas_idx);
+
+    arena_destroy(arena);
+    return 0;
+}
+
+TEST(compact_uniform_bricks_basic) {
+    Arena* arena = arena_create(32 * 1024 * 1024);
+    WorldBrickMap* world = world_create(arena,
+        VEC3(-10.0f, -10.0f, -10.0f), VEC3(10.0f, 10.0f, 10.0f),
+        0.1f, 200, 256);
+
+    world_alloc_brick(world, 0, 0, 0);
+    world_alloc_brick(world, 1, 0, 0);
+    world_alloc_brick(world, 2, 0, 0);
+
+    ASSERT_EQ(world->atlas_count, 3);
+
+    uint32_t converted = world_compact_uniform_bricks(world);
+    ASSERT_EQ(converted, 3);
+    ASSERT_EQ(world->uniform_outside_count, 3);
+    ASSERT_EQ(world->free_count, 3);
+
+    ASSERT_EQ(world_get_brick_index(world, 0, 0, 0), BRICK_UNIFORM_OUTSIDE);
+    ASSERT_EQ(world_get_brick_index(world, 1, 0, 0), BRICK_UNIFORM_OUTSIDE);
+
+    arena_destroy(arena);
+    return 0;
+}
+
+TEST(mark_brick_uniform_transitions) {
+    Arena* arena = arena_create(16 * 1024 * 1024);
+    WorldBrickMap* world = world_create(arena,
+        VEC3(-10.0f, -10.0f, -10.0f), VEC3(10.0f, 10.0f, 10.0f),
+        0.1f, 100, 256);
+
+    world_mark_brick_uniform_outside(world, 0, 0, 0);
+    ASSERT_EQ(world_get_brick_index(world, 0, 0, 0), BRICK_UNIFORM_OUTSIDE);
+    ASSERT_EQ(world->uniform_outside_count, 1);
+
+    world_mark_brick_uniform_inside(world, 0, 0, 0);
+    ASSERT_EQ(world_get_brick_index(world, 0, 0, 0), BRICK_UNIFORM_INSIDE);
+    ASSERT_EQ(world->uniform_inside_count, 1);
+    ASSERT_EQ(world->uniform_outside_count, 0);
+
+    world_mark_brick_uniform_inside(world, 0, 0, 0);
+    ASSERT_EQ(world->uniform_inside_count, 1);
+
+    arena_destroy(arena);
+    return 0;
+}
+
+/* ============================================================================
+ * Section 19: Page Dirty Tracking Tests
+ * ============================================================================ */
+
+TEST(page_dirty_tracking_basic) {
+    Arena* arena = arena_create(16 * 1024 * 1024);
+    WorldBrickMap* world = world_create(arena,
+        VEC3(-10.0f, -10.0f, -10.0f), VEC3(10.0f, 10.0f, 10.0f),
+        0.1f, 200, 256);
+
+    bool dirty[MAX_ATLAS_PAGES];
+    uint32_t dirty_count = world_get_dirty_pages(world, dirty, MAX_ATLAS_PAGES);
+    ASSERT_EQ(dirty_count, 0);
+
+    int32_t atlas_idx = world_alloc_brick(world, 0, 0, 0);
+    ASSERT_NE(atlas_idx, BRICK_EMPTY_INDEX);
+
+    dirty_count = world_get_dirty_pages(world, dirty, MAX_ATLAS_PAGES);
+    ASSERT_TRUE(dirty_count > 0);
+    ASSERT_TRUE(dirty[0]);
+
+    world_clear_dirty_pages(world);
+    dirty_count = world_get_dirty_pages(world, dirty, MAX_ATLAS_PAGES);
+    ASSERT_EQ(dirty_count, 0);
+
+    arena_destroy(arena);
+    return 0;
+}
+
+TEST(page_dirty_manual_mark) {
+    Arena* arena = arena_create(16 * 1024 * 1024);
+    WorldBrickMap* world = world_create(arena,
+        VEC3(-10.0f, -10.0f, -10.0f), VEC3(10.0f, 10.0f, 10.0f),
+        0.1f, 200, 256);
+
+    world_mark_page_dirty(world, 3);
+
+    bool dirty[MAX_ATLAS_PAGES];
+    uint32_t dirty_count = world_get_dirty_pages(world, dirty, MAX_ATLAS_PAGES);
+    ASSERT_EQ(dirty_count, 1);
+    ASSERT_TRUE(dirty[3]);
+    ASSERT_FALSE(dirty[0]);
+
+    world_mark_page_dirty(world, MAX_ATLAS_PAGES + 10);
+    dirty_count = world_get_dirty_pages(world, dirty, MAX_ATLAS_PAGES);
+    ASSERT_EQ(dirty_count, 1);
+
+    arena_destroy(arena);
+    return 0;
+}
+
+TEST(page_dirty_null_safety) {
+    bool dirty[8];
+    ASSERT_EQ(world_get_dirty_pages(NULL, dirty, 8), 0);
+    world_clear_dirty_pages(NULL);
+    world_mark_page_dirty(NULL, 0);
+
+    return 0;
+}
+
+/* ============================================================================
+ * Section 20: Raymarching Extended Tests
+ * ============================================================================ */
+
+TEST(raymarch_hit_position_on_surface) {
+    Arena* arena = arena_create(32 * 1024 * 1024);
+    WorldBrickMap* world = world_create(arena,
+        VEC3(-10.0f, -10.0f, -10.0f), VEC3(10.0f, 10.0f, 10.0f),
+        0.1f, 2000, 256);
+
+    float radius = 3.0f;
+    world_set_sphere(world, VEC3(0.0f, 0.0f, 0.0f), radius, 1);
+
+    RayHit hit = world_raymarch(world,
+        VEC3(-8.0f, 0.0f, 0.0f), VEC3(1.0f, 0.0f, 0.0f), 20.0f);
+
+    ASSERT_TRUE(hit.hit);
+
+    float hit_dist_from_center = vec3_length(hit.position);
+    ASSERT_FLOAT_NEAR(hit_dist_from_center, radius, 0.15f);
+    ASSERT_FLOAT_NEAR(hit.position.x, -radius, 0.15f);
+
+    arena_destroy(arena);
+    return 0;
+}
+
+TEST(raymarch_hit_normal_direction) {
+    Arena* arena = arena_create(32 * 1024 * 1024);
+    WorldBrickMap* world = world_create(arena,
+        VEC3(-10.0f, -10.0f, -10.0f), VEC3(10.0f, 10.0f, 10.0f),
+        0.1f, 2000, 256);
+
+    world_set_sphere(world, VEC3(0.0f, 0.0f, 0.0f), 3.0f, 1);
+
+    RayHit hit = world_raymarch(world,
+        VEC3(-8.0f, 0.0f, 0.0f), VEC3(1.0f, 0.0f, 0.0f), 20.0f);
+
+    ASSERT_TRUE(hit.hit);
+    ASSERT_TRUE(hit.normal.x < -0.5f);
+
+    float normal_len = vec3_length(hit.normal);
+    ASSERT_FLOAT_NEAR(normal_len, 1.0f, 0.1f);
+
+    arena_destroy(arena);
+    return 0;
+}
+
+TEST(raymarch_starting_inside_surface) {
+    Arena* arena = arena_create(32 * 1024 * 1024);
+    WorldBrickMap* world = world_create(arena,
+        VEC3(-10.0f, -10.0f, -10.0f), VEC3(10.0f, 10.0f, 10.0f),
+        0.1f, 2000, 256);
+
+    world_set_sphere(world, VEC3(0.0f, 0.0f, 0.0f), 3.0f, 1);
+
+    RayHit hit = world_raymarch(world,
+        VEC3(0.0f, 0.0f, 0.0f), VEC3(1.0f, 0.0f, 0.0f), 20.0f);
+
+    ASSERT_TRUE(hit.hit);
+    ASSERT_TRUE(hit.distance < 0.5f);
+
+    arena_destroy(arena);
+    return 0;
+}
+
+TEST(raymarch_hit_material_matches_primitive) {
+    Arena* arena = arena_create(32 * 1024 * 1024);
+    WorldBrickMap* world = world_create(arena,
+        VEC3(-10.0f, -10.0f, -10.0f), VEC3(10.0f, 10.0f, 10.0f),
+        0.1f, 2000, 256);
+
+    world_set_sphere(world, VEC3(-5.0f, 0.0f, 0.0f), 1.5f, 10);
+    world_set_sphere(world, VEC3(5.0f, 0.0f, 0.0f), 1.5f, 20);
+
+    RayHit hit_left = world_raymarch(world,
+        VEC3(-8.0f, 0.0f, 0.0f), VEC3(1.0f, 0.0f, 0.0f), 20.0f);
+    ASSERT_TRUE(hit_left.hit);
+    ASSERT_EQ(hit_left.material, 10);
+
+    RayHit hit_right = world_raymarch(world,
+        VEC3(8.0f, 0.0f, 0.0f), VEC3(-1.0f, 0.0f, 0.0f), 20.0f);
+    ASSERT_TRUE(hit_right.hit);
+    ASSERT_EQ(hit_right.material, 20);
+
+    arena_destroy(arena);
+    return 0;
+}
+
+/* ============================================================================
+ * Section 21: Coordinate Transformation Extended Tests
+ * ============================================================================ */
+
+TEST(coords_roundtrip_pos_to_brick_to_voxel) {
+    Arena* arena = arena_create(16 * 1024 * 1024);
+    WorldBrickMap* world = world_create(arena,
+        VEC3(0.0f, 0.0f, 0.0f), VEC3(16.0f, 16.0f, 16.0f),
+        1.0f, 100, 256);
+
+    Vec3 pos = VEC3(3.5f, 11.5f, 7.5f);
+    int32_t bx, by, bz, vx, vy, vz;
+
+    world_pos_to_brick(world, pos, &bx, &by, &bz);
+    ASSERT_EQ(bx, 0);
+    ASSERT_EQ(by, 1);
+    ASSERT_EQ(bz, 0);
+
+    world_pos_to_voxel(world, pos, bx, by, bz, &vx, &vy, &vz);
+    ASSERT_EQ(vx, 3);
+    ASSERT_EQ(vy, 3);
+    ASSERT_EQ(vz, 7);
+
+    arena_destroy(arena);
+    return 0;
+}
+
+TEST(coords_world_max_brick) {
+    Arena* arena = arena_create(16 * 1024 * 1024);
+    WorldBrickMap* world = world_create(arena,
+        VEC3(0.0f, 0.0f, 0.0f), VEC3(16.0f, 16.0f, 16.0f),
+        1.0f, 100, 256);
+
+    ASSERT_EQ(world->grid_x, 2);
+    ASSERT_EQ(world->grid_y, 2);
+    ASSERT_EQ(world->grid_z, 2);
+
+    int32_t bx, by, bz;
+    world_pos_to_brick(world, VEC3(15.9f, 15.9f, 15.9f), &bx, &by, &bz);
+    ASSERT_EQ(bx, 1);
+    ASSERT_EQ(by, 1);
+    ASSERT_EQ(bz, 1);
+
+    ASSERT_FALSE(world_contains(world, VEC3(16.0f, 16.0f, 16.0f)));
+
+    arena_destroy(arena);
+    return 0;
+}
+
+/* ============================================================================
+ * Section 22: SDF Query Extended Tests
+ * ============================================================================ */
+
+TEST(sdf_monotonicity_along_ray) {
+    Arena* arena = arena_create(32 * 1024 * 1024);
+    WorldBrickMap* world = world_create(arena,
+        VEC3(-10.0f, -10.0f, -10.0f), VEC3(10.0f, 10.0f, 10.0f),
+        0.1f, 2000, 256);
+
+    world_set_sphere(world, VEC3(0.0f, 0.0f, 0.0f), 3.0f, 1);
+
+    float prev_sdf = -999.0f;
+    int monotonic_violations = 0;
+
+    for (float x = 3.2f; x < 8.0f; x += 0.3f) {
+        float sdf = world_sdf_query(world, VEC3(x, 0.0f, 0.0f));
+        if (sdf < prev_sdf - 0.05f) {
+            monotonic_violations++;
+        }
+        prev_sdf = sdf;
+    }
+
+    ASSERT_EQ(monotonic_violations, 0);
+
+    arena_destroy(arena);
+    return 0;
+}
+
+TEST(sdf_gradient_at_box_face) {
+    Arena* arena = arena_create(32 * 1024 * 1024);
+    WorldBrickMap* world = world_create(arena,
+        VEC3(-10.0f, -10.0f, -10.0f), VEC3(10.0f, 10.0f, 10.0f),
+        0.1f, 2000, 256);
+
+    world_set_box(world, VEC3(0.0f, 0.0f, 0.0f), VEC3(2.0f, 2.0f, 2.0f), 1);
+
+    Vec3 grad_px = world_sdf_gradient(world, VEC3(2.0f, 0.0f, 0.0f));
+    ASSERT_TRUE(grad_px.x > 0.0f);
+    ASSERT_TRUE(fabsf(grad_px.x) > fabsf(grad_px.y));
+
+    Vec3 grad_ny = world_sdf_gradient(world, VEC3(0.0f, -2.0f, 0.0f));
+    ASSERT_TRUE(grad_ny.y < 0.0f);
+
+    arena_destroy(arena);
+    return 0;
+}
+
+TEST(sdf_normal_degenerate_empty_world) {
+    Arena* arena = arena_create(16 * 1024 * 1024);
+    WorldBrickMap* world = world_create(arena,
+        VEC3(-10.0f, -10.0f, -10.0f), VEC3(10.0f, 10.0f, 10.0f),
+        0.1f, 100, 256);
+
+    Vec3 normal = world_sdf_normal(world, VEC3(0.0f, 0.0f, 0.0f));
+    float len = vec3_length(normal);
+    ASSERT_FLOAT_NEAR(len, 1.0f, 0.01f);
+
+    arena_destroy(arena);
+    return 0;
+}
+
+TEST(sdf_query_uniform_inside_returns_negative) {
+    Arena* arena = arena_create(16 * 1024 * 1024);
+    WorldBrickMap* world = world_create(arena,
+        VEC3(0.0f, 0.0f, 0.0f), VEC3(16.0f, 16.0f, 16.0f),
+        1.0f, 100, 256);
+
+    uint32_t grid_idx = brick_linear_index(world, 0, 0, 0);
+    world->brick_indices[grid_idx] = BRICK_UNIFORM_INSIDE;
+    world->uniform_inside_count++;
+
+    float sdf = world_sdf_query(world, VEC3(0.5f, 0.5f, 0.5f));
+    ASSERT_FLOAT_EQ(sdf, -world->sdf_scale);
+
+    float sdf_nn = world_sdf_query_nearest(world, VEC3(0.5f, 0.5f, 0.5f));
+    ASSERT_FLOAT_EQ(sdf_nn, -world->sdf_scale);
+
+    arena_destroy(arena);
+    return 0;
+}
+
+TEST(sdf_query_null_world) {
+    float sdf = world_sdf_query(NULL, VEC3(0.0f, 0.0f, 0.0f));
+    ASSERT_TRUE(sdf > 1000.0f);
+
+    float sdf_nn = world_sdf_query_nearest(NULL, VEC3(0.0f, 0.0f, 0.0f));
+    ASSERT_TRUE(sdf_nn > 1000.0f);
+
+    uint8_t mat = world_material_query(NULL, VEC3(0.0f, 0.0f, 0.0f));
+    ASSERT_EQ(mat, 0);
+
+    return 0;
+}
+
+/* ============================================================================
+ * Section 23: Brick Read/Write Extended Tests
+ * ============================================================================ */
+
+TEST(brick_sdf_write_read_roundtrip) {
+    Arena* arena = arena_create(16 * 1024 * 1024);
+    WorldBrickMap* world = world_create(arena,
+        VEC3(0.0f, 0.0f, 0.0f), VEC3(8.0f, 8.0f, 8.0f),
+        1.0f, 100, 256);
+
+    int32_t atlas_idx = world_alloc_brick(world, 0, 0, 0);
+    ASSERT_NE(atlas_idx, BRICK_EMPTY_INDEX);
+
+    int8_t* sdf = world_brick_sdf(world, atlas_idx);
+    uint8_t* mat = world_brick_material(world, atlas_idx);
+    ASSERT_NOT_NULL(sdf);
+    ASSERT_NOT_NULL(mat);
+
+    for (int i = 0; i < BRICK_VOXELS; i++) {
+        sdf[i] = (int8_t)(i % 127);
+        mat[i] = (uint8_t)(255 - i % 256);
+    }
+
+    int8_t* sdf2 = world_brick_sdf(world, atlas_idx);
+    uint8_t* mat2 = world_brick_material(world, atlas_idx);
+
+    for (int i = 0; i < BRICK_VOXELS; i++) {
+        ASSERT_EQ(sdf2[i], (int8_t)(i % 127));
+        ASSERT_EQ(mat2[i], (uint8_t)(255 - i % 256));
+    }
+
+    arena_destroy(arena);
+    return 0;
+}
+
+TEST(brick_sdf_accessor_invalid_index) {
+    Arena* arena = arena_create(16 * 1024 * 1024);
+    WorldBrickMap* world = world_create(arena,
+        VEC3(-10.0f, -10.0f, -10.0f), VEC3(10.0f, 10.0f, 10.0f),
+        0.1f, 100, 256);
+
+    ASSERT_NULL(world_brick_sdf(world, -1));
+    ASSERT_NULL(world_brick_material(world, -1));
+    ASSERT_NULL(world_brick_sdf(world, 0));
+
+    int32_t idx = world_alloc_brick(world, 0, 0, 0);
+    ASSERT_NOT_NULL(world_brick_sdf(world, idx));
+    ASSERT_NULL(world_brick_sdf(world, idx + 1));
+
+    arena_destroy(arena);
+    return 0;
+}
+
+TEST(set_sdf_allocates_brick_on_demand) {
+    Arena* arena = arena_create(16 * 1024 * 1024);
+    WorldBrickMap* world = world_create(arena,
+        VEC3(0.0f, 0.0f, 0.0f), VEC3(8.0f, 8.0f, 8.0f),
+        1.0f, 100, 256);
+
+    ASSERT_EQ(world->atlas_count, 0);
+
+    world_set_sdf(world, VEC3(0.5f, 0.5f, 0.5f), -0.8f);
+    ASSERT_TRUE(world->atlas_count > 0);
+
+    float sdf = world_sdf_query_nearest(world, VEC3(0.5f, 0.5f, 0.5f));
+    ASSERT_FLOAT_NEAR(sdf, -0.8f, 0.05f);
+
+    arena_destroy(arena);
+    return 0;
+}
+
+/* ============================================================================
+ * Section 24: SDF Scale Configuration Tests
+ * ============================================================================ */
+
+TEST(sdf_scale_configuration) {
+    Arena* arena = arena_create(16 * 1024 * 1024);
+    WorldBrickMap* world = world_create(arena,
+        VEC3(0.0f, 0.0f, 0.0f), VEC3(8.0f, 8.0f, 8.0f),
+        0.5f, 100, 256);
+
+    ASSERT_FLOAT_EQ(world->brick_size_world, 4.0f);
+    ASSERT_FLOAT_EQ(world->sdf_scale, 6.0f);
+    ASSERT_FLOAT_NEAR(world->inv_sdf_scale, 1.0f / 6.0f, 1e-5f);
+    ASSERT_FLOAT_NEAR(world->sdf_scale_div_127, 6.0f / 127.0f, 1e-5f);
+
+    arena_destroy(arena);
+    return 0;
+}
+
+/* ============================================================================
+ * Section 25: Inline Helper Tests
+ * ============================================================================ */
+
+TEST(voxel_linear_index_corners) {
+    ASSERT_EQ(voxel_linear_index(0, 0, 0), 0);
+    ASSERT_EQ(voxel_linear_index(7, 0, 0), 7);
+    ASSERT_EQ(voxel_linear_index(0, 7, 0), 56);
+    ASSERT_EQ(voxel_linear_index(0, 0, 7), 448);
+    ASSERT_EQ(voxel_linear_index(7, 7, 7), BRICK_VOXELS - 1);
+
+    return 0;
+}
+
+TEST(brick_is_uniform_helper) {
+    ASSERT_TRUE(brick_is_uniform(BRICK_UNIFORM_OUTSIDE));
+    ASSERT_TRUE(brick_is_uniform(BRICK_UNIFORM_INSIDE));
+    ASSERT_FALSE(brick_is_uniform(BRICK_EMPTY_INDEX));
+    ASSERT_FALSE(brick_is_uniform(0));
+    ASSERT_FALSE(brick_is_uniform(42));
+
+    return 0;
+}
+
+TEST(sdf_primitive_sphere_at_origin) {
+    float d_center = sdf_sphere(VEC3(0.0f, 0.0f, 0.0f), VEC3(0.0f, 0.0f, 0.0f), 2.0f);
+    ASSERT_FLOAT_EQ(d_center, -2.0f);
+
+    float d_surface = sdf_sphere(VEC3(2.0f, 0.0f, 0.0f), VEC3(0.0f, 0.0f, 0.0f), 2.0f);
+    ASSERT_FLOAT_EQ(d_surface, 0.0f);
+
+    float d_outside = sdf_sphere(VEC3(5.0f, 0.0f, 0.0f), VEC3(0.0f, 0.0f, 0.0f), 2.0f);
+    ASSERT_FLOAT_EQ(d_outside, 3.0f);
+
+    return 0;
+}
+
+TEST(sdf_primitive_box_at_origin) {
+    Vec3 center = VEC3(0.0f, 0.0f, 0.0f);
+    Vec3 half = VEC3(1.0f, 1.0f, 1.0f);
+
+    float d_center = sdf_box(VEC3(0.0f, 0.0f, 0.0f), center, half);
+    ASSERT_FLOAT_EQ(d_center, -1.0f);
+
+    float d_face = sdf_box(VEC3(1.0f, 0.0f, 0.0f), center, half);
+    ASSERT_FLOAT_EQ(d_face, 0.0f);
+
+    float d_outside = sdf_box(VEC3(2.0f, 0.0f, 0.0f), center, half);
+    ASSERT_FLOAT_EQ(d_outside, 1.0f);
+
+    float d_corner = sdf_box(VEC3(2.0f, 2.0f, 0.0f), center, half);
+    ASSERT_FLOAT_NEAR(d_corner, sqrtf(2.0f), 1e-5f);
+
+    return 0;
+}
+
+/* ============================================================================
+ * Section 26: Cross-Brick SDF Interpolation Tests
+ * ============================================================================ */
+
+TEST(cross_brick_interpolation_continuity) {
+    Arena* arena = arena_create(16 * 1024 * 1024);
+    WorldBrickMap* world = world_create(arena,
+        VEC3(0.0f, 0.0f, 0.0f), VEC3(16.0f, 16.0f, 16.0f),
+        1.0f, 100, 256);
+
+    world_set_sphere(world, VEC3(8.0f, 4.0f, 4.0f), 3.0f, 1);
+
+    float prev_sdf = world_sdf_query(world, VEC3(6.0f, 4.0f, 4.0f));
+    int discontinuities = 0;
+
+    for (float x = 6.2f; x < 10.0f; x += 0.2f) {
+        float sdf = world_sdf_query(world, VEC3(x, 4.0f, 4.0f));
+        float jump = fabsf(sdf - prev_sdf);
+        if (jump > 0.5f) {
+            discontinuities++;
+        }
+        prev_sdf = sdf;
+    }
+
+    ASSERT_EQ(discontinuities, 0);
+
+    arena_destroy(arena);
+    return 0;
+}
+
+/* ============================================================================
+ * Section 27: World Stats Extended Tests
+ * ============================================================================ */
+
+TEST(world_stats_empty) {
+    Arena* arena = arena_create(16 * 1024 * 1024);
+    WorldBrickMap* world = world_create(arena,
+        VEC3(-10.0f, -10.0f, -10.0f), VEC3(10.0f, 10.0f, 10.0f),
+        0.1f, 100, 256);
+
+    WorldStats stats = world_get_stats(world);
+    ASSERT_EQ(stats.active_bricks, 0);
+    ASSERT_EQ(stats.uniform_inside, 0);
+    ASSERT_EQ(stats.uniform_outside, 0);
+    ASSERT_FLOAT_EQ(stats.fill_ratio, 0.0f);
+    ASSERT_TRUE(stats.grid_memory > 0);
+    ASSERT_TRUE(stats.total_memory > 0);
+
+    arena_destroy(arena);
+    return 0;
+}
+
+TEST(world_stats_null) {
+    WorldStats stats = world_get_stats(NULL);
+    ASSERT_EQ(stats.active_bricks, 0);
+    ASSERT_EQ(stats.total_bricks, 0);
+    ASSERT_FLOAT_EQ(stats.fill_ratio, 0.0f);
+
+    return 0;
+}
+
+/* ============================================================================
  * Main
  * ============================================================================ */
 
@@ -1200,6 +2099,75 @@ int main(void) {
     RUN_TEST(edge_world_boundary);
     RUN_TEST(edge_brick_boundary);
     RUN_TEST(edge_voxel_boundary);
+
+    /* Batch SDF query tests */
+    RUN_TEST(batch_sdf_query_basic);
+    RUN_TEST(batch_sdf_query_null_args);
+    RUN_TEST(batch_sdf_gradient_basic);
+
+    /* World lifecycle extended tests */
+    RUN_TEST(world_clear_resets_state);
+    RUN_TEST(world_clear_null_safe);
+    RUN_TEST(world_destroy_null_safe);
+    RUN_TEST(world_memory_size_basic);
+
+    /* Feature channel tests */
+    RUN_TEST(feature_channel_add_and_find);
+    RUN_TEST(feature_channel_add_invalid);
+    RUN_TEST(feature_channel_set_query_f32);
+    RUN_TEST(feature_channel_set_query_u8);
+    RUN_TEST(feature_channel_multicomponent);
+    RUN_TEST(feature_channel_retroactive_allocation);
+
+    /* Uniform brick detection tests */
+    RUN_TEST(detect_uniform_outside_brick);
+    RUN_TEST(detect_uniform_inside_brick);
+    RUN_TEST(detect_non_uniform_brick);
+    RUN_TEST(compact_uniform_bricks_basic);
+    RUN_TEST(mark_brick_uniform_transitions);
+
+    /* Page dirty tracking tests */
+    RUN_TEST(page_dirty_tracking_basic);
+    RUN_TEST(page_dirty_manual_mark);
+    RUN_TEST(page_dirty_null_safety);
+
+    /* Raymarching extended tests */
+    RUN_TEST(raymarch_hit_position_on_surface);
+    RUN_TEST(raymarch_hit_normal_direction);
+    RUN_TEST(raymarch_starting_inside_surface);
+    RUN_TEST(raymarch_hit_material_matches_primitive);
+
+    /* Coordinate transformation extended tests */
+    RUN_TEST(coords_roundtrip_pos_to_brick_to_voxel);
+    RUN_TEST(coords_world_max_brick);
+
+    /* SDF query extended tests */
+    RUN_TEST(sdf_monotonicity_along_ray);
+    RUN_TEST(sdf_gradient_at_box_face);
+    RUN_TEST(sdf_normal_degenerate_empty_world);
+    RUN_TEST(sdf_query_uniform_inside_returns_negative);
+    RUN_TEST(sdf_query_null_world);
+
+    /* Brick read/write extended tests */
+    RUN_TEST(brick_sdf_write_read_roundtrip);
+    RUN_TEST(brick_sdf_accessor_invalid_index);
+    RUN_TEST(set_sdf_allocates_brick_on_demand);
+
+    /* SDF scale configuration tests */
+    RUN_TEST(sdf_scale_configuration);
+
+    /* Inline helper tests */
+    RUN_TEST(voxel_linear_index_corners);
+    RUN_TEST(brick_is_uniform_helper);
+    RUN_TEST(sdf_primitive_sphere_at_origin);
+    RUN_TEST(sdf_primitive_box_at_origin);
+
+    /* Cross-brick interpolation tests */
+    RUN_TEST(cross_brick_interpolation_continuity);
+
+    /* World stats extended tests */
+    RUN_TEST(world_stats_empty);
+    RUN_TEST(world_stats_null);
 
     TEST_SUITE_END();
 }

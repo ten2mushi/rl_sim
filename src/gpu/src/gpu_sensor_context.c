@@ -27,7 +27,7 @@
 typedef struct GpuSensorSlot {
     GpuRayTable ray_table;
     GpuSensorOutput output;
-    GpuBuffer* drone_indices;   /* uint32 [max_drones] - maps thread index -> drone */
+    GpuBuffer* agent_indices;   /* uint32 [max_agents] - maps thread index -> drone */
     GpuKernel* kernel;
     bool initialized;
     SensorType type;
@@ -38,7 +38,7 @@ typedef struct GpuSensorSlot {
 
     /* Dispatch state (set by gpu_sensors_dispatch, read by scatter) */
     uint32_t dispatch_sensor_idx;
-    uint32_t dispatch_drone_count;
+    uint32_t dispatch_agent_count;
 } GpuSensorSlot;
 
 #define GPU_MAX_SENSOR_SLOTS 16
@@ -54,7 +54,7 @@ struct GpuSensorContext {
     GpuSensorSlot slots[GPU_MAX_SENSOR_SLOTS];
     uint32_t slot_count;
 
-    uint32_t max_drones;
+    uint32_t max_agents;
     bool atlas_valid;
     const struct WorldBrickMap* last_world;  /* detect world pointer changes */
 };
@@ -63,8 +63,8 @@ struct GpuSensorContext {
  * Section 2: Lifecycle
  * ============================================================================ */
 
-struct GpuSensorContext* gpu_sensor_context_create(uint32_t max_drones) {
-    if (!gpu_is_available() || max_drones == 0) return NULL;
+struct GpuSensorContext* gpu_sensor_context_create(uint32_t max_agents) {
+    if (!gpu_is_available() || max_agents == 0) return NULL;
 
     GpuDevice* device = gpu_device_create();
     if (device == NULL) return NULL;
@@ -85,10 +85,10 @@ struct GpuSensorContext* gpu_sensor_context_create(uint32_t max_drones) {
 
     ctx->fence = gpu_event_create(device);
     ctx->fence_value = 0;
-    ctx->max_drones = max_drones;
+    ctx->max_agents = max_agents;
 
     /* Create drone pose buffers */
-    ctx->poses = gpu_drone_poses_create(device, max_drones);
+    ctx->poses = gpu_agent_poses_create(device, max_agents);
     if (ctx->poses.pos_x == NULL) {
         gpu_queue_destroy(ctx->queue);
         gpu_event_destroy(ctx->fence);
@@ -107,12 +107,12 @@ void gpu_sensor_context_destroy(struct GpuSensorContext* ctx) {
     for (uint32_t i = 0; i < ctx->slot_count; i++) {
         gpu_ray_table_destroy(&ctx->slots[i].ray_table);
         gpu_sensor_output_destroy(&ctx->slots[i].output);
-        gpu_buffer_destroy(ctx->slots[i].drone_indices);
+        gpu_buffer_destroy(ctx->slots[i].agent_indices);
         gpu_kernel_destroy(ctx->slots[i].kernel);
     }
 
     gpu_sdf_atlas_destroy(&ctx->atlas);
-    gpu_drone_poses_destroy(&ctx->poses);
+    gpu_agent_poses_destroy(&ctx->poses);
     gpu_event_destroy(ctx->fence);
     gpu_queue_destroy(ctx->queue);
     gpu_device_destroy(ctx->device);
@@ -125,8 +125,8 @@ void gpu_sensor_context_destroy(struct GpuSensorContext* ctx) {
 
 GpuResult gpu_sensor_context_sync_frame(struct GpuSensorContext* ctx,
                                          const struct WorldBrickMap* world,
-                                         const struct DroneStateSOA* drones,
-                                         uint32_t drone_count) {
+                                         const RigidBodyStateSOA* agents,
+                                         uint32_t agent_count) {
     if (ctx == NULL) return GPU_ERROR_INVALID_ARG;
 
     /* Sync SDF atlas */
@@ -160,8 +160,8 @@ GpuResult gpu_sensor_context_sync_frame(struct GpuSensorContext* ctx,
     }
 
     /* Upload drone poses */
-    if (drones != NULL && drone_count > 0) {
-        GpuResult r = gpu_drone_poses_upload(&ctx->poses, drones, drone_count);
+    if (agents != NULL && agent_count > 0) {
+        GpuResult r = gpu_agent_poses_upload(&ctx->poses, agents, agent_count);
         if (r != GPU_SUCCESS) return r;
     }
 
@@ -179,31 +179,23 @@ static bool sensor_type_to_gpu_params(SensorType type, const Sensor* sensor,
                                        uint32_t* out_height,
                                        uint32_t* out_fpp) {
     switch (type) {
-        case SENSOR_TYPE_CAMERA_DEPTH: {
-            CameraImpl* cam = (CameraImpl*)sensor->impl;
-            if (cam == NULL) return false;
-            *out_mode = OUTPUT_MODE_DEPTH;
-            *out_width = cam->width;
-            *out_height = cam->height;
-            *out_fpp = 1;
-            return true;
-        }
-        case SENSOR_TYPE_CAMERA_RGB: {
-            CameraImpl* cam = (CameraImpl*)sensor->impl;
-            if (cam == NULL) return false;
-            *out_mode = OUTPUT_MODE_RGB;
-            *out_width = cam->width;
-            *out_height = cam->height;
-            *out_fpp = 3;
-            return true;
-        }
+        case SENSOR_TYPE_CAMERA_DEPTH:
+        case SENSOR_TYPE_CAMERA_RGB:
         case SENSOR_TYPE_CAMERA_SEGMENTATION: {
             CameraImpl* cam = (CameraImpl*)sensor->impl;
             if (cam == NULL) return false;
-            *out_mode = OUTPUT_MODE_MATERIAL;
+            if (type == SENSOR_TYPE_CAMERA_RGB) {
+                *out_mode = OUTPUT_MODE_RGB;
+                *out_fpp = 3;
+            } else if (type == SENSOR_TYPE_CAMERA_SEGMENTATION) {
+                *out_mode = OUTPUT_MODE_MATERIAL;
+                *out_fpp = 1;
+            } else {
+                *out_mode = OUTPUT_MODE_DEPTH;
+                *out_fpp = 1;
+            }
             *out_width = cam->width;
             *out_height = cam->height;
-            *out_fpp = 1;
             return true;
         }
         case SENSOR_TYPE_LIDAR_3D: {
@@ -272,7 +264,7 @@ static const Vec3* sensor_get_ray_directions(const Sensor* sensor, uint32_t* cou
 
 GpuResult gpu_sensor_context_init_sensor(struct GpuSensorContext* ctx,
                                           const Sensor* sensor,
-                                          uint32_t drone_count) {
+                                          uint32_t agent_count) {
     if (ctx == NULL || sensor == NULL) return GPU_ERROR_INVALID_ARG;
     if (ctx->slot_count >= GPU_MAX_SENSOR_SLOTS) return GPU_ERROR_NO_MEMORY;
 
@@ -307,17 +299,17 @@ GpuResult gpu_sensor_context_init_sensor(struct GpuSensorContext* ctx,
     }
 
     /* Create output buffer */
-    uint32_t total_floats = drone_count * width * height * fpp;
+    uint32_t total_floats = agent_count * width * height * fpp;
     slot->output = gpu_sensor_output_create(ctx->device, total_floats);
 
     /* Create drone index buffer */
-    slot->drone_indices = gpu_buffer_create(ctx->device,
-        drone_count * sizeof(uint32_t), GPU_MEMORY_SHARED);
+    slot->agent_indices = gpu_buffer_create(ctx->device,
+        agent_count * sizeof(uint32_t), GPU_MEMORY_SHARED);
 
     slot->initialized = (slot->kernel != NULL &&
                          slot->ray_table.rays != NULL &&
                          slot->output.buffer != NULL &&
-                         slot->drone_indices != NULL);
+                         slot->agent_indices != NULL);
 
     ctx->slot_count++;
     return slot->initialized ? GPU_SUCCESS : GPU_ERROR_COMPILE;
@@ -366,8 +358,8 @@ GpuBuffer* gpu_slot_output_buffer(GpuSensorSlot* slot) {
     return slot ? slot->output.buffer : NULL;
 }
 
-GpuBuffer* gpu_slot_drone_indices(GpuSensorSlot* slot) {
-    return slot ? slot->drone_indices : NULL;
+GpuBuffer* gpu_slot_agent_indices(GpuSensorSlot* slot) {
+    return slot ? slot->agent_indices : NULL;
 }
 
 uint32_t gpu_slot_image_width(GpuSensorSlot* slot) {
@@ -382,19 +374,23 @@ uint32_t gpu_slot_floats_per_pixel(GpuSensorSlot* slot) {
     return slot ? slot->floats_per_pixel : 0;
 }
 
+uint32_t gpu_slot_output_mode(GpuSensorSlot* slot) {
+    return slot ? slot->output_mode : 0;
+}
+
 void gpu_slot_set_dispatch_info(GpuSensorSlot* slot, uint32_t sensor_idx,
-                                 uint32_t drone_count) {
+                                 uint32_t agent_count) {
     if (slot == NULL) return;
     slot->dispatch_sensor_idx = sensor_idx;
-    slot->dispatch_drone_count = drone_count;
+    slot->dispatch_agent_count = agent_count;
 }
 
 uint32_t gpu_slot_dispatch_sensor_idx(GpuSensorSlot* slot) {
     return slot ? slot->dispatch_sensor_idx : 0;
 }
 
-uint32_t gpu_slot_dispatch_drone_count(GpuSensorSlot* slot) {
-    return slot ? slot->dispatch_drone_count : 0;
+uint32_t gpu_slot_dispatch_agent_count(GpuSensorSlot* slot) {
+    return slot ? slot->dispatch_agent_count : 0;
 }
 
 bool gpu_slot_is_initialized(GpuSensorSlot* slot) {

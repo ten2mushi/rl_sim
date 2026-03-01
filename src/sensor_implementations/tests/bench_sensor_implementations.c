@@ -18,6 +18,8 @@
 #include "sensor_system.h"
 #include "sensor_implementations.h"
 #include "collision_system.h"
+#include "drone_state.h"
+#include "platform_quadcopter.h"
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
@@ -49,12 +51,12 @@ typedef struct BenchResult {
 } BenchResult;
 
 static BenchResult bench_sensor(Arena* arena, SensorType type, SensorConfig config,
-                                uint32_t num_drones, const char* name, double target_ms) {
+                                uint32_t num_agents, const char* name, double target_ms) {
     BenchResult result = {0};
     result.name = name;
     result.target_ms = target_ms;
 
-    SensorSystem* sys = sensor_system_create(arena, num_drones, 4, 16384);
+    SensorSystem* sys = sensor_system_create(arena, num_agents, 4, 16384);
     if (sys == NULL) {
         printf("Failed to create sensor system for %s\n", name);
         return result;
@@ -70,23 +72,23 @@ static BenchResult bench_sensor(Arena* arena, SensorType type, SensorConfig conf
     }
 
     /* Attach to all drones */
-    for (uint32_t d = 0; d < num_drones; d++) {
+    for (uint32_t d = 0; d < num_agents; d++) {
         sensor_system_attach(sys, d, sensor_idx);
     }
 
     /* Create drone state */
-    DroneStateSOA* drones = drone_state_create(arena, num_drones);
-    for (uint32_t d = 0; d < num_drones; d++) {
-        drone_state_init(drones, d);
-        drones->pos_x[d] = (float)(d % 32) * 2.0f;
-        drones->pos_y[d] = (float)(d / 32) * 2.0f;
-        drones->pos_z[d] = 10.0f;
+    PlatformStateSOA* drones = platform_state_create(arena, num_agents, QUAD_STATE_EXT_COUNT);
+    for (uint32_t d = 0; d < num_agents; d++) {
+        platform_state_init(drones, d);
+        drones->rigid_body.pos_x[d] = (float)(d % 32) * 2.0f;
+        drones->rigid_body.pos_y[d] = (float)(d / 32) * 2.0f;
+        drones->rigid_body.pos_z[d] = 10.0f;
     }
-    drones->count = num_drones;
+    drones->rigid_body.count = num_agents;
 
     /* Warmup */
     for (int i = 0; i < WARMUP_ITERATIONS; i++) {
-        sensor_system_sample_all(sys, drones, NULL, NULL, num_drones);
+        sensor_system_sample_all(sys, drones, NULL, NULL, num_agents);
     }
 
     /* Benchmark */
@@ -96,7 +98,7 @@ static BenchResult bench_sensor(Arena* arena, SensorType type, SensorConfig conf
 
     for (int i = 0; i < BENCH_ITERATIONS; i++) {
         double start = get_time_ms();
-        sensor_system_sample_all(sys, drones, NULL, NULL, num_drones);
+        sensor_system_sample_all(sys, drones, NULL, NULL, num_agents);
         double end = get_time_ms();
 
         double elapsed = end - start;
@@ -135,17 +137,17 @@ int main(void) {
         return 1;
     }
 
-    uint32_t num_drones = 1024;
+    uint32_t num_agents = 1024;
     BenchResult results[10];
     int num_results = 0;
 
-    printf("Running benchmarks with %u drones...\n\n", num_drones);
+    printf("Running benchmarks with %u drones...\n\n", num_agents);
 
     /* Position Sensor */
     {
         SensorConfig config = sensor_config_position();
         results[num_results++] = bench_sensor(arena, SENSOR_TYPE_POSITION, config,
-                                              num_drones, "Position", 0.05);
+                                              num_agents, "Position", 0.05);
         arena_reset(arena);
     }
 
@@ -153,7 +155,7 @@ int main(void) {
     {
         SensorConfig config = sensor_config_velocity();
         results[num_results++] = bench_sensor(arena, SENSOR_TYPE_VELOCITY, config,
-                                              num_drones, "Velocity", 0.05);
+                                              num_agents, "Velocity", 0.05);
         arena_reset(arena);
     }
 
@@ -161,7 +163,7 @@ int main(void) {
     {
         SensorConfig config = sensor_config_imu();
         results[num_results++] = bench_sensor(arena, SENSOR_TYPE_IMU, config,
-                                              num_drones, "IMU (noise)", 0.15);
+                                              num_agents, "IMU (noise)", 0.15);
         arena_reset(arena);
     }
 
@@ -169,7 +171,7 @@ int main(void) {
     {
         SensorConfig config = sensor_config_imu();
         results[num_results++] = bench_sensor(arena, SENSOR_TYPE_IMU, config,
-                                              num_drones, "IMU (no noise)", 0.1);
+                                              num_agents, "IMU (no noise)", 0.1);
         arena_reset(arena);
     }
 
@@ -177,7 +179,7 @@ int main(void) {
     {
         SensorConfig config = sensor_config_tof(VEC3(0, 0, -1), 10.0f);
         results[num_results++] = bench_sensor(arena, SENSOR_TYPE_TOF, config,
-                                              num_drones, "ToF", 0.5);
+                                              num_agents, "ToF", 0.5);
         arena_reset(arena);
     }
 
@@ -185,7 +187,7 @@ int main(void) {
     {
         SensorConfig config = sensor_config_lidar_2d(64, 3.14159f, 20.0f);
         results[num_results++] = bench_sensor(arena, SENSOR_TYPE_LIDAR_2D, config,
-                                              num_drones, "LiDAR-2D (64)", 5.0);
+                                              num_agents, "LiDAR-2D (64)", 5.0);
         arena_reset(arena);
     }
 
@@ -193,7 +195,7 @@ int main(void) {
     {
         SensorConfig config = sensor_config_lidar_3d(64, 16, 6.28f, 0.5f, 50.0f);
         results[num_results++] = bench_sensor(arena, SENSOR_TYPE_LIDAR_3D, config,
-                                              num_drones, "LiDAR-3D (16x64)", 20.0);
+                                              num_agents, "LiDAR-3D (16x64)", 20.0);
         arena_reset(arena);
     }
 
@@ -203,34 +205,34 @@ int main(void) {
         result.name = "Neighbor (K=5)";
         result.target_ms = 1.0;
 
-        SensorSystem* sys = sensor_system_create(arena, num_drones, 4, 16384);
+        SensorSystem* sys = sensor_system_create(arena, num_agents, 4, 16384);
         sensor_implementations_register_all(&sys->registry);
 
         SensorConfig config = sensor_config_neighbor(5, 20.0f);
         uint32_t sensor_idx = sensor_system_create_sensor(sys, &config);
 
-        for (uint32_t d = 0; d < num_drones; d++) {
+        for (uint32_t d = 0; d < num_agents; d++) {
             sensor_system_attach(sys, d, sensor_idx);
         }
 
         /* Create drone state */
-        DroneStateSOA* drones = drone_state_create(arena, num_drones);
-        for (uint32_t d = 0; d < num_drones; d++) {
-            drone_state_init(drones, d);
-            drones->pos_x[d] = (float)(d % 32) * 2.0f;
-            drones->pos_y[d] = (float)(d / 32) * 2.0f;
-            drones->pos_z[d] = 10.0f;
+        PlatformStateSOA* drones = platform_state_create(arena, num_agents, QUAD_STATE_EXT_COUNT);
+        for (uint32_t d = 0; d < num_agents; d++) {
+            platform_state_init(drones, d);
+            drones->rigid_body.pos_x[d] = (float)(d % 32) * 2.0f;
+            drones->rigid_body.pos_y[d] = (float)(d / 32) * 2.0f;
+            drones->rigid_body.pos_z[d] = 10.0f;
         }
-        drones->count = num_drones;
+        drones->rigid_body.count = num_agents;
 
         /* Create collision system with spatial hashing */
-        CollisionSystem* collision = collision_create(arena, num_drones, 0.2f, 2.0f);
-        collision_build_spatial_hash(collision, drones, num_drones);
+        CollisionSystem* collision = collision_create(arena, num_agents, 0.2f, 2.0f);
+        collision_build_spatial_hash(collision, &drones->rigid_body, num_agents);
 
         /* Warmup */
         for (int i = 0; i < WARMUP_ITERATIONS; i++) {
-            collision_build_spatial_hash(collision, drones, num_drones);
-            sensor_system_sample_all(sys, drones, NULL, collision, num_drones);
+            collision_build_spatial_hash(collision, &drones->rigid_body, num_agents);
+            sensor_system_sample_all(sys, drones, NULL, collision, num_agents);
         }
 
         /* Benchmark */
@@ -239,9 +241,9 @@ int main(void) {
         double max_time = 0.0;
 
         for (int i = 0; i < BENCH_ITERATIONS; i++) {
-            collision_build_spatial_hash(collision, drones, num_drones);
+            collision_build_spatial_hash(collision, &drones->rigid_body, num_agents);
             double start = get_time_ms();
-            sensor_system_sample_all(sys, drones, NULL, collision, num_drones);
+            sensor_system_sample_all(sys, drones, NULL, collision, num_agents);
             double end = get_time_ms();
 
             double elapsed = end - start;

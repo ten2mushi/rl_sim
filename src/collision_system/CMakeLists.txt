@@ -154,10 +154,16 @@ if(COLLISION_SYSTEM_BUILD_TESTS)
     # Add to CTest
     add_test(NAME test_collision_system COMMAND test_collision_system)
 
+    # Stress and edge-case tests (Yoneda philosophy)
+    add_executable(test_collision_stress tests/test_collision_stress.c)
+    target_link_libraries(test_collision_stress PRIVATE collision_system)
+    target_compile_definitions(test_collision_stress PRIVATE FOUNDATION_DEBUG=1)
+    add_test(NAME test_collision_stress COMMAND test_collision_stress)
+
     # Custom target to run tests with output
     add_custom_target(test_collision_system_run
         COMMAND ${CMAKE_CTEST_COMMAND} --output-on-failure
-        DEPENDS test_collision_system
+        DEPENDS test_collision_system test_collision_stress
         COMMENT "Running collision_system unit tests"
     )
 endif()
@@ -192,7 +198,6 @@ endif()
 include(GNUInstallDirs)
 
 install(TARGETS collision_system
-    EXPORT collision_systemTargets
     ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
     LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
 )
@@ -201,11 +206,6 @@ install(FILES ${COLLISION_SYSTEM_HEADERS}
     DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/collision_system
 )
 
-install(EXPORT collision_systemTargets
-    FILE collision_systemTargets.cmake
-    NAMESPACE collision_system::
-    DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/collision_system
-)
 
 # ============================================================================
 # Summary

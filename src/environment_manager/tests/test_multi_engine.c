@@ -25,11 +25,11 @@
  * Helper: Create a small config for testing
  * ============================================================================ */
 
-static EngineConfig small_config(int drones_per_env, uint64_t seed) {
+static EngineConfig small_config(int agents_per_env, uint64_t seed) {
     EngineConfig config = engine_config_default();
     config.num_envs = 1;
-    config.drones_per_env = (uint32_t)drones_per_env;
-    config.total_drones = (uint32_t)drones_per_env;
+    config.agents_per_env = (uint32_t)agents_per_env;
+    config.total_agents = (uint32_t)agents_per_env;
     config.seed = seed;
     return config;
 }
@@ -43,7 +43,7 @@ TEST(single_engine_create) {
 
     char error[ENGINE_ERROR_MSG_SIZE];
     error[0] = '\0';
-    BatchDroneEngine* engine = engine_create(&config, error);
+    BatchEngine* engine = engine_create(&config, error);
     ASSERT_NOT_NULL(engine);
     ASSERT_TRUE(engine->obs_dim == 15);
     engine_destroy(engine);
@@ -56,7 +56,7 @@ TEST(sequential_create_destroy) {
 
         char error[ENGINE_ERROR_MSG_SIZE];
         error[0] = '\0';
-        BatchDroneEngine* engine = engine_create(&config, error);
+        BatchEngine* engine = engine_create(&config, error);
         ASSERT_NOT_NULL(engine);
         engine_destroy(engine);
     }
@@ -65,7 +65,7 @@ TEST(sequential_create_destroy) {
 
 TEST(multi_engine_create_close) {
     const int NUM_ENGINES = 4;
-    BatchDroneEngine* engines[4] = {0};
+    BatchEngine* engines[4] = {0};
 
     for (int i = 0; i < NUM_ENGINES; i++) {
         EngineConfig config = small_config(4, 42 + i);
@@ -84,7 +84,7 @@ TEST(multi_engine_create_close) {
 
 TEST(multi_engine_step_close) {
     const int NUM_ENGINES = 4;
-    BatchDroneEngine* engines[4] = {0};
+    BatchEngine* engines[4] = {0};
 
     for (int i = 0; i < NUM_ENGINES; i++) {
         EngineConfig config = small_config(4, 42 + i);
@@ -142,10 +142,10 @@ TEST(puffer_env_create_close) {
  * Diagnostic: obs_dim mismatch detection
  *
  * BUG DETECTED: engine->obs_dim (actual, 15) != sensors->obs_dim (max, 256).
- * sensor_system_reset() memsets max_drones * sensors->obs_dim * sizeof(float)
+ * sensor_system_reset() memsets max_agents * sensors->obs_dim * sizeof(float)
  * bytes through the external buffer, but the buffer is only sized for
- * max_drones * engine->obs_dim * sizeof(float). This overflows by
- * max_drones * (sensors->obs_dim - engine->obs_dim) * sizeof(float) bytes.
+ * max_agents * engine->obs_dim * sizeof(float). This overflows by
+ * max_agents * (sensors->obs_dim - engine->obs_dim) * sizeof(float) bytes.
  *
  * Expected: engine->obs_dim == sensors->obs_dim (or at least the memset
  * and scatter should use engine->obs_dim, not sensors->obs_dim)
@@ -155,7 +155,7 @@ TEST(obs_dim_mismatch_detection) {
     EngineConfig config = small_config(4, 42);
 
     char error[ENGINE_ERROR_MSG_SIZE];
-    BatchDroneEngine* engine = engine_create(&config, error);
+    BatchEngine* engine = engine_create(&config, error);
     ASSERT_NOT_NULL(engine);
 
     uint32_t engine_obs_dim = engine->obs_dim;
@@ -163,11 +163,11 @@ TEST(obs_dim_mismatch_detection) {
 
     printf("\n    [DIAG] engine->obs_dim = %u\n", engine_obs_dim);
     printf("    [DIAG] sensors->obs_dim = %zu\n", sensor_obs_dim);
-    printf("    [DIAG] total_drones = %u\n", engine->config.total_drones);
+    printf("    [DIAG] total_agents = %u\n", engine->config.total_agents);
 
-    size_t engine_buffer_bytes = ((size_t)engine->config.total_drones *
+    size_t engine_buffer_bytes = ((size_t)engine->config.total_agents *
                                    engine_obs_dim * sizeof(float) + 31) & ~(size_t)31;
-    size_t sensor_memset_bytes = (size_t)engine->sensors->max_drones *
+    size_t sensor_memset_bytes = (size_t)engine->sensors->max_agents *
                                   sensor_obs_dim * sizeof(float);
 
     printf("    [DIAG] engine obs buffer = %zu bytes\n", engine_buffer_bytes);
@@ -210,7 +210,7 @@ TEST(engine_pointer_stable_after_reset) {
     ASSERT_NOT_NULL(env->engine);
 
     /* Save engine pointer and sentinel values */
-    BatchDroneEngine* engine_before = env->engine;
+    BatchEngine* engine_before = env->engine;
     const char* name_before = env->name;
 
     printf("\n    [DIAG] env=%p, env->engine=%p before reset\n",
@@ -223,7 +223,7 @@ TEST(engine_pointer_stable_after_reset) {
     printf("    [DIAG] env->engine=%p after reset\n", (void*)env->engine);
 
     /* BUG DETECTED: env->engine becomes NULL after reset due to buffer overflow
-     * in sensor_system_reset(). The memset writes max_drones * max_obs_dim * 4
+     * in sensor_system_reset(). The memset writes max_agents * max_obs_dim * 4
      * bytes through the external buffer, overflowing into subsequent arena
      * allocations including the PufferEnv struct.
      *
@@ -261,7 +261,7 @@ TEST(shared_buffer_pattern_diagnostic) {
     }
 
     /* Save engine pointers before any reset/step */
-    BatchDroneEngine* saved_engines[4];
+    BatchEngine* saved_engines[4];
     for (int i = 0; i < NUM_ENVS; i++) {
         saved_engines[i] = envs[i]->engine;
         printf("\n    [DIAG] envs[%d]->engine = %p", i, (void*)saved_engines[i]);
@@ -299,7 +299,7 @@ TEST(shared_buffer_pattern_diagnostic) {
                 ASSERT_MSG(0, "BUG: engine pointer is NULL during step loop");
             }
 
-            BatchDroneEngine* engine = envs[i]->engine;
+            BatchEngine* engine = envs[i]->engine;
             int start = i * DRONES_PER_ENV;
 
             memcpy(engine->actions, &all_act[start * ACT_DIM],
@@ -372,7 +372,7 @@ TEST(shared_buffer_pattern) {
     for (int step = 0; step < STEPS; step++) {
         for (int i = 0; i < NUM_ENVS; i++) {
             int start = i * DRONES_PER_ENV;
-            BatchDroneEngine* engine = envs[i]->engine;
+            BatchEngine* engine = envs[i]->engine;
 
             memcpy(engine->actions, &all_act[start * ACT_DIM],
                    (size_t)DRONES_PER_ENV * ACT_DIM * sizeof(float));

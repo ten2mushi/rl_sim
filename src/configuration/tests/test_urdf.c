@@ -6,6 +6,7 @@
 #include "test_harness.h"
 #include "urdf_parser.h"
 #include "configuration.h"
+#include "platform_quadcopter.h"
 #include <stdlib.h>
 
 /* ============================================================================
@@ -196,7 +197,7 @@ TEST(parse_null_arguments) {
     return 0;
 }
 
-TEST(apply_to_drone_config) {
+TEST(apply_to_platform_config) {
     URDFProperties urdf;
     urdf_properties_init(&urdf);
 
@@ -216,26 +217,31 @@ TEST(apply_to_drone_config) {
     urdf.motor_tau = 0.03f;
     urdf.max_rpm = 15000.0f;
 
-    /* Create drone config with defaults */
-    DroneConfig config;
-    drone_config_set_defaults(&config);
+    /* Create platform config with defaults */
+    PlatformConfig config;
+    platform_config_set_defaults(&config);
 
     /* Apply URDF */
-    urdf_apply_to_drone_config(&urdf, &config);
+    urdf_apply_to_platform_config(&urdf, &config);
 
-    /* Verify mapping */
+    /* Verify mapping - common fields */
     ASSERT_STR_EQ(config.name, "test_quad");
     ASSERT_FLOAT_NEAR(config.mass, 2.0f, 1e-6f);
     ASSERT_FLOAT_NEAR(config.ixx, 0.05f, 1e-6f);
     ASSERT_FLOAT_NEAR(config.iyy, 0.06f, 1e-6f);
     ASSERT_FLOAT_NEAR(config.izz, 0.07f, 1e-6f);
     ASSERT_FLOAT_NEAR(config.collision_radius, 0.3f, 1e-6f);
-    ASSERT_FLOAT_NEAR(config.arm_length, 0.2f, 1e-6f);
-    ASSERT_FLOAT_NEAR(config.k_thrust, 5e-6f, 1e-10f);
-    ASSERT_FLOAT_NEAR(config.k_torque, 3e-8f, 1e-12f);
-    ASSERT_FLOAT_NEAR(config.motor_tau, 0.03f, 1e-6f);
-    ASSERT_FLOAT_NEAR(config.max_rpm, 15000.0f, 1.0f);
 
+    /* Verify mapping - quadcopter-specific fields */
+    ASSERT_TRUE(config.platform_specific != NULL);
+    QuadcopterConfig* quad = (QuadcopterConfig*)config.platform_specific;
+    ASSERT_FLOAT_NEAR(quad->arm_length, 0.2f, 1e-6f);
+    ASSERT_FLOAT_NEAR(quad->k_thrust, 5e-6f, 1e-10f);
+    ASSERT_FLOAT_NEAR(quad->k_torque, 3e-8f, 1e-12f);
+    ASSERT_FLOAT_NEAR(quad->motor_tau, 0.03f, 1e-6f);
+    ASSERT_FLOAT_NEAR(quad->max_rpm, 15000.0f, 1.0f);
+
+    free(config.platform_specific);
     return 0;
 }
 
@@ -248,15 +254,16 @@ TEST(apply_partial_urdf) {
     urdf.mass = 3.0f;
     /* ixx/iyy/izz left at 0, should not overwrite */
 
-    DroneConfig config;
-    drone_config_set_defaults(&config);
+    PlatformConfig config;
+    platform_config_set_defaults(&config);
     float original_ixx = config.ixx;  /* Save default value */
 
-    urdf_apply_to_drone_config(&urdf, &config);
+    urdf_apply_to_platform_config(&urdf, &config);
 
     ASSERT_FLOAT_NEAR(config.mass, 3.0f, 1e-6f);
     ASSERT_FLOAT_NEAR(config.ixx, original_ixx, 1e-10f);  /* Unchanged */
 
+    free(config.platform_specific);
     return 0;
 }
 
@@ -370,7 +377,7 @@ int main(void) {
     RUN_TEST(parse_null_arguments);
 
     /* Configuration mapping tests */
-    RUN_TEST(apply_to_drone_config);
+    RUN_TEST(apply_to_platform_config);
     RUN_TEST(apply_partial_urdf);
 
     /* Validation tests */

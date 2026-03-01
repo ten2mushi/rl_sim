@@ -466,8 +466,9 @@ typedef struct VoxelizeOptions {
                                Uses unsigned distance with shell thickness offset
                                instead of inside/outside classification. */
     float shell_thickness;  /* Shell thickness in world units (0 = auto: 2 * voxel_size) */
-    Vec3 world_min;         /* Override world min (all zeros = auto from mesh) */
-    Vec3 world_max;         /* Override world max (all zeros = auto from mesh) */
+    Vec3 world_min;         /* Override world min (requires use_custom_bounds) */
+    Vec3 world_max;         /* Override world max (requires use_custom_bounds) */
+    bool use_custom_bounds; /* Explicit flag: apply world_min/world_max overrides */
 } VoxelizeOptions;
 
 /**
@@ -516,6 +517,22 @@ void classify_bricks_fine(BrickClassification* classes, const MeshBVH* bvh,
 void voxelize_surface_bricks(WorldBrickMap* world, const BrickClassification* classes,
                              const MeshBVH* bvh, const TriangleMesh* mesh,
                              const VoxelizeOptions* options);
+
+/**
+ * Eliminate phantom int8=0 voxels from quantization dead zone.
+ *
+ * Int8 quantization via C truncation maps SDF values in
+ * (-sdf_scale/127, +sdf_scale/127) to int8=0 (dequant 0.0). The raymarcher
+ * treats 0.0 < RAYMARCH_HIT_DIST as a surface hit, creating phantom surfaces.
+ * This sweep detects isolated zeros (no negative face-neighbor) and promotes
+ * them to int8=+1.
+ *
+ * Must be called after voxelize_surface_bricks() or GPU voxelization.
+ *
+ * @param world   World brick map with populated SDF data
+ * @param classes Brick classification (only SURFACE bricks are scanned)
+ */
+void cleanup_phantom_zeros(WorldBrickMap* world, const BrickClassification* classes);
 
 /**
  * Auto-detect optimal voxelization mode for a mesh.

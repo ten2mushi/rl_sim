@@ -6,6 +6,8 @@
  */
 
 #include "configuration.h"
+#include "platform_quadcopter.h"
+#include "platform_diff_drive.h"
 #include "toml.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -22,15 +24,6 @@ static float get_float(toml_table_t* table, const char* key, float def) {
     if (!table) return def;
     toml_datum_t d = toml_double_in(table, key);
     return d.ok ? (float)d.u.d : def;
-}
-
-/**
- * Get integer value from TOML table with default.
- */
-static int64_t get_int(toml_table_t* table, const char* key, int64_t def) {
-    if (!table) return def;
-    toml_datum_t d = toml_int_in(table, key);
-    return d.ok ? d.u.i : def;
 }
 
 /**
@@ -64,19 +57,16 @@ static void get_string(toml_table_t* table, const char* key,
 
     if (!table) {
         if (out != def) {
-            strncpy(out, def, out_size - 1);
-            out[out_size - 1] = '\0';
+            snprintf(out, out_size, "%s", def);
         }
         return;
     }
     toml_datum_t d = toml_string_in(table, key);
     if (d.ok) {
-        strncpy(out, d.u.s, out_size - 1);
-        out[out_size - 1] = '\0';
+        snprintf(out, out_size, "%s", d.u.s);
         free(d.u.s);
     } else if (out != def) {
-        strncpy(out, def, out_size - 1);
-        out[out_size - 1] = '\0';
+        snprintf(out, out_size, "%s", def);
     }
     /* If key not found and out == def, do nothing (already has default) */
 }
@@ -110,33 +100,86 @@ static void get_float_array(toml_table_t* table, const char* key,
  * ============================================================================ */
 
 /**
- * Parse [drone] section.
+ * Parse [platform] section.
+ * Common fields live at [platform] level, quad-specific in [platform.quadcopter].
  */
-static void parse_drone(toml_table_t* section, DroneConfig* drone) {
+static void parse_platform(toml_table_t* section, PlatformConfig* platform) {
     if (!section) return;
 
-    get_string(section, "name", drone->name, sizeof(drone->name), drone->name);
-    get_string(section, "model_path", drone->model_path, sizeof(drone->model_path), drone->model_path);
+    get_string(section, "type", platform->type, sizeof(platform->type), platform->type);
+    get_string(section, "name", platform->name, sizeof(platform->name), platform->name);
+    get_string(section, "model_path", platform->model_path, sizeof(platform->model_path), platform->model_path);
 
-    drone->mass = get_float(section, "mass", drone->mass);
-    drone->arm_length = get_float(section, "arm_length", drone->arm_length);
-    drone->ixx = get_float(section, "ixx", drone->ixx);
-    drone->iyy = get_float(section, "iyy", drone->iyy);
-    drone->izz = get_float(section, "izz", drone->izz);
-    drone->k_thrust = get_float(section, "k_thrust", drone->k_thrust);
-    drone->k_torque = get_float(section, "k_torque", drone->k_torque);
-    drone->motor_tau = get_float(section, "motor_tau", drone->motor_tau);
-    drone->max_rpm = get_float(section, "max_rpm", drone->max_rpm);
-    drone->collision_radius = get_float(section, "collision_radius", drone->collision_radius);
-    drone->k_drag = get_float(section, "k_drag", drone->k_drag);
-    drone->k_drag_angular = get_float(section, "k_drag_angular", drone->k_drag_angular);
-    drone->max_velocity = get_float(section, "max_velocity", drone->max_velocity);
-    drone->max_angular_velocity = get_float(section, "max_angular_velocity", drone->max_angular_velocity);
-    drone->max_tilt_angle = get_float(section, "max_tilt_angle", drone->max_tilt_angle);
-    drone->scale = get_float(section, "scale", drone->scale);
+    platform->mass = get_float(section, "mass", platform->mass);
+    platform->ixx = get_float(section, "ixx", platform->ixx);
+    platform->iyy = get_float(section, "iyy", platform->iyy);
+    platform->izz = get_float(section, "izz", platform->izz);
+    platform->collision_radius = get_float(section, "collision_radius", platform->collision_radius);
+    platform->max_velocity = get_float(section, "max_velocity", platform->max_velocity);
+    platform->max_angular_velocity = get_float(section, "max_angular_velocity", platform->max_angular_velocity);
+    platform->max_tilt_angle = get_float(section, "max_tilt_angle", platform->max_tilt_angle);
+    platform->scale = get_float(section, "scale", platform->scale);
 
-    float def_color[3] = {drone->color[0], drone->color[1], drone->color[2]};
-    get_float_array(section, "color", drone->color, 3, def_color);
+    float def_color[3] = {platform->color[0], platform->color[1], platform->color[2]};
+    get_float_array(section, "color", platform->color, 3, def_color);
+
+    /* Parse [platform.quadcopter] sub-table */
+    toml_table_t* quad_section = toml_table_in(section, "quadcopter");
+    if (quad_section && platform->platform_specific) {
+        QuadcopterConfig* quad = (QuadcopterConfig*)platform->platform_specific;
+        quad->arm_length = get_float(quad_section, "arm_length", quad->arm_length);
+        quad->k_thrust = get_float(quad_section, "k_thrust", quad->k_thrust);
+        quad->k_torque = get_float(quad_section, "k_torque", quad->k_torque);
+        quad->motor_tau = get_float(quad_section, "motor_tau", quad->motor_tau);
+        quad->max_rpm = get_float(quad_section, "max_rpm", quad->max_rpm);
+        quad->k_drag = get_float(quad_section, "k_drag", quad->k_drag);
+        /* TOML key k_drag_angular maps to QuadcopterConfig.k_ang_damp */
+        quad->k_ang_damp = get_float(quad_section, "k_drag_angular", quad->k_ang_damp);
+    }
+
+    /* Also parse quad fields at top level for backward compatibility with
+     * old [drone] configs that put arm_length etc directly under the section */
+    if (platform->platform_specific && strcmp(platform->type, "quadcopter") == 0 && !quad_section) {
+        QuadcopterConfig* quad = (QuadcopterConfig*)platform->platform_specific;
+        quad->arm_length = get_float(section, "arm_length", quad->arm_length);
+        quad->k_thrust = get_float(section, "k_thrust", quad->k_thrust);
+        quad->k_torque = get_float(section, "k_torque", quad->k_torque);
+        quad->motor_tau = get_float(section, "motor_tau", quad->motor_tau);
+        quad->max_rpm = get_float(section, "max_rpm", quad->max_rpm);
+        quad->k_drag = get_float(section, "k_drag", quad->k_drag);
+        quad->k_ang_damp = get_float(section, "k_drag_angular", quad->k_ang_damp);
+    }
+
+    /* Handle diff_drive platform type.
+     * If type changed to "diff_drive", swap platform_specific from QuadcopterConfig
+     * to DiffDriveConfig and parse [platform.diff_drive] sub-table. */
+    if (strcmp(platform->type, "diff_drive") == 0) {
+        /* Replace quadcopter config with diff_drive config */
+        if (platform->platform_specific) {
+            free(platform->platform_specific);
+            platform->platform_specific = NULL;
+        }
+
+        DiffDriveConfig* dd = (DiffDriveConfig*)malloc(sizeof(DiffDriveConfig));
+        if (dd) {
+            /* Set defaults */
+            memset(dd, 0, sizeof(DiffDriveConfig));
+            dd->wheel_radius = 0.033f;
+            dd->axle_length = 0.16f;
+            dd->max_wheel_vel = 6.67f;
+
+            /* Parse [platform.diff_drive] sub-table */
+            toml_table_t* dd_section = toml_table_in(section, "diff_drive");
+            if (dd_section) {
+                dd->wheel_radius = get_float(dd_section, "wheel_radius", dd->wheel_radius);
+                dd->axle_length = get_float(dd_section, "axle_length", dd->axle_length);
+                dd->max_wheel_vel = get_float(dd_section, "max_wheel_vel", dd->max_wheel_vel);
+            }
+
+            platform->platform_specific = dd;
+            platform->platform_specific_size = sizeof(DiffDriveConfig);
+        }
+    }
 }
 
 /**
@@ -146,7 +189,7 @@ static void parse_environment(toml_table_t* section, EnvironmentConfig* env) {
     if (!section) return;
 
     env->num_envs = get_uint(section, "num_envs", env->num_envs);
-    env->drones_per_env = get_uint(section, "drones_per_env", env->drones_per_env);
+    env->agents_per_env = get_uint(section, "agents_per_env", env->agents_per_env);
 
     float def_size[3] = {env->world_size[0], env->world_size[1], env->world_size[2]};
     get_float_array(section, "world_size", env->world_size, 3, def_size);
@@ -365,8 +408,15 @@ int config_load_string(const char* toml_str, Config* config, char* error_msg) {
     }
 
     /* Parse each section */
-    toml_table_t* drone = toml_table_in(root, "drone");
-    if (drone) parse_drone(drone, &config->drone);
+    /* Support both [platform] (new) and [drone] (legacy) */
+    toml_table_t* platform = toml_table_in(root, "platform");
+    if (platform) {
+        parse_platform(platform, &config->platform);
+    } else {
+        /* Legacy: try [drone] section */
+        toml_table_t* drone = toml_table_in(root, "drone");
+        if (drone) parse_platform(drone, &config->platform);
+    }
 
     toml_table_t* env = toml_table_in(root, "environment");
     if (env) parse_environment(env, &config->environment);
@@ -458,12 +508,7 @@ int config_load(const char* path, Config* config, char* error_msg) {
     fclose(fp);
     content[bytes_read] = '\0';
 
-    /* Store path in config */
-    config_set_defaults(config);
-    strncpy(config->config_path, path, CONFIG_PATH_MAX - 1);
-    config->config_path[CONFIG_PATH_MAX - 1] = '\0';
-
-    /* Parse content */
+    /* Parse content (config_load_string calls config_set_defaults internally) */
     int result = config_load_string(content, config, error_msg);
 
     /* Restore path after parsing (config_load_string clears it via set_defaults) */
@@ -482,4 +527,11 @@ void config_free(Config* config) {
         config->sensors = NULL;
     }
     config->num_sensors = 0;
+
+    /* Free platform_specific */
+    if (config->platform.platform_specific) {
+        free(config->platform.platform_specific);
+        config->platform.platform_specific = NULL;
+    }
+    config->platform.platform_specific_size = 0;
 }

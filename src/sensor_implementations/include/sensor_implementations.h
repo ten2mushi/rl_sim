@@ -92,7 +92,7 @@ void sensor_implementations_register_gpu(SensorRegistry* registry);
  * Create a GPU sensor context for accelerated dispatch.
  * Returns NULL if GPU is unavailable or creation fails.
  */
-struct GpuSensorContext* gpu_sensor_context_create(uint32_t max_drones);
+struct GpuSensorContext* gpu_sensor_context_create(uint32_t max_agents);
 
 /** Destroy a GPU sensor context. */
 void gpu_sensor_context_destroy(struct GpuSensorContext* ctx);
@@ -103,8 +103,8 @@ void gpu_sensor_context_destroy(struct GpuSensorContext* ctx);
  */
 int32_t gpu_sensor_context_sync_frame(struct GpuSensorContext* ctx,
                                        const struct WorldBrickMap* world,
-                                       const DroneStateSOA* drones,
-                                       uint32_t drone_count);
+                                       const RigidBodyStateSOA* agents,
+                                       uint32_t agent_count);
 
 /**
  * Initialize a GPU sensor slot for a given sensor type.
@@ -112,7 +112,7 @@ int32_t gpu_sensor_context_sync_frame(struct GpuSensorContext* ctx,
  */
 int32_t gpu_sensor_context_init_sensor(struct GpuSensorContext* ctx,
                                         const Sensor* sensor,
-                                        uint32_t drone_count);
+                                        uint32_t agent_count);
 
 /**
  * Dispatch all GPU-accelerated sensors (returns immediately).
@@ -121,7 +121,7 @@ int32_t gpu_sensor_context_init_sensor(struct GpuSensorContext* ctx,
 int32_t gpu_sensors_dispatch(struct GpuSensorContext* gpu_ctx,
                               SensorSystem* sys,
                               const struct WorldBrickMap* world,
-                              uint32_t drone_count);
+                              uint32_t agent_count);
 
 /**
  * Wait for all GPU sensor dispatches to complete.
@@ -134,23 +134,10 @@ int32_t gpu_sensors_wait(struct GpuSensorContext* gpu_ctx);
  */
 int32_t gpu_sensors_scatter_results(struct GpuSensorContext* gpu_ctx,
                                      SensorSystem* sys,
-                                     uint32_t drone_count);
+                                     uint32_t agent_count);
 
 /* ============================================================================
- * Section 3: IMU Implementation Types
- * ============================================================================ */
-
-/**
- * IMU sensor implementation data.
- *
- * Stores calibration parameters and per-sensor RNG state.
- */
-typedef struct IMUImpl {
-    uint8_t _reserved;          /* Noise now handled by composable pipeline */
-} IMUImpl;
-
-/* ============================================================================
- * Section 4: ToF Implementation Types
+ * Section 3: ToF Implementation Types
  * ============================================================================ */
 
 /**

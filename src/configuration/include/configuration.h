@@ -8,7 +8,7 @@
  * Key Features:
  * - TOML parsing with tomlc99 library
  * - Three-phase validation (parse -> schema -> semantic)
- * - Conversion to DroneParamsSOA for physics simulation
+ * - Conversion to PlatformParamsSOA for physics simulation
  * - FNV-1a hashing for change detection
  * - Default Crazyflie 2.0 parameters
  *
@@ -20,13 +20,13 @@
  *
  * Dependencies:
  * - foundation: Arena, FOUNDATION_ASSERT, arena_alloc_aligned
- * - drone_state: DroneParamsSOA, drone_params_create
+ * - drone_state: PlatformParamsSOA, platform_params_create
  *
  * Provides to Environment Manager (09):
  * - Config: Complete configuration struct
  * - config_load/config_load_string: Load from file or string
  * - config_validate: Three-phase validation
- * - drone_config_to_params: Convert to DroneParamsSOA
+ * - platform_config_to_params: Convert to PlatformParamsSOA
  */
 
 #ifndef CONFIGURATION_H
@@ -56,43 +56,31 @@ extern "C" {
 #define CONFIG_MAX_ERRORS 32
 
 /* ============================================================================
- * Section 2: Drone Configuration
+ * Section 2: Platform Configuration
  * ============================================================================ */
 
 /**
- * Drone physical parameters (from URDF or config).
- * Maps to DroneParamsSOA for physics simulation.
+ * Platform physical parameters (from URDF or config).
+ * Maps to PlatformParamsSOA for physics simulation.
  *
- * Default values are for Crazyflie 2.0.
+ * Default values are for Crazyflie 2.0 quadcopter.
+ * Platform-specific parameters (motor constants, etc.) are stored
+ * in an opaque platform_specific pointer (e.g. QuadcopterConfig*).
  */
-typedef struct DroneConfig {
+typedef struct PlatformConfig {
+    /* Platform type */
+    char type[CONFIG_NAME_MAX];          /**< "quadcopter", "diff_drive", etc. */
+
     /* Identity */
-    char name[CONFIG_NAME_MAX];          /**< Drone identifier */
+    char name[CONFIG_NAME_MAX];          /**< Agent identifier */
     char model_path[CONFIG_PATH_MAX];    /**< Path to URDF/mesh */
 
-    /* Physical properties */
+    /* Common rigid body properties */
     float mass;                          /**< kg (default: 0.027 Crazyflie 2.0) */
-    float arm_length;                    /**< m, motor to center (default: 0.046) */
-
-    /* Inertia tensor (diagonal) */
     float ixx;                           /**< kg*m^2 (default: 1.4e-5) */
     float iyy;                           /**< kg*m^2 (default: 1.4e-5) */
     float izz;                           /**< kg*m^2 (default: 2.17e-5) */
-
-    /* Motor parameters */
-    float k_thrust;                      /**< N/(rad/s)^2 (default: 2.88e-8) */
-    float k_torque;                      /**< N*m/(rad/s)^2 (default: 7.24e-10) */
-    float motor_tau;                     /**< Motor time constant s (default: 0.02) */
-    float max_rpm;                       /**< Maximum motor RPM (default: 21702) */
-
-    /* Geometry */
     float collision_radius;              /**< m (default: arm_length + 0.01) */
-
-    /* Aerodynamics */
-    float k_drag;                        /**< Linear drag coefficient (default: 0.0) */
-    float k_drag_angular;                /**< Angular drag coefficient (default: 0.0) */
-
-    /* Limits */
     float max_velocity;                  /**< m/s (default: 10.0) */
     float max_angular_velocity;          /**< rad/s (default: 20.0) */
     float max_tilt_angle;                /**< rad (default: 1.0) */
@@ -100,7 +88,11 @@ typedef struct DroneConfig {
     /* Visual */
     float color[3];                      /**< RGB [0,1] (default: [0.2, 0.6, 1.0]) */
     float scale;                         /**< Model scale factor (default: 1.0) */
-} DroneConfig;
+
+    /* Platform-specific config (opaque) */
+    void* platform_specific;             /**< QuadcopterConfig*, DiffDriveConfig*, etc. */
+    size_t platform_specific_size;       /**< Size of platform_specific data */
+} PlatformConfig;
 
 /* ============================================================================
  * Section 3: Environment Configuration
@@ -112,7 +104,7 @@ typedef struct DroneConfig {
 typedef struct EnvironmentConfig {
     /* Dimensions */
     uint32_t num_envs;                   /**< Number of parallel environments */
-    uint32_t drones_per_env;             /**< Drones per environment */
+    uint32_t agents_per_env;             /**< Drones per environment */
 
     /* World bounds */
     float world_size[3];                 /**< Width, depth, height (m) */
@@ -309,7 +301,7 @@ typedef struct TrainingConfig {
  * Complete configuration aggregating all subsystems.
  */
 typedef struct Config {
-    DroneConfig drone;
+    PlatformConfig platform;
     EnvironmentConfig environment;
     ConfigPhysics physics;
     RewardConfigData reward;
@@ -385,10 +377,10 @@ void config_free(Config* config);
 int config_validate(const Config* config, ConfigError* errors, uint32_t max_errors);
 
 /**
- * Validate drone section.
+ * Validate platform section.
  */
-int config_validate_drone(const DroneConfig* config,
-                          ConfigError* errors, uint32_t max_errors);
+int config_validate_platform(const PlatformConfig* config,
+                             ConfigError* errors, uint32_t max_errors);
 
 /**
  * Validate environment section.
@@ -420,9 +412,10 @@ int config_validate_sensors(const SensorConfigEntry* sensors, uint32_t count,
 void config_set_defaults(Config* config);
 
 /**
- * Set drone config to Crazyflie 2.0 defaults.
+ * Set platform config to Crazyflie 2.0 quadcopter defaults.
+ * Allocates QuadcopterConfig for platform_specific.
  */
-void drone_config_set_defaults(DroneConfig* config);
+void platform_config_set_defaults(PlatformConfig* config);
 
 /**
  * Set environment config to defaults.
@@ -488,48 +481,47 @@ uint64_t config_hash(const Config* config);
  * ============================================================================ */
 
 /**
- * Convert DroneConfig + ConfigPhysics to DroneParamsSOA entries.
+ * Convert PlatformConfig + ConfigPhysics to PlatformParamsSOA entries.
  *
  * Maps config fields to SoA arrays, broadcasting to [start_index, start_index+count).
  * Gravity comes from ConfigPhysics since it's an environment property.
  *
  * Field name mappings (config -> SoA):
- *   k_drag_angular -> k_ang_damp
  *   max_velocity -> max_vel
  *   max_angular_velocity -> max_omega
  *
- * @param drone_cfg Drone configuration
+ * @param platform_cfg Platform configuration
  * @param physics_cfg Physics configuration (for gravity)
- * @param params Target DroneParamsSOA
+ * @param params Target PlatformParamsSOA
  * @param start_index Starting index in params arrays
- * @param count Number of drones to initialize
+ * @param count Number of agents to initialize
  */
-void drone_config_to_params(const DroneConfig* drone_cfg,
-                            const ConfigPhysics* physics_cfg,
-                            DroneParamsSOA* params,
-                            uint32_t start_index,
-                            uint32_t count);
+void platform_config_to_params(const PlatformConfig* platform_cfg,
+                               const ConfigPhysics* physics_cfg,
+                               PlatformParamsSOA* params,
+                               uint32_t start_index,
+                               uint32_t count);
 
 /**
- * Extract DroneConfig from DroneParamsSOA at specified index.
+ * Extract PlatformConfig from PlatformParamsSOA at specified index.
  * Note: gravity is NOT extracted (belongs to ConfigPhysics).
  *
- * @param params Source DroneParamsSOA
+ * @param params Source PlatformParamsSOA
  * @param index Index to extract from
- * @return DroneConfig with extracted values
+ * @return PlatformConfig with extracted values
  */
-DroneConfig drone_params_to_config(const DroneParamsSOA* params, uint32_t index);
+PlatformConfig platform_params_to_config(const PlatformParamsSOA* params, uint32_t index);
 
 /**
- * Convenience wrapper to initialize all drones from complete Config.
+ * Convenience wrapper to initialize all agents from complete Config.
  *
  * @param config Complete configuration
- * @param params Target DroneParamsSOA
- * @param num_drones Number of drones to initialize
+ * @param params Target PlatformParamsSOA
+ * @param num_agents Number of agents to initialize
  */
-void config_init_drone_params(const Config* config,
-                              DroneParamsSOA* params,
-                              uint32_t num_drones);
+void config_init_platform_params(const Config* config,
+                                 PlatformParamsSOA* params,
+                                 uint32_t num_agents);
 
 /* ============================================================================
  * Section 15: Utility API
@@ -569,11 +561,38 @@ void config_clone(const Config* src, Config* dst, Arena* arena);
 size_t config_memory_size(uint32_t num_sensors);
 
 /* ============================================================================
- * Section 16: Type Size Verification
+ * Section 16: Sensor Type Registry
+ * ============================================================================ */
+
+/** Canonical list of valid sensor type strings. */
+static const char* const VALID_SENSOR_TYPES[] = {
+    "imu", "tof", "lidar_2d", "lidar_3d",
+    "camera_rgb", "camera_depth", "camera_segmentation",
+    "position", "velocity", "neighbor"
+};
+
+/** Number of valid sensor types. */
+#define VALID_SENSOR_TYPE_COUNT \
+    (sizeof(VALID_SENSOR_TYPES) / sizeof(VALID_SENSOR_TYPES[0]))
+
+/**
+ * Check if a sensor type string is valid.
+ * @param type Sensor type to check
+ * @return true if recognized
+ */
+static inline bool is_valid_sensor_type(const char* type) {
+    for (size_t i = 0; i < VALID_SENSOR_TYPE_COUNT; i++) {
+        if (strcmp(type, VALID_SENSOR_TYPES[i]) == 0) return true;
+    }
+    return false;
+}
+
+/* ============================================================================
+ * Section 17: Type Size Verification
  * ============================================================================ */
 
 /* Verify reasonable struct sizes */
-FOUNDATION_STATIC_ASSERT(sizeof(DroneConfig) < 512, "DroneConfig too large");
+FOUNDATION_STATIC_ASSERT(sizeof(PlatformConfig) < 1024, "PlatformConfig too large");
 FOUNDATION_STATIC_ASSERT(sizeof(EnvironmentConfig) < 256, "EnvironmentConfig too large");
 FOUNDATION_STATIC_ASSERT(sizeof(ConfigPhysics) < 128, "ConfigPhysics too large");
 FOUNDATION_STATIC_ASSERT(sizeof(SensorConfigEntry) < 4096, "SensorConfigEntry too large");

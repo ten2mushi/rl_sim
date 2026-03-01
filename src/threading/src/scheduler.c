@@ -64,41 +64,9 @@ void scheduler_physics(
     Scheduler* sched,
     WorkFunction physics_fn,
     void* physics_data,
-    uint32_t drone_count
+    uint32_t agent_count
 ) {
-    if (drone_count == 0) {
-        return;
-    }
-
-    ThreadPool* pool = sched->pool;
-    uint32_t num_threads = pool->thread_count;
-
-    /* Calculate items per thread (ceiling division) */
-    uint32_t per_thread = (drone_count + num_threads - 1) / num_threads;
-
-    /* Submit one work item per thread with contiguous ranges */
-    for (uint32_t t = 0; t < num_threads; t++) {
-        uint32_t start = t * per_thread;
-        if (start >= drone_count) {
-            break; /* No more work */
-        }
-
-        uint32_t end = start + per_thread;
-        if (end > drone_count) {
-            end = drone_count;
-        }
-
-        WorkItem item = {
-            .fn = physics_fn,
-            .data = physics_data,
-            .start = start,
-            .end = end
-        };
-
-        threadpool_submit(pool, item);
-    }
-
-    threadpool_wait(pool);
+    scheduler_execute(sched, physics_fn, physics_data, agent_count, SCHEDULE_STATIC);
 }
 
 /* ============================================================================
@@ -164,79 +132,7 @@ void scheduler_execute(
     uint32_t work_count,
     ScheduleStrategy strategy
 ) {
-    if (work_count == 0) {
-        return;
-    }
-
-    /* Resolve adaptive strategy */
-    if (strategy == SCHEDULE_ADAPTIVE) {
-        if (work_count <= sched->steal_threshold) {
-            strategy = SCHEDULE_STATIC;
-        } else {
-            strategy = SCHEDULE_WORK_STEALING;
-        }
-    }
-
-    ThreadPool* pool = sched->pool;
-
-    switch (strategy) {
-        case SCHEDULE_STATIC: {
-            /* Static partitioning: one task per thread */
-            uint32_t num_threads = pool->thread_count;
-            uint32_t per_thread = (work_count + num_threads - 1) / num_threads;
-
-            for (uint32_t t = 0; t < num_threads; t++) {
-                uint32_t start = t * per_thread;
-                if (start >= work_count) {
-                    break;
-                }
-
-                uint32_t end = start + per_thread;
-                if (end > work_count) {
-                    end = work_count;
-                }
-
-                WorkItem item = {
-                    .fn = fn,
-                    .data = data,
-                    .start = start,
-                    .end = end
-                };
-
-                threadpool_submit(pool, item);
-            }
-            break;
-        }
-
-        case SCHEDULE_WORK_STEALING: {
-            /* Fine-grained chunking for work-stealing */
-            uint32_t chunk_size = sched->min_chunk_size;
-
-            for (uint32_t i = 0; i < work_count; i += chunk_size) {
-                uint32_t end = i + chunk_size;
-                if (end > work_count) {
-                    end = work_count;
-                }
-
-                WorkItem item = {
-                    .fn = fn,
-                    .data = data,
-                    .start = i,
-                    .end = end
-                };
-
-                threadpool_submit(pool, item);
-            }
-            break;
-        }
-
-        default:
-            /* Unknown strategy - use static as fallback */
-            scheduler_execute(sched, fn, data, work_count, SCHEDULE_STATIC);
-            return;
-    }
-
-    threadpool_wait(pool);
+    scheduler_parallel_for(sched, fn, data, 0, work_count, strategy);
 }
 
 /* ============================================================================
@@ -320,9 +216,8 @@ void scheduler_parallel_for(
         }
 
         default:
-            /* Unknown strategy - use static as fallback */
-            scheduler_parallel_for(sched, fn, data, start, end, SCHEDULE_STATIC);
-            return;
+            /* SCHEDULE_ADAPTIVE resolved above; unknown strategies are no-ops */
+            break;
     }
 
     threadpool_wait(pool);

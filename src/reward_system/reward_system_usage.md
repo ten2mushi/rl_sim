@@ -111,7 +111,7 @@ reward_set_target(reward, drone_idx,
     1.0f);                    // Radius
 
 // Update target positions each step
-reward_update_targets(reward, dt);
+reward_update_targets(reward, dt, count);
 ```
 
 ### TASK_LAND

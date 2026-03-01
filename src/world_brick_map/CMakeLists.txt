@@ -147,10 +147,16 @@ if(WORLD_BRICK_MAP_BUILD_TESTS)
     target_compile_definitions(test_world_materials PRIVATE FOUNDATION_DEBUG=1)
     add_test(NAME test_world_materials COMMAND test_world_materials)
 
+    # Advanced tests: clipmap, incremental, boundary queries (Yoneda philosophy)
+    add_executable(test_world_advanced tests/test_world_advanced.c)
+    target_link_libraries(test_world_advanced PRIVATE world_brick_map)
+    target_compile_definitions(test_world_advanced PRIVATE FOUNDATION_DEBUG=1)
+    add_test(NAME test_world_advanced COMMAND test_world_advanced)
+
     # Custom target to run tests with output
     add_custom_target(test_world_brick_map_run
         COMMAND ${CMAKE_CTEST_COMMAND} --output-on-failure
-        DEPENDS test_world_brick_map test_geometry_primitives test_world_materials
+        DEPENDS test_world_brick_map test_geometry_primitives test_world_materials test_world_advanced
         COMMENT "Running world_brick_map unit tests"
     )
 
@@ -192,7 +198,6 @@ endif()
 include(GNUInstallDirs)
 
 install(TARGETS world_brick_map
-    EXPORT world_brick_mapTargets
     ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
     LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
 )
@@ -201,11 +206,6 @@ install(FILES ${WORLD_BRICK_MAP_HEADERS}
     DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/world_brick_map
 )
 
-install(EXPORT world_brick_mapTargets
-    FILE world_brick_mapTargets.cmake
-    NAMESPACE world_brick_map::
-    DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/world_brick_map
-)
 
 # ============================================================================
 # Summary

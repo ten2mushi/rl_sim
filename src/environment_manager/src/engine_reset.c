@@ -15,8 +15,7 @@
 /**
  * Generate a random spawn position within configured bounds.
  */
-static Vec3 generate_spawn_position(BatchDroneEngine* engine, uint32_t drone_idx) {
-    (void)drone_idx;  /* Can be used for env-specific spawning */
+static Vec3 generate_spawn_position(BatchEngine* engine) {
 
     Vec3 spawn_min, spawn_max;
 
@@ -41,18 +40,18 @@ static Vec3 generate_spawn_position(BatchDroneEngine* engine, uint32_t drone_idx
         spawn_max.z = z_mid;
     }
 
-    /* Apply domain randomization if enabled */
+    /* Apply domain randomization: shrink spawn region by (1-scale) on each side.
+     * When rand_scale == 0 (default), this is a no-op — skip entirely.
+     * When rand_scale == 1, full range is used (no shrinkage). */
     float rand_scale = engine->config.domain_randomization;
-    if (rand_scale > 0.0f) {
-        float range_x = (spawn_max.x - spawn_min.x) * rand_scale;
-        float range_y = (spawn_max.y - spawn_min.y) * rand_scale;
-        float range_z = (spawn_max.z - spawn_min.z) * rand_scale;
-        spawn_min.x += (1.0f - rand_scale) * range_x * 0.5f;
-        spawn_max.x -= (1.0f - rand_scale) * range_x * 0.5f;
-        spawn_min.y += (1.0f - rand_scale) * range_y * 0.5f;
-        spawn_max.y -= (1.0f - rand_scale) * range_y * 0.5f;
-        spawn_min.z += (1.0f - rand_scale) * range_z * 0.5f;
-        spawn_max.z -= (1.0f - rand_scale) * range_z * 0.5f;
+    if (rand_scale > 0.0f && rand_scale < 1.0f) {
+        float shrink = (1.0f - rand_scale) * 0.5f;
+        float dx = (spawn_max.x - spawn_min.x) * shrink;
+        float dy = (spawn_max.y - spawn_min.y) * shrink;
+        float dz = (spawn_max.z - spawn_min.z) * shrink;
+        spawn_min.x += dx;  spawn_max.x -= dx;
+        spawn_min.y += dy;  spawn_max.y -= dy;
+        spawn_min.z += dz;  spawn_max.z -= dz;
     }
 
     return (Vec3){
@@ -66,63 +65,63 @@ static Vec3 generate_spawn_position(BatchDroneEngine* engine, uint32_t drone_idx
 /**
  * Reset a single drone to given position and orientation.
  */
-static void reset_single_drone_internal(BatchDroneEngine* engine, uint32_t drone_idx,
+static void reset_single_drone_internal(BatchEngine* engine, uint32_t agent_idx,
                                         Vec3 position, Quat orientation) {
-    DroneStateSOA* states = engine->states;
+    RigidBodyStateSOA* rb = &engine->states->rigid_body;
 
     /* Set position */
-    states->pos_x[drone_idx] = position.x;
-    states->pos_y[drone_idx] = position.y;
-    states->pos_z[drone_idx] = position.z;
+    rb->pos_x[agent_idx] = position.x;
+    rb->pos_y[agent_idx] = position.y;
+    rb->pos_z[agent_idx] = position.z;
 
     /* Zero velocity */
-    states->vel_x[drone_idx] = 0.0f;
-    states->vel_y[drone_idx] = 0.0f;
-    states->vel_z[drone_idx] = 0.0f;
+    rb->vel_x[agent_idx] = 0.0f;
+    rb->vel_y[agent_idx] = 0.0f;
+    rb->vel_z[agent_idx] = 0.0f;
 
     /* Set orientation */
-    states->quat_w[drone_idx] = orientation.w;
-    states->quat_x[drone_idx] = orientation.x;
-    states->quat_y[drone_idx] = orientation.y;
-    states->quat_z[drone_idx] = orientation.z;
+    rb->quat_w[agent_idx] = orientation.w;
+    rb->quat_x[agent_idx] = orientation.x;
+    rb->quat_y[agent_idx] = orientation.y;
+    rb->quat_z[agent_idx] = orientation.z;
 
     /* Zero angular velocity */
-    states->omega_x[drone_idx] = 0.0f;
-    states->omega_y[drone_idx] = 0.0f;
-    states->omega_z[drone_idx] = 0.0f;
+    rb->omega_x[agent_idx] = 0.0f;
+    rb->omega_y[agent_idx] = 0.0f;
+    rb->omega_z[agent_idx] = 0.0f;
 
-    /* Set hover RPMs (approximately counteract gravity) */
-    float hover_rpm = engine->params->max_rpm[drone_idx] * 0.5f;
-    states->rpm_0[drone_idx] = hover_rpm;
-    states->rpm_1[drone_idx] = hover_rpm;
-    states->rpm_2[drone_idx] = hover_rpm;
-    states->rpm_3[drone_idx] = hover_rpm;
+    /* Reset platform-specific extensions via vtable */
+    const PlatformVTable* vtable = engine->config.platform_vtable;
+    if (vtable && vtable->reset_state) {
+        vtable->reset_state(engine->states->extension,
+                            engine->states->extension_count, agent_idx);
+    }
 
     /* Reset episode tracking for this drone */
-    engine->episode_returns[drone_idx] = 0.0f;
-    engine->episode_lengths[drone_idx] = 0;
+    engine->episode_returns[agent_idx] = 0.0f;
+    engine->episode_lengths[agent_idx] = 0;
 
     /* Clear termination flags */
-    engine->dones[drone_idx] = 0;
-    engine->truncations[drone_idx] = 0;
+    engine->dones[agent_idx] = 0;
+    engine->truncations[agent_idx] = 0;
 }
 
 /* ============================================================================
  * Full Reset
  * ============================================================================ */
 
-void engine_reset(BatchDroneEngine* engine) {
-    FOUNDATION_ASSERT(engine != NULL, "assertion failed");
-    FOUNDATION_ASSERT(engine->initialized, "assertion failed");
+void engine_reset(BatchEngine* engine) {
+    FOUNDATION_ASSERT(engine != NULL, "engine handle is NULL");
+    FOUNDATION_ASSERT(engine->initialized, "engine not initialized");
 
-    uint32_t total_drones = engine->config.total_drones;
+    uint32_t total_agents = engine->config.total_agents;
 
     /* Re-seed RNG to original seed for deterministic resets */
     pcg32_seed(&engine->rng, engine->config.seed);
 
     /* Reset all drones with randomized positions */
-    for (uint32_t i = 0; i < total_drones; i++) {
-        Vec3 position = generate_spawn_position(engine, i);
+    for (uint32_t i = 0; i < total_agents; i++) {
+        Vec3 position = generate_spawn_position(engine);
         Quat orientation = QUAT_IDENTITY;
         reset_single_drone_internal(engine, i, position, orientation);
     }
@@ -131,23 +130,21 @@ void engine_reset(BatchDroneEngine* engine) {
     collision_reset(engine->collision);
 
     /* Reset reward system */
-    for (uint32_t i = 0; i < total_drones; i++) {
+    for (uint32_t i = 0; i < total_agents; i++) {
         reward_reset(engine->rewards, i);
     }
 
     /* Reset sensor system */
     sensor_system_reset(engine->sensors);
 
-    /* Clear all done/truncation flags (redundant but explicit) */
-    memset(engine->dones, 0, total_drones);
-    memset(engine->truncations, 0, total_drones);
+    /* dones/truncations already cleared per-drone by reset_single_drone_internal */
 
     /* Targets must be set externally via engine_set_target()/engine_set_targets() */
 
     /* Compute initial observations */
-    sensor_system_sample_all(engine->sensors, engine->states,
+    sensor_system_sample_all(engine->sensors, &engine->states->rigid_body,
                              engine->world, engine->collision,
-                             total_drones);
+                             total_agents);
 
     /* Sensor observations: zero-copy (sensor system writes directly to engine->observations) */
 
@@ -159,26 +156,26 @@ void engine_reset(BatchDroneEngine* engine) {
  * Partial Reset
  * ============================================================================ */
 
-void engine_reset_envs(BatchDroneEngine* engine, const uint32_t* env_indices, uint32_t count) {
-    FOUNDATION_ASSERT(engine != NULL, "assertion failed");
-    FOUNDATION_ASSERT(engine->initialized, "assertion failed");
-    FOUNDATION_ASSERT(env_indices != NULL || count == 0, "assertion failed");
+void engine_reset_envs(BatchEngine* engine, const uint32_t* env_indices, uint32_t count) {
+    FOUNDATION_ASSERT(engine != NULL, "engine handle is NULL");
+    FOUNDATION_ASSERT(engine->initialized, "engine not initialized");
+    FOUNDATION_ASSERT(env_indices != NULL || count == 0, "env_indices is NULL with non-zero count");
 
-    uint32_t drones_per_env = engine->config.drones_per_env;
+    uint32_t agents_per_env = engine->config.agents_per_env;
 
     for (uint32_t e = 0; e < count; e++) {
         uint32_t env_id = env_indices[e];
-        FOUNDATION_ASSERT(env_id < engine->config.num_envs, "assertion failed");
+        FOUNDATION_ASSERT(env_id < engine->config.num_envs, "env_id out of bounds");
 
         /* Reset all drones in this environment */
-        for (uint32_t d = 0; d < drones_per_env; d++) {
-            uint32_t drone_idx = env_id * drones_per_env + d;
-            Vec3 position = generate_spawn_position(engine, drone_idx);
+        for (uint32_t d = 0; d < agents_per_env; d++) {
+            uint32_t agent_idx = env_id * agents_per_env + d;
+            Vec3 position = generate_spawn_position(engine);
             Quat orientation = QUAT_IDENTITY;
-            reset_single_drone_internal(engine, drone_idx, position, orientation);
+            reset_single_drone_internal(engine, agent_idx, position, orientation);
 
             /* Reset reward state */
-            reward_reset(engine->rewards, drone_idx);
+            reward_reset(engine->rewards, agent_idx);
         }
     }
 }
@@ -187,28 +184,28 @@ void engine_reset_envs(BatchDroneEngine* engine, const uint32_t* env_indices, ui
  * Single Drone Reset
  * ============================================================================ */
 
-void engine_reset_drone(BatchDroneEngine* engine, uint32_t drone_idx,
+void engine_reset_agent(BatchEngine* engine, uint32_t agent_idx,
                         Vec3 position, Quat orientation) {
-    FOUNDATION_ASSERT(engine != NULL, "assertion failed");
-    FOUNDATION_ASSERT(engine->initialized, "assertion failed");
-    FOUNDATION_ASSERT(drone_idx < engine->config.total_drones, "assertion failed");
+    FOUNDATION_ASSERT(engine != NULL, "engine handle is NULL");
+    FOUNDATION_ASSERT(engine->initialized, "engine not initialized");
+    FOUNDATION_ASSERT(agent_idx < engine->config.total_agents, "drone index out of bounds");
 
-    reset_single_drone_internal(engine, drone_idx, position, orientation);
-    reward_reset(engine->rewards, drone_idx);
+    reset_single_drone_internal(engine, agent_idx, position, orientation);
+    reward_reset(engine->rewards, agent_idx);
 }
 
 /* ============================================================================
  * Auto-Reset Terminated Drones
  * ============================================================================ */
 
-void engine_step_reset_terminated(BatchDroneEngine* engine) {
-    FOUNDATION_ASSERT(engine != NULL, "assertion failed");
+void engine_step_reset_terminated(BatchEngine* engine) {
+    FOUNDATION_ASSERT(engine != NULL, "engine handle is NULL");
 
-    uint32_t total_drones = engine->config.total_drones;
+    uint32_t total_agents = engine->config.total_agents;
 
     /* Scratch arrays for batch reset */
     /* Using a reasonable max size - in practice, not all drones terminate at once */
-    uint32_t max_reset = total_drones;
+    uint32_t max_reset = total_agents;
     uint32_t* done_indices = (uint32_t*)arena_alloc(engine->frame_arena,
                                                      max_reset * sizeof(uint32_t));
     Vec3* reset_positions = (Vec3*)arena_alloc(engine->frame_arena,
@@ -219,14 +216,14 @@ void engine_step_reset_terminated(BatchDroneEngine* engine) {
     uint32_t done_count = 0;
 
     /* Collect terminated drones */
-    for (uint32_t i = 0; i < total_drones; i++) {
+    for (uint32_t i = 0; i < total_agents; i++) {
         if (engine->dones[i] || engine->truncations[i]) {
             /* Log episode completion */
             engine->total_episodes++;
 
             /* Store reset info */
             done_indices[done_count] = i;
-            reset_positions[done_count] = generate_spawn_position(engine, i);
+            reset_positions[done_count] = generate_spawn_position(engine);
             reset_orientations[done_count] = QUAT_IDENTITY;
             done_count++;
         }
@@ -234,9 +231,20 @@ void engine_step_reset_terminated(BatchDroneEngine* engine) {
 
     /* Batch reset terminated drones */
     if (done_count > 0) {
-        /* Use batch reset if available, otherwise loop */
-        drone_state_reset_batch(engine->states, done_indices,
+        /* Reset rigid body state (position, velocity, quaternion, omega) */
+        rigid_body_state_reset_batch(&engine->states->rigid_body, done_indices,
                                 reset_positions, reset_orientations, done_count);
+
+        /* Reset platform-specific extension state (e.g. RPMs) via vtable */
+        const PlatformVTable* vt = engine->config.platform_vtable;
+        if (vt && vt->reset_state) {
+            for (uint32_t i = 0; i < done_count; i++) {
+                vt->reset_state(
+                    engine->states->extension,
+                    engine->states->extension_count,
+                    done_indices[i]);
+            }
+        }
 
         /* Reset rewards and episode tracking for terminated drones */
         reward_reset_batch(engine->rewards, done_indices, done_count);

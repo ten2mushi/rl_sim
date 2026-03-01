@@ -402,8 +402,7 @@ static inline float sample_sdf_at_corner(const WorldBrickMap* world,
     const int8_t* sdf = world_brick_sdf_const(world, atlas_idx);
     const uint8_t* material = world_brick_material_const(world, atlas_idx);
 
-    uint32_t idx = (uint32_t)lvx + ((uint32_t)lvy << BRICK_SHIFT) +
-                   ((uint32_t)lvz << (BRICK_SHIFT * 2));
+    uint32_t idx = voxel_linear_index(lvx, lvy, lvz);
 
     if (out_material) {
         *out_material = material ? material[idx] : 0;

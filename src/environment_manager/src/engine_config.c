@@ -23,8 +23,8 @@ EngineConfig engine_config_default(void) {
 
     /* Environment dimensions */
     config.num_envs = ENGINE_DEFAULT_NUM_ENVS;
-    config.drones_per_env = ENGINE_DEFAULT_DRONES_PER_ENV;
-    config.total_drones = config.num_envs * config.drones_per_env;
+    config.agents_per_env = ENGINE_DEFAULT_AGENTS_PER_ENV;
+    config.total_agents = config.num_envs * config.agents_per_env;
 
     /* World bounds - 100m × 100m × 60m volume (Z-up ENU) */
     config.world_min = (Vec3){-50.0f, -50.0f, -10.0f, 0.0f};
@@ -70,6 +70,9 @@ EngineConfig engine_config_default(void) {
     config.spawn_max = (Vec3){0.0f, 0.0f, 0.0f, 0.0f};
     config.use_custom_spawn = false;
 
+    /* World bounds override */
+    config.use_custom_bounds = false;
+
     /* OBJ file path */
     config.obj_path = NULL;
     config.use_gpu_voxelization = true;
@@ -86,8 +89,11 @@ EngineConfig engine_config_default(void) {
     config.max_angular_accel = 200.0f;
 
     /* Collision tunables */
-    config.drone_radius = 0.1f;
+    config.collision_radius = 0.1f;
     config.collision_cell_size = 1.0f;
+
+    /* Platform vtable - default to quadcopter */
+    config.platform_vtable = &PLATFORM_QUADCOPTER;
 
     /* Debug options */
     config.enable_profiling = false;
@@ -113,18 +119,18 @@ int engine_config_validate(const EngineConfig* config, char* error_msg) {
         return -2;
     }
 
-    if (config->drones_per_env == 0) {
+    if (config->agents_per_env == 0) {
         if (error_msg) snprintf(error_msg, ENGINE_ERROR_MSG_SIZE,
-                               "drones_per_env must be > 0 (got 0)");
+                               "agents_per_env must be > 0 (got 0)");
         return -3;
     }
 
     /* Check for overflow */
-    uint64_t total = (uint64_t)config->num_envs * (uint64_t)config->drones_per_env;
+    uint64_t total = (uint64_t)config->num_envs * (uint64_t)config->agents_per_env;
     if (total > UINT32_MAX) {
         if (error_msg) snprintf(error_msg, ENGINE_ERROR_MSG_SIZE,
-                               "total_drones exceeds uint32 max (%u * %u)",
-                               config->num_envs, config->drones_per_env);
+                               "total_agents exceeds uint32 max (%u * %u)",
+                               config->num_envs, config->agents_per_env);
         return -4;
     }
 
@@ -234,9 +240,9 @@ int engine_config_validate(const EngineConfig* config, char* error_msg) {
     }
 
     /* Validate collision tunables */
-    if (config->drone_radius <= 0.0f) {
+    if (config->collision_radius <= 0.0f) {
         if (error_msg) snprintf(error_msg, ENGINE_ERROR_MSG_SIZE,
-                               "drone_radius must be > 0 (got %.4f)", config->drone_radius);
+                               "collision_radius must be > 0 (got %.4f)", config->collision_radius);
         return -18;
     }
 
@@ -397,8 +403,8 @@ static SensorConfig sensor_config_from_entry(const SensorConfigEntry* entry) {
  */
 static int config_to_engine_config(const Config* cfg, EngineConfig* ec) {
     ec->num_envs = cfg->environment.num_envs;
-    ec->drones_per_env = cfg->environment.drones_per_env;
-    ec->total_drones = ec->num_envs * ec->drones_per_env;
+    ec->agents_per_env = cfg->environment.agents_per_env;
+    ec->total_agents = ec->num_envs * ec->agents_per_env;
     ec->timestep = cfg->physics.timestep;
     ec->physics_substeps = cfg->physics.substeps;
     ec->gravity = cfg->physics.gravity;
@@ -419,6 +425,11 @@ static int config_to_engine_config(const Config* cfg, EngineConfig* ec) {
         cfg->environment.world_origin[0] + half_w,
         cfg->environment.world_origin[1] + half_d,
         cfg->environment.world_origin[2] + half_h, 0.0f};
+
+    /* Mark custom bounds if TOML provided non-zero world_size */
+    if (half_w > 0.0f || half_d > 0.0f || half_h > 0.0f) {
+        ec->use_custom_bounds = true;
+    }
 
     /* Physics tunables from ConfigPhysics */
     ec->enable_ground_effect = cfg->physics.enable_ground_effect;
@@ -479,7 +490,7 @@ int engine_config_add_sensor(EngineConfig* config, const SensorConfig* sensor_co
         return -1;
     }
 
-    /* Allocate or reallocate sensor array */
+    /* Allocate sensor array (once, fixed capacity) */
     if (config->sensor_configs == NULL) {
         config->sensor_configs = (SensorConfig*)malloc(LOCAL_MAX_SENSORS * sizeof(SensorConfig));
         if (config->sensor_configs == NULL) {

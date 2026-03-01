@@ -20,8 +20,12 @@
 
 /* Constants */
 #ifndef M_PI
-#define M_PI 3.14159265358979323846f
+#define M_PI 3.14159265358979323846
 #endif
+
+/* Default ray counts used when impl is NULL */
+#define LIDAR_DEFAULT_NUM_RAYS        64
+#define LIDAR_DEFAULT_VERTICAL_LAYERS 16
 
 /* ============================================================================
  * Ray Direction Precomputation
@@ -117,7 +121,7 @@ static void lidar_2d_init(Sensor* sensor, const SensorConfig* config, Arena* are
 
 static size_t lidar_2d_get_output_size(const Sensor* sensor) {
     LiDAR2DImpl* impl = (LiDAR2DImpl*)sensor->impl;
-    if (impl == NULL) return 64;  /* Default */
+    if (impl == NULL) return LIDAR_DEFAULT_NUM_RAYS;
     return impl->num_rays;
 }
 
@@ -128,20 +132,20 @@ static const char* lidar_2d_get_output_dtype(const Sensor* sensor) {
 
 static uint32_t lidar_2d_get_output_shape(const Sensor* sensor, uint32_t* shape) {
     LiDAR2DImpl* impl = (LiDAR2DImpl*)sensor->impl;
-    shape[0] = impl ? impl->num_rays : 64;
+    shape[0] = impl ? impl->num_rays : LIDAR_DEFAULT_NUM_RAYS;
     return 1;
 }
 
 static void lidar_2d_batch_sample(Sensor* sensor, const SensorContext* ctx, float* output_buffer) {
     LiDAR2DImpl* impl = (LiDAR2DImpl*)sensor->impl;
     if (impl == NULL || impl->ray_directions == NULL) {
-        memset(output_buffer, 0, ctx->drone_count * 64 * sizeof(float));
+        memset(output_buffer, 0, ctx->agent_count * LIDAR_DEFAULT_NUM_RAYS * sizeof(float));
         return;
     }
 
-    const DroneStateSOA* drones = ctx->drones;
-    const uint32_t* indices = ctx->drone_indices;
-    uint32_t count = ctx->drone_count;
+    const RigidBodyStateSOA* drones = ctx->agents;
+    const uint32_t* indices = ctx->agent_indices;
+    uint32_t count = ctx->agent_count;
     const struct WorldBrickMap* world = ctx->world;
     uint32_t num_rays = impl->num_rays;
 
@@ -176,9 +180,9 @@ static void lidar_2d_batch_sample(Sensor* sensor, const SensorContext* ctx, floa
     }
 }
 
-static void lidar_2d_reset(Sensor* sensor, uint32_t drone_index) {
+static void lidar_2d_reset(Sensor* sensor, uint32_t agent_index) {
     (void)sensor;
-    (void)drone_index;
+    (void)agent_index;
 }
 
 static void lidar_2d_destroy(Sensor* sensor) {
@@ -230,7 +234,7 @@ static void lidar_3d_init(Sensor* sensor, const SensorConfig* config, Arena* are
 
 static size_t lidar_3d_get_output_size(const Sensor* sensor) {
     LiDAR3DImpl* impl = (LiDAR3DImpl*)sensor->impl;
-    if (impl == NULL) return 64 * 16;  /* Default */
+    if (impl == NULL) return LIDAR_DEFAULT_NUM_RAYS * LIDAR_DEFAULT_VERTICAL_LAYERS;
     return impl->total_rays;
 }
 
@@ -242,8 +246,8 @@ static const char* lidar_3d_get_output_dtype(const Sensor* sensor) {
 static uint32_t lidar_3d_get_output_shape(const Sensor* sensor, uint32_t* shape) {
     LiDAR3DImpl* impl = (LiDAR3DImpl*)sensor->impl;
     if (impl == NULL) {
-        shape[0] = 16;
-        shape[1] = 64;
+        shape[0] = LIDAR_DEFAULT_VERTICAL_LAYERS;
+        shape[1] = LIDAR_DEFAULT_NUM_RAYS;
     } else {
         shape[0] = impl->vertical_layers;
         shape[1] = impl->horizontal_rays;
@@ -254,13 +258,13 @@ static uint32_t lidar_3d_get_output_shape(const Sensor* sensor, uint32_t* shape)
 static void lidar_3d_batch_sample(Sensor* sensor, const SensorContext* ctx, float* output_buffer) {
     LiDAR3DImpl* impl = (LiDAR3DImpl*)sensor->impl;
     if (impl == NULL || impl->ray_directions == NULL) {
-        memset(output_buffer, 0, ctx->drone_count * 64 * 16 * sizeof(float));
+        memset(output_buffer, 0, ctx->agent_count * LIDAR_DEFAULT_NUM_RAYS * LIDAR_DEFAULT_VERTICAL_LAYERS * sizeof(float));
         return;
     }
 
-    const DroneStateSOA* drones = ctx->drones;
-    const uint32_t* indices = ctx->drone_indices;
-    uint32_t count = ctx->drone_count;
+    const RigidBodyStateSOA* drones = ctx->agents;
+    const uint32_t* indices = ctx->agent_indices;
+    uint32_t count = ctx->agent_count;
     const struct WorldBrickMap* world = ctx->world;
     uint32_t total_rays = impl->total_rays;
 
@@ -294,11 +298,9 @@ static void lidar_3d_batch_sample(Sensor* sensor, const SensorContext* ctx, floa
 
             /* Raymarch */
             float distance = impl->max_range;
-            if (world != NULL) {
-                RayHit hit = world_raymarch(world, sensor_pos, world_dir, impl->max_range);
-                if (hit.hit) {
-                    distance = hit.distance;
-                }
+            RayHit hit = world_raymarch(world, sensor_pos, world_dir, impl->max_range);
+            if (hit.hit) {
+                distance = hit.distance;
             }
 
             out[r] = distance;  /* Noise applied by pipeline */
@@ -306,9 +308,9 @@ static void lidar_3d_batch_sample(Sensor* sensor, const SensorContext* ctx, floa
     }
 }
 
-static void lidar_3d_reset(Sensor* sensor, uint32_t drone_index) {
+static void lidar_3d_reset(Sensor* sensor, uint32_t agent_index) {
     (void)sensor;
-    (void)drone_index;
+    (void)agent_index;
 }
 
 static void lidar_3d_destroy(Sensor* sensor) {
