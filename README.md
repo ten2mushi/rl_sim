@@ -1,8 +1,8 @@
 # RL Engine
 
-High-performance drone swarm simulation for reinforcement learning.
+High-performance robot swarm simulation for reinforcement learning.
 
-Vectorized C engine with Python/PufferLib integration delivering 1M+ steps/second. Features 10 sensor types (IMU, ToF, LiDAR 2D/3D, Camera RGB/Depth/Segmentation, Position, Velocity, Neighbor), batch RK4 physics, sparse SDF worlds with CSG operations, and optional Metal GPU compute on macOS.
+Vectorized C engine with Python/PufferLib integration delivering 1M+ steps/second. Features vtable-based platform abstraction (quadcopter, diff-drive), 10 sensor types (IMU, ToF, LiDAR 2D/3D, Camera RGB/Depth/Segmentation, Position, Velocity, Neighbor), batch RK4 physics, sparse SDF worlds with CSG operations, and optional Metal GPU compute on macOS.
 
 ## Prerequisites
 
@@ -14,52 +14,109 @@ Vectorized C engine with Python/PufferLib integration delivering 1M+ steps/secon
 
 ## Quick Start
 
-### Build the C library
+### Install
 
 ```bash
-mkdir -p build && cd build
-cmake .. -DCMAKE_BUILD_TYPE=Release
-make -j8
+cd rl_engine/
+./install.sh          # Release build (checks deps, builds C lib + Python extension)
+./install.sh --clean  # Full rebuild (wipes build/ first)
+./install.sh --debug  # Debug build (-O0 -g)
 ```
+
+The install script handles everything: prerequisite checks, Poetry install, PufferLib env_binding.h patching, CMake build of `libdronerl.a`, setuptools build of the Python extension, and import verification.
+
+### Uninstall
+
+```bash
+./uninstall.sh         # Remove build/, .so, .egg-info, caches
+./uninstall.sh --venv  # Also remove .venv/ and deregister Poetry envs
+```
+
+Source code is never touched.
 
 ### Run tests
 
 ```bash
-cd build
-ctest --output-on-failure
+# Rebuild with tests enabled
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON
+cmake --build build -j$(sysctl -n hw.logicalcpu)
+cd build && ctest --output-on-failure
 ```
 
-### Install the Python environment
+### Rebuild after C changes only
 
 ```bash
-poetry install
+cmake --build build -j$(sysctl -n hw.logicalcpu)
+rm -f binding.cpython-*.so build/lib.macosx-*/*.so
+poetry run python setup.py build_ext --inplace
 ```
 
-### Generate a gyroid mesh and run the demo
+### Verify import
 
 ```bash
+poetry run python3 -c "import binding"
+PYTHONPATH=.. poetry run python3 -c "from rl_engine.robot import RobotEnv; print('OK')"
+```
+
+## Usage
+
+```python
+from rl_engine import RobotEnv
+
+# Quadcopter swarm (default)
+env = RobotEnv(num_envs=64, agents_per_env=16)
+obs, info = env.reset()
+
+for _ in range(1000):
+    actions = env.action_space.sample()
+    obs, rewards, dones, truncs, info = env.step(actions)
+
+env.close()
+```
+
+```python
+# Diff-drive ground robot
+env = RobotEnv(platform="diff_drive", num_envs=32, agents_per_env=8)
+```
+
+## Demos
+
+All scripts require `PYTHONPATH=..` so `rl_engine` resolves as a package.
+
+```bash
+# Generate a gyroid mesh and orbit around it
 poetry run python utils/generate_gyroid_cube.py --size 20 --channel-diameter 1.0
 PYTHONPATH=.. poetry run python scripts/demo_gyroid_orbit.py --resolution 16
+
+# Orbit around random platonic solids
+PYTHONPATH=.. poetry run python scripts/demo_platonic_orbit.py --resolution 64
+
+# PPO hover training with episode GIF rendering
+PYTHONPATH=.. poetry run python scripts/training/train_hover.py --total-timesteps 100000
 ```
 
 ## Project Structure
 
 ```
 rl_engine/
+├── install.sh              # One-command build script
+├── uninstall.sh            # Clean all build artifacts
 ├── CMakeLists.txt          # Top-level build configuration
-├── setup.py                # Python package build (CMake + setuptools)
-├── pyproject.toml           # Poetry/PEP 517 metadata
-├── __init__.py             # Package entry point (exports DroneEnv)
-├── drone.py                # DroneEnv — Gymnasium/PufferLib environment wrapper
+├── setup.py                # Python extension build (CMake + setuptools)
+├── pyproject.toml          # Poetry/PEP 517 metadata
+├── __init__.py             # Package entry (exports RobotEnv)
+├── robot.py                # RobotEnv — Gymnasium/PufferLib environment wrapper
 ├── binding.c               # CPython C extension (zero-copy obs buffers)
 ├── include/
 │   └── drone_rl.h          # Public C API header
 ├── configs/
 │   ├── orbit_demo.toml     # Gyroid orbit demo configuration
 │   └── lidar_3d.toml       # 3D LiDAR sensor preset
-├── src/                    # C engine modules (13 modules)
+├── src/                    # C engine modules (15 modules)
 │   ├── foundation/         # Arena allocator, math, hash maps, SIMD
-│   ├── drone_state/        # Drone state representation and lifecycle
+│   ├── rigid_body_state/   # RigidBodyStateSOA/ParamsSOA (13+N arrays)
+│   ├── drone_state/        # Agent state lifecycle, platform extensions
+│   ├── platform/           # VTable abstraction, quadcopter, diff-drive
 │   ├── physics/            # RK4 integrator, aerodynamics, motor model
 │   ├── world_brick_map/    # Sparse SDF voxel world, mesh loading, CSG
 │   ├── collision_system/   # SDF-based collision detection and response
@@ -72,12 +129,15 @@ rl_engine/
 │   ├── gpu/                # Metal compute shaders (macOS)
 │   └── obj_io/             # OBJ/MTL mesh parser, marching cubes, voxelizer
 ├── scripts/
-│   └── demo_gyroid_orbit.py # Orbit camera demo
+│   ├── demo_gyroid_orbit.py    # Orbit camera around gyroid world
+│   ├── demo_platonic_orbit.py  # Orbit around random platonic solids
+│   └── training/
+│       ├── train_hover.py      # PPO hover training with PuffeRL
+│       └── visualizer.py       # Episode GIF renderer (4-panel dashboard)
 ├── utils/
 │   └── generate_gyroid_cube.py # Gyroid mesh generator
 ├── benchmarks/             # C micro-benchmarks for each subsystem
-├── input/environments/     # Small test meshes (1.obj, 2.obj, 3.obj)
-└── NOTES.md                # Development notes
+└── input/environments/     # Small test meshes (1.obj, 2.obj, 3.obj)
 ```
 
 ## Architecture
@@ -87,18 +147,29 @@ The engine is organized in dependency layers (lower layers have no upward depend
 | Layer | Modules |
 |-------|---------|
 | **Foundation** | `foundation` — arena allocator, SIMD math, hash maps |
-| **State** | `drone_state` — per-drone state (pose, velocity, motors) |
+| **Rigid Body** | `rigid_body_state` — generic pose, velocity, inertia arrays |
+| **State** | `drone_state` — agent state lifecycle, platform extensions |
+| **Platform** | `platform` — VTable dispatch: quadcopter (4 motors), diff-drive (2 wheels) |
 | **World** | `world_brick_map`, `obj_io` — sparse SDF grid, mesh I/O |
-| **Physics** | `physics` — RK4 integration, aerodynamics, motor model |
+| **Physics** | `physics` — RK4 integration, platform-generic forces via VTable |
 | **Collision** | `collision_system` — SDF ray marching, contact response |
 | **Sensors** | `sensor_system`, `sensor_implementations` — 10 sensor types |
 | **Rewards** | `reward_system` — configurable reward functions |
 | **Config** | `configuration` — TOML loading, noise pipeline |
 | **Threading** | `threading` — thread pool for parallel stepping |
-| **GPU** | `gpu` — Metal compute shaders (sensors, collision) |
+| **GPU** | `gpu` — Metal compute shaders (sensors, voxelization) |
 | **Orchestration** | `environment_manager` — engine lifecycle, step/reset |
 
-The Python layer (`drone.py` + `binding.c`) wraps the C engine as a Gymnasium-compatible environment with zero-copy NumPy observation buffers for PufferLib vectorized training.
+The Python layer (`robot.py` + `binding.c`) wraps the C engine as a Gymnasium-compatible environment with zero-copy NumPy observation buffers for PufferLib vectorized training.
+
+### Platform Abstraction
+
+The engine uses vtable-based polymorphism for zero-overhead platform dispatch. Each platform defines its own action mapping, actuator dynamics, force computation, and state extensions:
+
+| Platform | Actions | State Extensions | Kinematics |
+|----------|---------|-----------------|------------|
+| **Quadcopter** | 4 motor commands | RPM per motor | Aerodynamic forces + torques |
+| **Diff-drive** | 2 wheel velocities | Wheel vel L/R | Spring-based ground constraint |
 
 ## Benchmarks
 
@@ -158,16 +229,3 @@ Target: 1024 drones at 50 FPS (20 ms/step) — met with 13x headroom on VISION.
 | 1024 | 0.149 |
 | 2048 | 0.373 |
 | 4096 | 1.004 |
-
-## Usage
-
-```python
-from rl_engine import DroneEnv
-
-env = DroneEnv(num_envs=64, drones_per_env=16)
-obs, info = env.reset()
-
-for _ in range(1000):
-    actions = env.action_space.sample()
-    obs, rewards, dones, truncs, info = env.step(actions)
-```
